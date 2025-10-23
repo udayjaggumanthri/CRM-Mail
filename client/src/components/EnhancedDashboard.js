@@ -1,0 +1,407 @@
+import React, { useState, useEffect } from 'react';
+import { useQuery, useMutation, useQueryClient } from 'react-query';
+import axios from 'axios';
+import { toast } from 'react-hot-toast';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  Users,
+  Mail,
+  Calendar,
+  TrendingUp,
+  Activity,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  BarChart3,
+  PieChart,
+  Globe,
+  Settings,
+  Bell,
+  RefreshCw,
+  Download,
+  Filter,
+  Search
+} from 'lucide-react';
+
+const EnhancedDashboard = () => {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [selectedTimeRange, setSelectedTimeRange] = useState('7d');
+  const [selectedConference, setSelectedConference] = useState('all');
+  const [refreshInterval, setRefreshInterval] = useState(30000); // 30 seconds
+
+  // Fetch dashboard data
+  const { data: dashboardData, isLoading: dashboardLoading, error: dashboardError } = useQuery(
+    ['dashboard', selectedTimeRange, selectedConference],
+    async () => {
+      const response = await axios.get('/api/dashboard', {
+        params: { timeRange: selectedTimeRange, conferenceId: selectedConference }
+      });
+      return response.data;
+    },
+    {
+      refetchInterval: refreshInterval,
+      refetchOnWindowFocus: true
+    }
+  );
+
+  // Fetch analytics data
+  const { data: analyticsData, isLoading: analyticsLoading } = useQuery(
+    ['analytics', selectedTimeRange],
+    async () => {
+      const response = await axios.get('/api/analytics/ceo-dashboard');
+      return response.data;
+    },
+    {
+      enabled: user?.role === 'CEO'
+    }
+  );
+
+  // Fetch system status
+  const { data: systemStatus, isLoading: statusLoading } = useQuery(
+    'system-status',
+    async () => {
+      const response = await axios.get('/api/system/status');
+      return response.data;
+    },
+    {
+      refetchInterval: 60000 // 1 minute
+    }
+  );
+
+  // Fetch notifications
+  const { data: notifications, isLoading: notificationsLoading } = useQuery(
+    'notifications',
+    async () => {
+      const response = await axios.get('/api/notifications', {
+        params: { limit: 10 }
+      });
+      return response.data;
+    }
+  );
+
+  // Fetch recent activity
+  const { data: recentActivity, isLoading: activityLoading } = useQuery(
+    'recent-activity',
+    async () => {
+      const response = await axios.get('/api/analytics/recent-activity');
+      return response.data;
+    }
+  );
+
+  // Auto-refresh functionality
+  useEffect(() => {
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries(['dashboard']);
+      queryClient.invalidateQueries(['analytics']);
+      queryClient.invalidateQueries(['system-status']);
+    }, refreshInterval);
+
+    return () => clearInterval(interval);
+  }, [refreshInterval, queryClient]);
+
+  // Manual refresh
+  const handleRefresh = () => {
+    queryClient.invalidateQueries();
+    toast.success('Dashboard refreshed');
+  };
+
+  // Export data
+  const handleExport = async (type) => {
+    try {
+      const response = await axios.get(`/api/analytics/export`, {
+        params: { type, format: 'csv' },
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${type}_export.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      
+      toast.success(`${type} data exported successfully`);
+    } catch (error) {
+      toast.error('Export failed');
+    }
+  };
+
+  if (dashboardLoading || analyticsLoading || statusLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600"></div>
+      </div>
+    );
+  }
+
+  const stats = dashboardData || {};
+  const analytics = analyticsData || {};
+  const status = systemStatus || {};
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      {/* Header */}
+      <div className="mb-8">
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Welcome back, {user?.name || user?.email}!
+            </h1>
+            <p className="text-gray-600 mt-2">
+              Here's what's happening with your conference management system.
+            </p>
+          </div>
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={handleRefresh}
+              className="flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Refresh
+            </button>
+            <div className="flex items-center space-x-2">
+              <select
+                value={selectedTimeRange}
+                onChange={(e) => setSelectedTimeRange(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              >
+                <option value="1d">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* System Status */}
+      <div className="mb-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">System Status</h2>
+            <div className="flex items-center space-x-2">
+              <div className={`w-3 h-3 rounded-full ${status.database === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm text-gray-600">Database</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="flex items-center space-x-3">
+              <div className={`w-3 h-3 rounded-full ${status.emailService === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm text-gray-600">Email Service</span>
+            </div>
+            <div className="flex items-center space-x-3">
+              <div className={`w-3 h-3 rounded-full ${status.followUpService === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm text-gray-600">Follow-up Service</span>
+            </div>
+            <div className="flex items-center space-x-3">
+              <div className={`w-3 h-3 rounded-full ${status.realTimeSync === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm text-gray-600">Real-time Sync</span>
+            </div>
+            <div className="flex items-center space-x-3">
+              <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+              <span className="text-sm text-gray-600">Last Updated: {new Date(status.timestamp).toLocaleTimeString()}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Key Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Total Clients</p>
+              <p className="text-3xl font-bold text-gray-900">{stats.totalClients || 0}</p>
+            </div>
+            <Users className="w-8 h-8 text-primary-600" />
+          </div>
+          <div className="mt-4">
+            <span className="text-sm text-green-600">
+              +{stats.newClientsThisWeek || 0} this week
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Emails Sent</p>
+              <p className="text-3xl font-bold text-gray-900">{stats.totalEmails || 0}</p>
+            </div>
+            <Mail className="w-8 h-8 text-primary-600" />
+          </div>
+          <div className="mt-4">
+            <span className="text-sm text-green-600">
+              +{stats.emailsSentToday || 0} today
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Active Follow-ups</p>
+              <p className="text-3xl font-bold text-gray-900">{stats.activeFollowups || 0}</p>
+            </div>
+            <Activity className="w-8 h-8 text-primary-600" />
+          </div>
+          <div className="mt-4">
+            <span className="text-sm text-blue-600">
+              {stats.followUpSuccessRate || 0}% success rate
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Conferences</p>
+              <p className="text-3xl font-bold text-gray-900">{stats.totalConferences || 0}</p>
+            </div>
+            <Calendar className="w-8 h-8 text-primary-600" />
+          </div>
+          <div className="mt-4">
+            <span className="text-sm text-green-600">
+              {stats.activeConferences || 0} active
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Charts and Analytics */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        {/* Email Performance Chart */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Email Performance</h3>
+            <button
+              onClick={() => handleExport('emails')}
+              className="flex items-center px-3 py-1 text-sm text-primary-600 hover:text-primary-700"
+            >
+              <Download className="w-4 h-4 mr-1" />
+              Export
+            </button>
+          </div>
+          <div className="h-64 flex items-center justify-center">
+            <div className="text-center">
+              <BarChart3 className="w-12 h-12 text-gray-400 mx-auto mb-2" />
+              <p className="text-gray-500">Email performance chart</p>
+              <p className="text-sm text-gray-400">
+                Open Rate: {stats.emailOpenRate || 0}% | 
+                Click Rate: {stats.emailClickRate || 0}%
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Client Status Distribution */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Client Status</h3>
+            <button
+              onClick={() => handleExport('clients')}
+              className="flex items-center px-3 py-1 text-sm text-primary-600 hover:text-primary-700"
+            >
+              <Download className="w-4 h-4 mr-1" />
+              Export
+            </button>
+          </div>
+          <div className="h-64 flex items-center justify-center">
+            <div className="text-center">
+              <PieChart className="w-12 h-12 text-gray-400 mx-auto mb-2" />
+              <p className="text-gray-500">Client status distribution</p>
+              <div className="mt-4 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span>Leads: {stats.leads || 0}</span>
+                  <span>Abstracts: {stats.abstractsSubmitted || 0}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span>Registered: {stats.registered || 0}</span>
+                  <span>Unresponsive: {stats.unresponsive || 0}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Recent Activity and Notifications */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Activity */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h3>
+          <div className="space-y-4">
+            {recentActivity?.map((activity, index) => (
+              <div key={index} className="flex items-center space-x-3">
+                <div className="w-2 h-2 bg-primary-600 rounded-full"></div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-900">{activity.description}</p>
+                  <p className="text-xs text-gray-500">{activity.timestamp}</p>
+                </div>
+              </div>
+            )) || (
+              <div className="text-center py-8">
+                <Activity className="w-12 h-12 text-gray-400 mx-auto mb-2" />
+                <p className="text-gray-500">No recent activity</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Notifications */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Notifications</h3>
+            <Bell className="w-5 h-5 text-gray-400" />
+          </div>
+          <div className="space-y-4">
+            {notifications?.map((notification, index) => (
+              <div key={index} className="flex items-start space-x-3">
+                <div className={`w-2 h-2 rounded-full mt-2 ${
+                  notification.priority === 'high' ? 'bg-red-500' :
+                  notification.priority === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
+                }`}></div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-900">{notification.title}</p>
+                  <p className="text-xs text-gray-500">{notification.message}</p>
+                  <p className="text-xs text-gray-400">{notification.createdAt}</p>
+                </div>
+              </div>
+            )) || (
+              <div className="text-center py-8">
+                <Bell className="w-12 h-12 text-gray-400 mx-auto mb-2" />
+                <p className="text-gray-500">No notifications</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Actions */}
+      <div className="mt-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button className="flex items-center justify-center px-4 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">
+              <Users className="w-5 h-5 mr-2" />
+              Add New Client
+            </button>
+            <button className="flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors">
+              <Mail className="w-5 h-5 mr-2" />
+              Send Email
+            </button>
+            <button className="flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+              <Calendar className="w-5 h-5 mr-2" />
+              Create Conference
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default EnhancedDashboard;
