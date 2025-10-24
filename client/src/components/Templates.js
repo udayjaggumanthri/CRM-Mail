@@ -42,26 +42,51 @@ const Templates = () => {
   });
   const [previewData, setPreviewData] = useState({
     name: 'John Doe',
+    firstName: 'John',
+    lastName: 'Doe',
     email: 'john.doe@example.com',
+    phone: '+1-555-0123',
     country: 'United States',
+    organization: 'Example Corp',
+    position: 'Senior Manager',
     conferenceName: 'Tech Conference 2024',
-    conferenceDate: '2024-12-15',
+    conferenceDate: 'December 15, 2024 to December 17, 2024',
+    conferenceStartDate: 'December 15, 2024',
+    conferenceEndDate: 'December 17, 2024',
     conferenceVenue: 'Convention Center, New York',
-    abstractDeadline: '2024-11-30',
-    registrationDeadline: '2024-12-01'
+    conferenceWebsite: 'https://techconf2024.com',
+    conferenceDescription: 'Annual Technology Conference',
+    abstractDeadline: 'November 30, 2024',
+    registrationDeadline: 'December 1, 2024',
+    currentDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    currentYear: new Date().getFullYear()
   });
   const queryClient = useQueryClient();
 
   // Dynamic variables available for templates
   const availableVariables = [
-    { key: 'name', label: 'Client Name', icon: User, description: 'Full name of the client' },
+    // Client variables
+    { key: 'name', label: 'Client Name', icon: User, description: 'Full name of the client (John Doe)' },
+    { key: 'firstName', label: 'First Name', icon: User, description: 'Client first name only (John)' },
+    { key: 'lastName', label: 'Last Name', icon: User, description: 'Client last name only (Doe)' },
     { key: 'email', label: 'Client Email', icon: Mail, description: 'Email address of the client' },
+    { key: 'phone', label: 'Client Phone', icon: Mail, description: 'Phone number of the client' },
     { key: 'country', label: 'Client Country', icon: Globe, description: 'Country of the client' },
+    { key: 'organization', label: 'Organization', icon: Building, description: 'Client organization/company' },
+    { key: 'position', label: 'Position', icon: User, description: 'Client job position' },
+    // Conference variables
     { key: 'conferenceName', label: 'Conference Name', icon: Building, description: 'Name of the conference' },
-    { key: 'conferenceDate', label: 'Conference Date', icon: Calendar, description: 'Date of the conference' },
     { key: 'conferenceVenue', label: 'Conference Venue', icon: MapPin, description: 'Venue of the conference' },
+    { key: 'conferenceDate', label: 'Conference Date Range', icon: Calendar, description: 'Full date range (June 15 to 17, 2024)' },
+    { key: 'conferenceStartDate', label: 'Start Date', icon: Calendar, description: 'Conference start date only' },
+    { key: 'conferenceEndDate', label: 'End Date', icon: Calendar, description: 'Conference end date only' },
     { key: 'abstractDeadline', label: 'Abstract Deadline', icon: Calendar, description: 'Deadline for abstract submission' },
-    { key: 'registrationDeadline', label: 'Registration Deadline', icon: Calendar, description: 'Deadline for registration' }
+    { key: 'registrationDeadline', label: 'Registration Deadline', icon: Calendar, description: 'Deadline for registration' },
+    { key: 'conferenceWebsite', label: 'Conference Website', icon: Globe, description: 'Conference website URL' },
+    { key: 'conferenceDescription', label: 'Conference Description', icon: Building, description: 'Conference description' },
+    // System variables
+    { key: 'currentDate', label: 'Current Date', icon: Calendar, description: 'Today\'s date' },
+    { key: 'currentYear', label: 'Current Year', icon: Calendar, description: 'Current year (2025)' }
   ];
 
   const { data: templates, isLoading } = useQuery('templates', async () => {
@@ -233,20 +258,44 @@ const Templates = () => {
   };
 
   const renderPreview = (template) => {
+    // Use the same sample data as previewData state
     const sampleData = {
-      Name: 'John Doe',
-      ConferenceName: 'Tech Conference 2024',
-      Email: 'john.doe@example.com',
-      Country: 'United States'
+      // Client variables
+      name: 'John Doe',
+      firstName: 'John',
+      lastName: 'Doe',
+      email: 'john.doe@example.com',
+      phone: '+1-555-0123',
+      country: 'United States',
+      organization: 'Example Corp',
+      position: 'Senior Manager',
+      // Conference variables
+      conferenceName: 'Tech Conference 2024',
+      conferenceVenue: 'Convention Center, New York',
+      conferenceDate: 'December 15, 2024 to December 17, 2024',
+      conferenceStartDate: 'December 15, 2024',
+      conferenceEndDate: 'December 17, 2024',
+      abstractDeadline: 'November 30, 2024',
+      registrationDeadline: 'December 1, 2024',
+      conferenceWebsite: 'https://techconf2024.com',
+      conferenceDescription: 'Annual Technology Conference',
+      // System variables
+      currentDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+      currentYear: new Date().getFullYear()
     };
 
-    let renderedSubject = template.subject;
-    let renderedBody = template.bodyHtml;
+    let renderedSubject = template.subject || '';
+    let renderedBody = template.bodyHtml || '';
 
+    // Replace all variable formats: {var}, {{var}}, {{var.name}}, {{var_name}}
     Object.keys(sampleData).forEach(key => {
-      const placeholder = `{${key}}`;
-      renderedSubject = renderedSubject.replace(new RegExp(placeholder, 'g'), sampleData[key]);
-      renderedBody = renderedBody.replace(new RegExp(placeholder, 'g'), sampleData[key]);
+      const value = sampleData[key];
+      // Replace {variable}
+      renderedSubject = renderedSubject.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
+      renderedBody = renderedBody.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
+      // Replace {{variable}}
+      renderedSubject = renderedSubject.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
+      renderedBody = renderedBody.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
     });
 
     return { subject: renderedSubject, body: renderedBody };

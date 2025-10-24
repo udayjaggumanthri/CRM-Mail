@@ -2,7 +2,8 @@ const { EmailTemplate, Client, Conference, User, Organization } = require('../mo
 
 class TemplateEngine {
   constructor() {
-    this.variablePattern = /\{\{([^}]+)\}\}/g;
+    // Support both single {var} and double {{var}} braces
+    this.variablePattern = /\{\{([^}]+)\}\}|\{([^}]+)\}/g;
     this.conditionalPattern = /\{\{#if\s+([^}]+)\}\}([\s\S]*?)\{\{\/if\}\}/g;
     this.loopPattern = /\{\{#each\s+([^}]+)\}\}([\s\S]*?)\{\{\/each\}\}/g;
   }
@@ -17,7 +18,11 @@ class TemplateEngine {
     let match;
     
     while ((match = this.variablePattern.exec(content)) !== null) {
-      variables.add(match[1].trim());
+      // Handle both {{var}} (match[1]) and {var} (match[2])
+      const variable = (match[1] || match[2] || '').trim();
+      if (variable) {
+        variables.add(variable);
+      }
     }
     
     return Array.from(variables);
@@ -34,30 +39,61 @@ class TemplateEngine {
     try {
       const variables = {};
       
+      // Helper function to format dates nicely
+      const formatDate = (date) => {
+        if (!date) return '';
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      };
+
       // Get client data
       if (clientId) {
         const client = await Client.findByPk(clientId);
         
         if (client) {
+          const fullName = `${client.firstName || ''} ${client.lastName || ''}`.trim();
+          
+          // Nested format (existing): client.firstName, client.email, etc.
           variables.client = {
             id: client.id,
-            name: `${client.firstName} ${client.lastName}`,
-            firstName: client.firstName,
-            lastName: client.lastName,
-            email: client.email,
-            phone: client.phone,
-            country: client.country,
-            organization: client.organization,
-            position: client.position,
-            title: client.title,
-            department: client.department,
-            jobTitle: client.jobTitle,
-            currentStage: client.currentStage,
-            status: client.status,
-            priority: client.priority,
+            name: fullName,
+            firstName: client.firstName || '',
+            lastName: client.lastName || '',
+            email: client.email || '',
+            phone: client.phone || '',
+            country: client.country || '',
+            organization: client.organization || '',
+            position: client.position || '',
+            title: client.title || '',
+            department: client.department || '',
+            jobTitle: client.jobTitle || '',
+            currentStage: client.currentStage || '',
+            status: client.status || '',
+            priority: client.priority || '',
             tags: client.tags || [],
             customFields: client.customFields || {}
           };
+
+          // Simple format (UI uses this): name, firstName, email, etc.
+          variables.name = fullName;
+          variables.firstName = client.firstName || '';
+          variables.lastName = client.lastName || '';
+          variables.email = client.email || '';
+          variables.phone = client.phone || '';
+          variables.country = client.country || '';
+          variables.organization = client.organization || '';
+          variables.position = client.position || '';
+
+          // Underscore format (migrations use this): client_name, client_email, etc.
+          variables.client_name = fullName;
+          variables.client_first_name = client.firstName || '';
+          variables.client_last_name = client.lastName || '';
+          variables.client_email = client.email || '';
+          variables.client_phone = client.phone || '';
+          variables.client_country = client.country || '';
+          variables.client_organization = client.organization || '';
+          variables.client_position = client.position || '';
         }
       }
 
@@ -66,36 +102,72 @@ class TemplateEngine {
         const conference = await Conference.findByPk(conferenceId);
         
         if (conference) {
+          const formattedStartDate = formatDate(conference.startDate);
+          const formattedEndDate = formatDate(conference.endDate);
+          const formattedAbstractDeadline = formatDate(conference.abstractDeadline);
+          const formattedRegistrationDeadline = formatDate(conference.registrationDeadline);
+          const dateRange = formattedStartDate && formattedEndDate 
+            ? `${formattedStartDate} to ${formattedEndDate}` 
+            : formattedStartDate || formattedEndDate || '';
+
+          // Nested format (existing): conference.name, conference.venue, etc.
           variables.conference = {
             id: conference.id,
-            name: conference.name,
-            venue: conference.venue,
-            startDate: conference.startDate,
-            endDate: conference.endDate,
-            description: conference.description,
-            website: conference.website,
-            abstractDeadline: conference.abstractDeadline,
-            registrationDeadline: conference.registrationDeadline,
-            currency: conference.currency,
-            status: conference.status,
+            name: conference.name || '',
+            venue: conference.venue || '',
+            startDate: formattedStartDate,
+            endDate: formattedEndDate,
+            dateRange: dateRange,
+            description: conference.description || '',
+            website: conference.website || '',
+            abstractDeadline: formattedAbstractDeadline,
+            registrationDeadline: formattedRegistrationDeadline,
+            currency: conference.currency || 'USD',
+            status: conference.status || '',
             location: conference.location || {},
             contactInfo: conference.contactInfo || {},
-            primaryContact: conference.primaryContact,
-            assignedTeamLead: conference.assignedTeamLead,
-            organization: conference.organization
+            primaryContact: conference.primaryContact || '',
+            assignedTeamLead: conference.assignedTeamLead || '',
+            organization: conference.organization || ''
           };
+
+          // Simple format (UI uses this): conferenceName, conferenceVenue, etc.
+          variables.conferenceName = conference.name || '';
+          variables.conferenceVenue = conference.venue || '';
+          variables.conferenceDate = dateRange;
+          variables.conferenceStartDate = formattedStartDate;
+          variables.conferenceEndDate = formattedEndDate;
+          variables.abstractDeadline = formattedAbstractDeadline;
+          variables.registrationDeadline = formattedRegistrationDeadline;
+          variables.conferenceWebsite = conference.website || '';
+          variables.conferenceDescription = conference.description || '';
+
+          // Underscore format (migrations use this): conference_name, conference_venue, etc.
+          variables.conference_name = conference.name || '';
+          variables.conference_venue = conference.venue || '';
+          variables.conference_date = dateRange;
+          variables.conference_start_date = formattedStartDate;
+          variables.conference_end_date = formattedEndDate;
+          variables.abstract_deadline = formattedAbstractDeadline;
+          variables.registration_deadline = formattedRegistrationDeadline;
+          variables.conference_website = conference.website || '';
+          variables.conference_description = conference.description || '';
         }
       }
 
       // Add system variables
       variables.system = {
-        currentDate: new Date().toLocaleDateString(),
-        currentTime: new Date().toLocaleTimeString(),
+        currentDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        currentTime: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
         currentYear: new Date().getFullYear(),
         currentMonth: new Date().getMonth() + 1,
         currentDay: new Date().getDate(),
         timezone: 'UTC'
       };
+
+      // Add top-level system variables
+      variables.currentDate = variables.system.currentDate;
+      variables.currentYear = variables.system.currentYear;
 
       // Add organization data
       if (variables.client?.organization) {
@@ -156,10 +228,14 @@ class TemplateEngine {
 
     let rendered = content;
 
-    // Replace simple variables
-    rendered = rendered.replace(this.variablePattern, (match, variable) => {
-      const value = this.getVariableValue(variable.trim(), variables);
-      return value !== undefined ? value : match;
+    // Replace simple variables - handles both {{var}} and {var}
+    rendered = rendered.replace(this.variablePattern, (match, doubleVar, singleVar) => {
+      // The regex captures either {{var}} (doubleVar) or {var} (singleVar)
+      const variable = (doubleVar || singleVar || '').trim();
+      if (!variable) return match;
+
+      const value = this.getVariableValue(variable, variables);
+      return value !== undefined && value !== null && value !== '' ? value : match;
     });
 
     // Handle conditional statements

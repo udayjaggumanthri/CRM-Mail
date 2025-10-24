@@ -1,6 +1,28 @@
 version: '3.8'
 
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: crm-postgres-dev
+    environment:
+      POSTGRES_DB: crmdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    networks:
+      - crm-network-dev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Backend API (Development)
   backend:
     build:
@@ -8,21 +30,25 @@ services:
       dockerfile: Dockerfile.dev
     container_name: crm-backend-dev
     ports:
-      - "5001:5000"
+      - "3001:3001"
     environment:
       - NODE_ENV=development
-      - PORT=5000
-      - JWT_SECRET=dev-jwt-secret-key
-      - DB_HOST=host.docker.internal
-      - DB_PORT=3306
-      - DB_USER=crm
-      - DB_PASSWORD=crm_password
-      - DB_NAME=crm_dev
+      - PORT=3001
+      - JWT_SECRET=dev-secret-key
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGDATABASE=crmdb
+      - PGUSER=postgres
+      - PGPASSWORD=root
+      - EMAIL_TEST_MODE=true
     volumes:
       - ./server:/app
       - /app/node_modules
     networks:
-      - crm-network
+      - crm-network-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     command: npm run dev
 
@@ -33,23 +59,26 @@ services:
       dockerfile: Dockerfile.dev
     container_name: crm-frontend-dev
     ports:
-      - "3000:3000"
+      - "5000:5000"
     environment:
-      - REACT_APP_API_URL=http://localhost:5001
+      - REACT_APP_API_URL=http://localhost:3001
+      - CHOKIDAR_USEPOLLING=true
+      - PORT=5000
     volumes:
       - ./client:/app
       - /app/node_modules
+    depends_on:
+      - backend
     networks:
-      - crm-network
+      - crm-network-dev
     restart: unless-stopped
-    command: npm start
-
-  # Redis removed
-
-  # External MySQL used via host.docker.internal
+    stdin_open: true
+    tty: true
 
 networks:
-  crm-network:
+  crm-network-dev:
     driver: bridge
 
 volumes:
+  postgres_dev_data:
+    driver: local

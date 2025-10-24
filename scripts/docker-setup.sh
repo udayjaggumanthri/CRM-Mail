@@ -67,7 +67,7 @@ start_containers() {
     print_status "Starting containers in $mode mode..."
     
     if [ "$mode" = "prod" ]; then
-        docker-compose -f docker-compose.prod.yml up --build -d
+        docker-compose up --build -d
     else
         docker-compose -f docker-compose.dev.yml up --build -d
     fi
@@ -139,10 +139,11 @@ main() {
             print_success "Setup completed!"
             echo ""
             echo "🌐 Access the application:"
-            echo "   Frontend: http://localhost:3000"
-            echo "   Backend API: http://localhost:5000"
+            echo "   Frontend: http://localhost:5000"
+            echo "   Backend API: http://localhost:3001"
+            echo "   Database: localhost:5432"
             echo ""
-            echo "👤 Demo accounts:"
+            echo "👤 Default login credentials:"
             echo "   CEO: admin@crm.com / admin123"
             echo "   Manager: manager@crm.com / manager123"
             echo "   Agent: agent@crm.com / agent123"

@@ -499,38 +499,36 @@ async function createStage2FollowUpJobs(client, conference) {
     const stage2MaxFollowUps = maxAttempts.Stage2 || 6;
     const skipWeekends = settings.skip_weekends !== false;
 
-    // Get or create Stage 2 (Registration) template
-    let stage2Template = await EmailTemplate.findOne({
-      where: {
-        conferenceId: conference.id,
-        stage: 'registration',
-        isActive: true
-      }
-    });
+    // Get Stage 2 (Registration) template - USE CONFERENCE'S ASSIGNED TEMPLATE
+    let stage2Template = null;
 
+    // Priority 1: Use the template assigned to this conference
+    if (conference.stage2TemplateId) {
+      stage2Template = await EmailTemplate.findByPk(conference.stage2TemplateId);
+      if (stage2Template) {
+        console.log(`✅ Using conference's assigned Stage 2 template: ${stage2Template.name} (ID: ${stage2Template.id})`);
+      } else {
+        console.log(`⚠️ Conference has stage2TemplateId ${conference.stage2TemplateId} but template not found`);
+      }
+    }
+
+    // Priority 2: Fallback - Find any active registration template
     if (!stage2Template) {
-      stage2Template = await EmailTemplate.create({
-        organizationId: conference.organizationId || '00000000-0000-0000-0000-000000000001',
-        conferenceId: conference.id,
-        name: 'Stage 2 - Registration',
-        subject: `${conference.name} - Registration Reminder`,
-        bodyHtml: `<p>Dear {{client.firstName}} {{client.lastName}},</p>
-<p>Thank you for submitting your abstract for <strong>{{conference.name}}</strong>!</p>
-<p>This is a friendly reminder to complete your registration.</p>
-<p><strong>Registration Details:</strong></p>
-<ul>
-  <li><strong>Conference:</strong> {{conference.name}}</li>
-  <li><strong>Deadline:</strong> {{conference.registrationDeadline}}</li>
-  <li><strong>Venue:</strong> {{conference.venue}}</li>
-  <li><strong>Dates:</strong> {{conference.startDate}} to {{conference.endDate}}</li>
-  {{#if conference.website}}<li><strong>Register at:</strong> <a href="{{conference.website}}">{{conference.website}}</a></li>{{/if}}
-</ul>
-<p>We look forward to your participation!</p>
-<p>Best regards,<br>Conference Team</p>`,
-        bodyText: `Dear {{client.firstName}} {{client.lastName}},\n\nThank you for submitting your abstract for {{conference.name}}!\n\nThis is a friendly reminder to complete your registration.\n\nRegistration Details:\n- Conference: {{conference.name}}\n- Deadline: {{conference.registrationDeadline}}\n- Venue: {{conference.venue}}\n- Dates: {{conference.startDate}} to {{conference.endDate}}\n{{#if conference.website}}- Register at: {{conference.website}}{{/if}}\n\nWe look forward to your participation!\n\nBest regards,\nConference Team`,
-        stage: 'registration',
-        isActive: true
+      stage2Template = await EmailTemplate.findOne({
+        where: {
+          stage: 'registration',
+          isActive: true
+        },
+        order: [['createdAt', 'DESC']]
       });
+      if (stage2Template) {
+        console.log(`⚠️ Using fallback Stage 2 template: ${stage2Template.name} (ID: ${stage2Template.id})`);
+      }
+    }
+
+    // Priority 3: Throw error instead of creating hardcoded template
+    if (!stage2Template) {
+      throw new Error('No registration template found. Please create one in Email Templates and assign it to the conference.');
     }
 
     // Get the most recent email's messageId for threading (from Stage 1 emails)
@@ -590,17 +588,7 @@ async function startAutomaticEmailWorkflow(clientId, conferenceId) {
 
     const manualCount = client.manualEmailsCount || 0;
     console.log(`📊 Client entry point: Status="${client.status}", Stage="${client.currentStage}", ManualEmailsCount=${manualCount}`);
-
-    // Get email templates for this conference
-    const templates = await EmailTemplate.findAll({
-      where: { conferenceId: conferenceId }
-    });
-
-    if (templates.length === 0) {
-      console.log('⚠️ No email templates found for conference, using default templates');
-      // Create default templates if none exist
-      await createDefaultTemplates(conferenceId);
-    }
+    console.log(`📋 Conference templates: Initial=${conference.initialTemplateId || 'not set'}, Stage1=${conference.stage1TemplateId || 'not set'}, Stage2=${conference.stage2TemplateId || 'not set'}`);
 
     // Handle workflow based on status and stage combination
     if (client.status === 'Registered' || client.currentStage === 'completed') {
@@ -669,36 +657,36 @@ async function sendInitialEmail(client, conference) {
     
     console.log(`📧 Using SMTP account: ${smtpAccount.email} (${smtpAccount.smtpHost})`);
 
-    // Get initial invitation template
-    let template = await EmailTemplate.findOne({
-      where: {
-        conferenceId: conference.id,
-        stage: 'initial_invitation',
-        isActive: true
-      }
-    });
+    // Get initial invitation template - USE CONFERENCE'S ASSIGNED TEMPLATE
+    let template = null;
 
-    // If no template exists, create a default one
+    // Priority 1: Use the template assigned to this conference
+    if (conference.initialTemplateId) {
+      template = await EmailTemplate.findByPk(conference.initialTemplateId);
+      if (template) {
+        console.log(`✅ Using conference's assigned initial template: ${template.name} (ID: ${template.id})`);
+      } else {
+        console.log(`⚠️ Conference has initialTemplateId ${conference.initialTemplateId} but template not found`);
+      }
+    }
+
+    // Priority 2: Fallback - Find any active initial_invitation template
     if (!template) {
-      template = await EmailTemplate.create({
-        organizationId: conference.organizationId || '00000000-0000-0000-0000-000000000001',
-        conferenceId: conference.id,
-        name: 'Initial Invitation',
-        subject: `Invitation to ${conference.name}`,
-        bodyHtml: `<p>Dear {{client.firstName}},</p>
-<p>You are cordially invited to participate in <strong>{{conference.name}}</strong>.</p>
-<p><strong>Conference Details:</strong></p>
-<ul>
-  <li><strong>Venue:</strong> {{conference.venue}}</li>
-  <li><strong>Dates:</strong> {{conference.startDate}} to {{conference.endDate}}</li>
-  {{#if conference.website}}<li><strong>Website:</strong> <a href="{{conference.website}}">{{conference.website}}</a></li>{{/if}}
-</ul>
-<p>We look forward to your participation!</p>
-<p>Best regards,<br>Conference Team</p>`,
-        bodyText: `Dear {{client.firstName}},\n\nYou are cordially invited to participate in {{conference.name}}.\n\nConference Details:\n- Venue: {{conference.venue}}\n- Dates: {{conference.startDate}} to {{conference.endDate}}\n{{#if conference.website}}- Website: {{conference.website}}{{/if}}\n\nWe look forward to your participation!\n\nBest regards,\nConference Team`,
-        stage: 'initial_invitation',
-        isActive: true
+      template = await EmailTemplate.findOne({
+        where: {
+          stage: 'initial_invitation',
+          isActive: true
+        },
+        order: [['createdAt', 'DESC']]
       });
+      if (template) {
+        console.log(`⚠️ Using fallback initial invitation template: ${template.name} (ID: ${template.id})`);
+      }
+    }
+
+    // Priority 3: Throw error instead of creating hardcoded template
+    if (!template) {
+      throw new Error('No initial invitation template found. Please create one in Email Templates and assign it to the conference.');
     }
 
     // Render template with client data
@@ -795,36 +783,36 @@ async function scheduleFollowUpEmails(client, conference) {
     // Store interval in customInterval as milliseconds for flexibility
     const stage1IntervalMs = intervalToMilliseconds(stage1Interval);
 
-    // Get or create Stage 1 (Abstract Submission) template
-    let stage1Template = await EmailTemplate.findOne({
-      where: {
-        conferenceId: conference.id,
-        stage: 'abstract_submission',
-        isActive: true
-      }
-    });
+    // Get Stage 1 (Abstract Submission) template - USE CONFERENCE'S ASSIGNED TEMPLATE
+    let stage1Template = null;
 
+    // Priority 1: Use the template assigned to this conference
+    if (conference.stage1TemplateId) {
+      stage1Template = await EmailTemplate.findByPk(conference.stage1TemplateId);
+      if (stage1Template) {
+        console.log(`✅ Using conference's assigned Stage 1 template: ${stage1Template.name} (ID: ${stage1Template.id})`);
+      } else {
+        console.log(`⚠️ Conference has stage1TemplateId ${conference.stage1TemplateId} but template not found`);
+      }
+    }
+
+    // Priority 2: Fallback - Find any active abstract_submission template
     if (!stage1Template) {
-      stage1Template = await EmailTemplate.create({
-        organizationId: conference.organizationId || '00000000-0000-0000-0000-000000000001',
-        conferenceId: conference.id,
-        name: 'Stage 1 - Abstract Submission',
-        subject: `${conference.name} - Abstract Submission Reminder`,
-        bodyHtml: `<p>Dear {{client.firstName}} {{client.lastName}},</p>
-<p>This is a friendly reminder about submitting your abstract for <strong>{{conference.name}}</strong>.</p>
-<p><strong>Abstract Submission Details:</strong></p>
-<ul>
-  <li><strong>Conference:</strong> {{conference.name}}</li>
-  <li><strong>Deadline:</strong> {{conference.abstractDeadline}}</li>
-  <li><strong>Venue:</strong> {{conference.venue}}</li>
-  {{#if conference.website}}<li><strong>Submit at:</strong> <a href="{{conference.website}}">{{conference.website}}</a></li>{{/if}}
-</ul>
-<p>We encourage you to submit your abstract at your earliest convenience.</p>
-<p>Best regards,<br>Conference Team</p>`,
-        bodyText: `Dear {{client.firstName}} {{client.lastName}},\n\nThis is a friendly reminder about submitting your abstract for {{conference.name}}.\n\nAbstract Submission Details:\n- Conference: {{conference.name}}\n- Deadline: {{conference.abstractDeadline}}\n- Venue: {{conference.venue}}\n{{#if conference.website}}- Submit at: {{conference.website}}{{/if}}\n\nWe encourage you to submit your abstract at your earliest convenience.\n\nBest regards,\nConference Team`,
-        stage: 'abstract_submission',
-        isActive: true
+      stage1Template = await EmailTemplate.findOne({
+        where: {
+          stage: 'abstract_submission',
+          isActive: true
+        },
+        order: [['createdAt', 'DESC']]
       });
+      if (stage1Template) {
+        console.log(`⚠️ Using fallback Stage 1 template: ${stage1Template.name} (ID: ${stage1Template.id})`);
+      }
+    }
+
+    // Priority 3: Throw error instead of creating hardcoded template
+    if (!stage1Template) {
+      throw new Error('No abstract submission template found. Please create one in Email Templates and assign it to the conference.');
     }
 
     // Get the initial email's messageId for threading
