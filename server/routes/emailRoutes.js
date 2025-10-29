@@ -3,6 +3,95 @@ const router = express.Router();
 const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client } = require('../models');
 const { Op } = require('sequelize');
 const nodemailer = require('nodemailer');
+const multer = require('multer');
+
+// Configure multer for file uploads - use any() to handle both files and fields
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
+
+// Get email suggestions for autocomplete
+router.get('/suggestions', async (req, res) => {
+  try {
+    const { query } = req.query;
+    
+    if (!query || query.length < 2) {
+      return res.json([]);
+    }
+
+    const searchPattern = `%${query}%`;
+    
+    // Find unique email addresses from all email interactions (from, to, cc, bcc)
+    const emails = await Email.findAll({
+      attributes: ['from', 'to', 'cc', 'bcc'],
+      where: {
+        [Op.or]: [
+          { from: { [Op.iLike]: searchPattern } },
+          { to: { [Op.iLike]: searchPattern } },
+          { cc: { [Op.iLike]: searchPattern } },
+          { bcc: { [Op.iLike]: searchPattern } }
+        ]
+      },
+      limit: 50
+    });
+
+    // Extract unique email addresses
+    const emailSet = new Set();
+    emails.forEach(email => {
+      if (email.from) emailSet.add(email.from);
+      if (email.to) {
+        // Split multiple recipients
+        email.to.split(',').forEach(e => emailSet.add(e.trim()));
+      }
+      if (email.cc) {
+        email.cc.split(',').forEach(e => emailSet.add(e.trim()));
+      }
+      if (email.bcc) {
+        email.bcc.split(',').forEach(e => emailSet.add(e.trim()));
+      }
+    });
+
+    // Also check clients table for matching emails
+    const clients = await Client.findAll({
+      attributes: ['email', 'firstName', 'lastName'],
+      where: {
+        email: { [Op.iLike]: searchPattern }
+      },
+      limit: 20
+    });
+
+    clients.forEach(client => {
+      if (client.email) emailSet.add(client.email);
+    });
+
+    // Convert to array and format suggestions
+    const suggestions = Array.from(emailSet)
+      .filter(email => email && email.toLowerCase().includes(query.toLowerCase()))
+      .slice(0, 10) // Limit to 10 suggestions
+      .map(email => {
+        // Extract name if available (format: "Name <email@example.com>")
+        const nameMatch = email.match(/^(.+?)\s*<(.+?)>$/);
+        if (nameMatch) {
+          return {
+            email: nameMatch[2],
+            display: email,
+            name: nameMatch[1].trim()
+          };
+        }
+        return {
+          email: email,
+          display: email,
+          name: null
+        };
+      });
+
+    res.json(suggestions);
+  } catch (error) {
+    console.error('Get email suggestions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // Get emails with advanced filtering
 router.get('/', async (req, res) => {
@@ -22,66 +111,141 @@ router.get('/', async (req, res) => {
       endDate
     } = req.query;
 
-    const whereClause = {
-      folder: folder === 'all' ? { [Op.ne]: null } : folder
-    };
+    // Enhanced folder filtering logic to properly separate inbox from sent emails
+    const whereClause = {};
+    let folderCondition = null;
+
+    if (folder === 'inbox') {
+      // Inbox: received emails only (not sent, not drafts, not deleted)
+      folderCondition = {
+        [Op.and]: [
+          { [Op.or]: [{ folder: 'inbox' }, { folder: 'INBOX' }, { folder: null }] },
+          { [Op.or]: [{ isSent: false }, { isSent: null }] },
+          { [Op.or]: [{ isDraft: false }, { isDraft: null }] },
+          { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] }
+        ]
+      };
+    } else if (folder === 'sent') {
+      // Sent: outbound emails only (not deleted)
+      folderCondition = {
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { isSent: true },
+              { folder: { [Op.iLike]: 'sent' } }
+            ]
+          },
+          { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] }
+        ]
+      };
+    } else if (folder === 'drafts') {
+      // Drafts: only emails explicitly marked as drafts (isDraft=true), not sent, not deleted
+      // Note: We don't check status='draft' because it's incorrectly set for received emails
+      folderCondition = {
+        [Op.and]: [
+          { isDraft: true },
+          { [Op.or]: [{ isSent: false }, { isSent: null }] },
+          { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] }
+        ]
+      };
+    } else if (folder === 'all' || folder === 'all-mail') {
+      // All Mail: all non-deleted emails regardless of folder
+      folderCondition = { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] };
+    } else if (folder === 'spam') {
+      // Spam: emails in spam folder (case-insensitive, not deleted)
+      folderCondition = {
+        [Op.and]: [
+          { folder: { [Op.iLike]: 'spam' } },
+          { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] }
+        ]
+      };
+    } else if (folder === 'trash') {
+      // Trash: emails in trash folder OR marked as deleted
+      folderCondition = {
+        [Op.or]: [
+          { folder: { [Op.iLike]: 'trash' } },
+          { isDeleted: true }
+        ]
+      };
+    } else {
+      // For other folders (archive, etc.), use folder as-is (not deleted)
+      folderCondition = {
+        [Op.and]: [
+          { folder: folder },
+          { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] }
+        ]
+      };
+    }
+
+    // Build whereClause: combine folder condition with other filters using AND
+    const conditions = [folderCondition];
 
     // Add account filter
     if (accountId) {
-      whereClause.emailAccountId = accountId;
+      conditions.push({ emailAccountId: accountId });
     }
 
     // Add email address filters
     if (fromEmail) {
-      whereClause.from = { [Op.iLike]: `%${fromEmail}%` };
+      conditions.push({ from: { [Op.iLike]: `%${fromEmail}%` } });
     }
     if (toEmail) {
-      whereClause.to = { [Op.iLike]: `%${toEmail}%` };
+      conditions.push({ to: { [Op.iLike]: `%${toEmail}%` } });
     }
 
     // Add date range filters
     if (startDate || endDate) {
-      whereClause.date = {};
+      const dateCondition = {};
       if (startDate) {
-        whereClause.date[Op.gte] = new Date(startDate);
+        dateCondition[Op.gte] = new Date(startDate);
       }
       if (endDate) {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
-        whereClause.date[Op.lte] = end;
+        dateCondition[Op.lte] = end;
       }
+      conditions.push({ date: dateCondition });
     }
 
     // Add general search filter
     if (search) {
-      whereClause[Op.or] = [
-        { subject: { [Op.iLike]: `%${search}%` } },
-        { from: { [Op.iLike]: `%${search}%` } },
-        { to: { [Op.iLike]: `%${search}%` } },
-        { body: { [Op.iLike]: `%${search}%` } }
-      ];
+      conditions.push({
+        [Op.or]: [
+          { subject: { [Op.iLike]: `%${search}%` } },
+          { from: { [Op.iLike]: `%${search}%` } },
+          { to: { [Op.iLike]: `%${search}%` } },
+          { body: { [Op.iLike]: `%${search}%` } }
+        ]
+      });
     }
 
     // Add additional filters
     switch (filter) {
       case 'unread':
-        whereClause.isRead = false;
+        conditions.push({ isRead: false });
         break;
       case 'important':
-        whereClause.isImportant = true;
+        conditions.push({ isImportant: true });
         break;
       case 'starred':
-        whereClause.isStarred = true;
+        conditions.push({ isStarred: true });
         break;
       case 'attachments':
-        whereClause.hasAttachments = true;
+        conditions.push({ hasAttachments: true });
         break;
       case 'sent':
-        whereClause.isSent = true;
+        conditions.push({ isSent: true });
         break;
       case 'drafts':
-        whereClause.isDraft = true;
+        conditions.push({ isDraft: true });
         break;
+    }
+
+    // Combine all conditions with AND
+    if (conditions.length === 1) {
+      Object.assign(whereClause, conditions[0]);
+    } else {
+      whereClause[Op.and] = conditions;
     }
 
     // Build order clause
@@ -159,48 +323,142 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Send email
-router.post('/send', async (req, res) => {
+// Update email (for folder changes, etc.)
+router.put('/:id', async (req, res) => {
   try {
-    const {
-      emailAccountId,
-      to,
-      cc,
-      bcc,
-      subject,
-      body,
-      bodyHtml,
-      bodyText,
-      attachments = [],
-      parentId,
-      parentType,
-      isTracked = false
-    } = req.body;
+    const { folder, isStarred, isImportant, isRead } = req.body;
+    const email = await Email.findByPk(req.params.id);
 
-    // Validate required fields
-    if (!emailAccountId || !to || !subject) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!email) {
+      return res.status(404).json({ error: 'Email not found' });
     }
 
-    // Get email account
-    const account = await EmailAccount.findByPk(emailAccountId);
+    const updateData = {};
+    if (folder !== undefined) updateData.folder = folder;
+    if (isStarred !== undefined) updateData.isStarred = isStarred;
+    if (isImportant !== undefined) updateData.isImportant = isImportant;
+    if (isRead !== undefined) updateData.isRead = isRead;
+
+    await email.update(updateData);
+
+    res.json(email);
+  } catch (error) {
+    console.error('Update email error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Send email with attachments support
+router.post('/send', upload.any(), async (req, res) => {
+  try {
+    // Debug: Log all received data
+    console.log('=== Email Send Request Debug ===');
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('Body keys:', Object.keys(req.body));
+    console.log('Body values:', JSON.stringify(req.body, null, 2));
+    console.log('Files:', req.files ? req.files.map(f => ({ fieldname: f.fieldname, filename: f.originalname })) : 'No files');
+    console.log('================================');
+    
+    // Parse form fields from multipart/form-data
+    const emailAccountId = req.body.emailAccountId;
+    const to = req.body.to;
+    const cc = req.body.cc || '';
+    const bcc = req.body.bcc || '';
+    const subject = req.body.subject;
+    const body = req.body.body || '';
+    const bodyHtml = req.body.bodyHtml || req.body.body || '';
+    const bodyText = req.body.bodyText || (bodyHtml ? bodyHtml.replace(/<[^>]*>/g, '') : '');
+    const parentId = req.body.parentId || null;
+    const parentType = req.body.parentType || null;
+    const isTracked = req.body.isTracked === 'true' || req.body.isTracked === true;
+
+    // Get uploaded files - filter by fieldname 'attachments'
+    const uploadedFiles = (req.files || []).filter(file => file.fieldname === 'attachments');
+
+    // Validate required fields with detailed error
+    if (!emailAccountId || emailAccountId === 'undefined' || emailAccountId === 'null' || emailAccountId === '') {
+      console.error('❌ Missing or invalid emailAccountId:', emailAccountId);
+      console.error('Full request body:', JSON.stringify(req.body, null, 2));
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: 'emailAccountId is required and must be a valid UUID or number',
+        received: { emailAccountId, to, subject }
+      });
+    }
+    
+    if (!to || !to.trim() || to === 'undefined' || to === '') {
+      console.error('❌ Missing or invalid to field:', to);
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: 'Recipient (to) is required',
+        received: { emailAccountId, to, subject }
+      });
+    }
+    
+    if (!subject || !subject.trim() || subject === 'undefined' || subject === '') {
+      console.error('❌ Missing or invalid subject:', subject);
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: 'Subject is required',
+        received: { emailAccountId, to, subject }
+      });
+    }
+
+    // Resolve email account agnostically (UUID or numeric), no strict format validation
+    let account;
+    let accountId;
+    const cleanedEmailAccountId = String(emailAccountId || '').trim();
+
+    console.log('🔍 Resolving emailAccountId:', cleanedEmailAccountId);
+
+    // Try primary key lookup directly (works for UUID string IDs)
+    account = await EmailAccount.findByPk(cleanedEmailAccountId);
+
+    // If not found and id looks numeric, try numeric PK just in case
     if (!account) {
-      return res.status(404).json({ error: 'Email account not found' });
+      const asNumber = parseInt(cleanedEmailAccountId, 10);
+      if (!Number.isNaN(asNumber)) {
+        account = await EmailAccount.findByPk(asNumber);
+      }
     }
+
+    // As a fallback, try findOne by id equality (string)
+    if (!account) {
+      account = await EmailAccount.findOne({ where: { id: cleanedEmailAccountId } });
+    }
+
+    if (!account) {
+      console.error('❌ Email account not found for id:', cleanedEmailAccountId);
+      return res.status(404).json({ 
+        error: 'Email account not found',
+        details: `No email account found with id: ${cleanedEmailAccountId}`
+      });
+    }
+
+    accountId = account.id; // ensure we use the exact id from DB
+    console.log('✅ Found email account:', account.email, account.name, 'ID:', accountId);
+
+    // Prepare attachments array for database storage
+    const attachments = uploadedFiles.map(file => ({
+      filename: file.originalname,
+      content: file.buffer.toString('base64'),
+      contentType: file.mimetype,
+      size: file.size
+    }));
 
     // Create email record
     const email = await Email.create({
-      emailAccountId,
+      emailAccountId: accountId,
       from: account.email,
       fromName: account.name,
       to,
-      cc,
-      bcc,
+      cc: cc || null,
+      bcc: bcc || null,
       subject,
-      body: body || bodyText,
-      bodyHtml,
-      bodyText,
-      attachments,
+      body: body || bodyText || '',
+      bodyHtml: bodyHtml || '',
+      bodyText: bodyText || '',
+      attachments: attachments.length > 0 ? attachments : null,
       parentId,
       parentType,
       isTracked,
@@ -232,13 +490,22 @@ router.post('/send', async (req, res) => {
         from: `${account.name} <${account.email}>`,
         to: to,
         subject: subject,
-        text: body || bodyText,
+        text: bodyText || body || (bodyHtml ? bodyHtml.replace(/<[^>]*>/g, '') : ''),
         html: bodyHtml || body || bodyText
       };
 
       // Add CC and BCC if provided
       if (cc) mailOptions.cc = cc;
       if (bcc) mailOptions.bcc = bcc;
+
+      // Add attachments if any
+      if (uploadedFiles.length > 0) {
+        mailOptions.attachments = uploadedFiles.map(file => ({
+          filename: file.originalname,
+          content: file.buffer,
+          contentType: file.mimetype
+        }));
+      }
 
       // Send email
       const info = await transporter.sendMail(mailOptions);
@@ -562,12 +829,16 @@ router.post('/sync', async (req, res) => {
                   console.log(`📝 Created thread for: ${threadSubject}`);
                 }
                 
-                // Create email with thread
+                // Create email with thread - preserve folder from sync (spam, drafts, sent, etc.)
+                // Set status correctly: draft if isDraft, sent if isSent (or received), otherwise 'sent'
+                const emailStatus = emailData.isDraft ? 'draft' : (emailData.isSent ? 'sent' : 'sent');
+                
                 await Email.create({
                   ...emailData,
                   threadId: thread.id,
                   emailAccountId: account.id,
-                  folder: 'inbox'
+                  folder: emailData.folder || 'inbox', // Preserve folder from sync instead of forcing 'inbox'
+                  status: emailStatus // Set status correctly to avoid 'draft' default
                 });
                 totalSynced++;
               }

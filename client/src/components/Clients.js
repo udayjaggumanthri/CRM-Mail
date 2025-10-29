@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
+import { useAuth } from '../contexts/AuthContext';
 import {
   PlusIcon,
   MagnifyingGlassIcon,
@@ -24,6 +25,7 @@ import {
 
 const Clients = () => {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   
   // State management
   const [searchTerm, setSearchTerm] = useState('');
@@ -81,15 +83,34 @@ const Clients = () => {
         return response.data;
       } catch (error) {
         console.error('Error fetching clients:', error);
-        throw error;
+        // Return empty data structure instead of throwing to prevent infinite loading
+        return { clients: [], total: 0, page: 1, limit: 50, totalPages: 0 };
       }
+    },
+    {
+      retry: 1, // Only retry once
+      staleTime: 2 * 60 * 1000, // Consider data fresh for 2 minutes
+      cacheTime: 5 * 60 * 1000, // Keep in cache for 5 minutes
+      // For Members, enable focus refetch for immediate updates when switching back to browser
+      refetchOnWindowFocus: user?.role === 'Member',
     }
   );
 
   // Fetch conferences for filter
   const { data: conferences } = useQuery('conferences', async () => {
-    const response = await axios.get('/api/conferences');
-    return response.data;
+    try {
+      const response = await axios.get('/api/conferences');
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching conferences:', error);
+      return []; // Return empty array on error
+    }
+  }, {
+    retry: 1,
+    staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+    cacheTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
+    // Ensure newly assigned conferences appear immediately for Members when switching back to browser
+    refetchOnWindowFocus: user?.role === 'Member',
   });
 
   // Ensure clients is always an array
@@ -699,7 +720,12 @@ const Clients = () => {
               <UserPlusIcon className="w-12 h-12 mx-auto" />
             </div>
             <h3 className="text-lg font-semibold text-gray-900 mb-2">No Clients Found</h3>
-            <p className="text-gray-600 mb-4">Get started by adding your first client</p>
+            <p className="text-gray-600 mb-4">
+              {conferences && conferences.length === 0 
+                ? "You haven't been assigned to any conferences yet. Contact your Team Lead to get access to conference data."
+                : "No clients match your current filters. Try adjusting your search criteria or add a new client."
+              }
+            </p>
             <button
               onClick={() => setShowAddForm(true)}
               className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"

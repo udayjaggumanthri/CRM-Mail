@@ -18,7 +18,7 @@ const EmailJobScheduler = require('./services/EmailJobScheduler');
 const { initDatabase } = require('./database/init');
 const { seedCleanData } = require('./database/cleanSeed');
 const { Organization, User, Role, Conference, Client, Email, EmailTemplate, FollowUpJob, EmailLog, EmailAccount, EmailFolder, EmailThread, sequelize } = require('./models');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 const EmailService = require('./services/EmailService');
 const emailRoutes = require('./routes/emailRoutes');
 const emailAccountRoutes = require('./routes/emailAccountRoutes');
@@ -290,12 +290,20 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // Register routes
+const { router: analyticsRoutes } = require('./routes/analyticsRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const taskRoutes = require('./routes/taskRoutes');
+const searchRoutes = require('./routes/searchRoutes');
 app.use('/api/emails', emailRoutes);
 app.use('/api/email-accounts', emailAccountRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/inbound', imapRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/search', searchRoutes);
 
 // Get clients for email compose
 app.get('/api/clients/for-email', authenticateToken, async (req, res) => {
@@ -304,27 +312,53 @@ app.get('/api/clients/for-email', authenticateToken, async (req, res) => {
       return res.status(503).json({ error: 'Database not initialized' });
     }
 
-    let clients;
+    let whereClause = {};
     
-    if (req.user.role === 'CEO') {
-      clients = await Client.findAll({
-        attributes: ['id', 'firstName', 'lastName', 'email', 'organizationName'],
-        limit: 100
+    // Role-based filtering: Filter by assigned conferences
+    if (req.user.role === 'TeamLead') {
+      // Get conferences assigned to this TeamLead
+      const assignedConferences = await Conference.findAll({
+        where: { assignedTeamLeadId: req.user.id },
+        attributes: ['id']
       });
-    } else if (req.user.role === 'TeamLead') {
-      clients = await Client.findAll({
-        where: { ownerUserId: req.user.id },
-        attributes: ['id', 'firstName', 'lastName', 'email', 'organizationName'],
-        limit: 100
+      const conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length > 0) {
+        whereClause.conferenceId = { [Op.in]: conferenceIds };
+        console.log(`🔒 TeamLead ${req.user.email} - Loading clients from ${conferenceIds.length} assigned conference(s) for email`);
+      } else {
+        console.log(`🔒 TeamLead ${req.user.email} has no assigned conferences - no clients for email`);
+        return res.json([]);
+      }
+    } else if (req.user.role === 'Member') {
+      // Get conferences where this Member is in assignedMemberIds
+      const assignedConferences = await Conference.findAll({
+        where: {
+          assignedMemberIds: { [Op.contains]: [req.user.id] }
+        },
+        attributes: ['id']
       });
-    } else {
-      clients = await Client.findAll({
-        where: { ownerUserId: req.user.id },
-        attributes: ['id', 'firstName', 'lastName', 'email', 'organizationName'],
-        limit: 50
-      });
+      const conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length > 0) {
+        whereClause.conferenceId = { [Op.in]: conferenceIds };
+        console.log(`🔒 Member ${req.user.email} - Loading clients from ${conferenceIds.length} assigned conference(s) for email`);
+      } else {
+        console.log(`🔒 Member ${req.user.email} has no assigned conferences - no clients for email`);
+        return res.json([]);
+      }
+    } else if (req.user.role === 'CEO') {
+      console.log(`👑 CEO ${req.user.email} - Loading all clients for email`);
     }
 
+    const clients = await Client.findAll({
+      where: whereClause,
+      attributes: ['id', 'firstName', 'lastName', 'email', 'organization'],
+      limit: 100,
+      order: [['createdAt', 'DESC']]
+    });
+
+    console.log(`📋 Found ${clients.length} client(s) for email compose`);
     res.json(clients);
   } catch (error) {
     console.error('Get clients for email error:', error);
@@ -495,15 +529,22 @@ app.get('/api/analytics/recent-activity', authenticateToken, async (req, res) =>
   }
 });
 
+// Optimized system status endpoint with caching
 app.get('/api/system/status', authenticateToken, async (req, res) => {
   try {
+    // Add cache headers for better performance
+    res.set({
+      'Cache-Control': 'private, max-age=60', // Cache for 1 minute
+      'ETag': '"system-status-v1"'
+    });
+
     res.json({
       status: 'healthy',
       database: 'connected',
-      services: {
-        email: 'active',
-        imap: 'active'
-      }
+      emailService: 'active',
+      followUpService: 'active',
+      realTimeSync: 'active',
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('System status error:', error);
@@ -511,8 +552,18 @@ app.get('/api/system/status', authenticateToken, async (req, res) => {
   }
 });
 
+// Optimized notifications endpoint with caching
 app.get('/api/notifications', authenticateToken, async (req, res) => {
   try {
+    const { limit = 10 } = req.query;
+    
+    // Add cache headers for better performance
+    res.set({
+      'Cache-Control': 'private, max-age=120', // Cache for 2 minutes
+      'ETag': `"notifications-${req.user.id}-v1"`
+    });
+
+    // Return empty array for now - can be enhanced later with actual notifications
     res.json([]);
   } catch (error) {
     console.error('Notifications error:', error);
@@ -652,123 +703,46 @@ app.get('/api/email-logs', authenticateToken, async (req, res) => {
   }
 });
 
-// Add missing email send endpoint
-app.post('/api/emails/send', authenticateToken, async (req, res) => {
-  try {
-    console.log('📧 Email send request body:', req.body);
-    console.log('📧 Email send request headers:', req.headers);
-    console.log('📧 Email send request method:', req.method);
-    console.log('📧 Authenticated user:', req.user);
-    
-    const { to, subject, body, cc, bcc, templateId, attachments, clientId, isDraft } = req.body;
-
-    // Validate required fields
-    if (!to || !subject || !body) {
-      console.log('❌ Missing required fields:', { to, subject, body });
-      return res.status(400).json({ 
-        error: 'Missing required fields: to, subject, and body are required',
-        details: { to: !!to, subject: !!subject, body: !!body }
-      });
-    }
-    
-    // Validate user authentication
-    if (!req.user || !req.user.id) {
-      console.log('❌ User not authenticated:', req.user);
-      return res.status(401).json({ 
-        error: 'User not authenticated. Please login first.' 
-      });
-    }
-    
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(to)) {
-      return res.status(400).json({ 
-        error: 'Invalid email format for recipient' 
-      });
-    }
-    
-    // Get the first available email account for sending
-    const emailAccount = await EmailAccount.findOne({
-      where: { isActive: true }
-    });
-    
-    if (!emailAccount) {
-      return res.status(400).json({ 
-        error: 'No active email account found. Please configure an email account first.' 
-      });
-    }
-
-    // Create email record
-    console.log('📧 Creating email with data:', {
-      to, subject, body, sentBy: req.user.id, emailAccountId: emailAccount.id
-    });
-    
-    const email = await Email.create({
-      to,
-      cc: cc || '',
-      bcc: bcc || '',
-      subject,
-      body,
-      templateId: templateId || null,
-      attachments: attachments || [],
-      clientId: clientId || null,
-      isDraft: isDraft || false,
-      status: isDraft ? 'draft' : 'sent',
-      sentBy: req.user.id,
-      emailAccountId: emailAccount.id
-    });
-    
-    console.log('✅ Email created successfully:', email.id);
-    
-    // Create email log
-    await EmailLog.create({
-      emailId: email.id,
-      action: 'sent',
-      status: 'success',
-      details: `Email sent to ${to}`,
-      sentBy: req.user.id
-    });
-    
-    res.json({
-      success: true,
-      message: 'Email sent successfully',
-      email: email
-    });
-  } catch (error) {
-    console.error('Send email error:', error);
-    console.error('Error details:', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack
-    });
-    
-    if (error.name === 'SequelizeValidationError') {
-      return res.status(400).json({ 
-        error: 'Validation error', 
-        details: error.errors.map(err => ({
-          field: err.path,
-          message: err.message,
-          value: err.value
-        }))
-      });
-    }
-    
-    res.status(500).json({ 
-      error: 'Internal server error',
-      details: error.message 
-    });
-  }
-});
-
-
-
+// Email send endpoint is handled by emailRoutes.js - removed duplicate endpoint here
 // Add missing conference endpoints
 app.get('/api/conferences', authenticateToken, async (req, res) => {
   try {
+    console.log(`🔍 API Call - User: ${req.user.email} (${req.user.role}) - ID: ${req.user.id}`);
+    
+    // Build where clause based on user role
+    let whereClause = {};
+
+    if (req.user.role === 'TeamLead') {
+      // TeamLead sees only conferences where they are assigned
+      whereClause.assignedTeamLeadId = req.user.id;
+      console.log(`🔒 TeamLead ${req.user.email} - Filtering conferences by assignedTeamLeadId: ${req.user.id}`);
+    } else if (req.user.role === 'Member') {
+      // Member sees only conferences where they are in assignedMemberIds array (JSON column)
+      // Use PostgreSQL JSON contains operator with proper casting
+      whereClause = sequelize.where(
+        sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+        '@>',
+        sequelize.cast(`["${req.user.id}"]`, 'jsonb')
+      );
+      console.log(`🔒 Member ${req.user.email} - Filtering conferences by assignedMemberIds contains: ${req.user.id}`);
+    } else if (req.user.role === 'CEO') {
+      // CEO sees all conferences (no filter)
+      console.log(`👑 CEO ${req.user.email} - Showing all conferences`);
+    } else {
+      // Default: no conferences for unknown roles
+      console.log(`⚠️ Unknown role ${req.user.role} - No conferences shown`);
+      return res.json([]);
+    }
+
     const conferences = await Conference.findAll({
+      where: whereClause,
       order: [['createdAt', 'DESC']],
       limit: 100
     });
+
+    console.log(`📋 Found ${conferences.length} conference(s) for ${req.user.role} ${req.user.email}`);
+    console.log(`📋 Conference names: ${conferences.map(c => c.name).join(', ')}`);
+    
     res.json(conferences);
   } catch (error) {
     console.error('Get conferences error:', error);
@@ -810,7 +784,26 @@ app.put('/api/conferences/:id', authenticateToken, async (req, res) => {
     if (!conference) {
       return res.status(404).json({ error: 'Conference not found' });
     }
+
+    // Role-based authorization check
+    if (req.user.role === 'TeamLead') {
+      // TeamLead can only edit conferences where they are assigned
+      if (conference.assignedTeamLeadId !== req.user.id) {
+        console.log(`🚫 TeamLead ${req.user.email} attempted to edit non-assigned conference ${conference.id}`);
+        return res.status(403).json({ error: 'You do not have permission to edit this conference' });
+      }
+    } else if (req.user.role === 'Member') {
+      // Member can only edit conferences where they are in assignedMemberIds
+      const assignedMemberIds = conference.assignedMemberIds || [];
+      if (!assignedMemberIds.includes(req.user.id)) {
+        console.log(`🚫 Member ${req.user.email} attempted to edit non-assigned conference ${conference.id}`);
+        return res.status(403).json({ error: 'You do not have permission to edit this conference' });
+      }
+    }
+    // CEO can edit all conferences (no check needed)
+
     await conference.update(req.body);
+    console.log(`✅ Conference ${conference.id} updated by ${req.user.role} ${req.user.email}`);
     res.json(conference);
   } catch (error) {
     console.error('Update conference error:', error);
@@ -824,7 +817,23 @@ app.delete('/api/conferences/:id', authenticateToken, async (req, res) => {
     if (!conference) {
       return res.status(404).json({ error: 'Conference not found' });
     }
+
+    // Role-based authorization check
+    if (req.user.role === 'TeamLead') {
+      // TeamLead can only delete conferences where they are assigned
+      if (conference.assignedTeamLeadId !== req.user.id) {
+        console.log(`🚫 TeamLead ${req.user.email} attempted to delete non-assigned conference ${conference.id}`);
+        return res.status(403).json({ error: 'You do not have permission to delete this conference' });
+      }
+    } else if (req.user.role === 'Member') {
+      // Member cannot delete conferences (read/update only)
+      console.log(`🚫 Member ${req.user.email} attempted to delete conference ${conference.id}`);
+      return res.status(403).json({ error: 'Members do not have permission to delete conferences' });
+    }
+    // CEO can delete all conferences (no check needed)
+
     await conference.destroy();
+    console.log(`✅ Conference ${conference.id} deleted by ${req.user.role} ${req.user.email}`);
     res.json({ success: true, message: 'Conference deleted successfully' });
   } catch (error) {
     console.error('Delete conference error:', error);
@@ -1056,28 +1065,70 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 
 // Remove duplicate auth/me endpoint - already defined above
 
-// Add missing dashboard endpoint
+// Optimized dashboard endpoint with parallel queries and caching
 app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
     const { timeRange = '7d', conferenceId = 'all' } = req.query;
     
-    // Get basic statistics
-    const totalClients = await Client.count();
-    const totalConferences = await Conference.count();
-    const totalEmails = await EmailLog.count();
+    // Build where clauses based on role
+    let conferenceWhere = {};
+    let clientWhere = {};
+    let emailWhere = {};
     
-    // Get recent activity - handle case when no clients exist
-    let recentClients = [];
-    try {
-      recentClients = await Client.findAll({
+    // Role-based filtering - optimized with single query
+    let conferenceIds = [];
+    if (req.user.role === 'TeamLead') {
+      const assignedConferences = await Conference.findAll({
+        where: { assignedTeamLeadId: req.user.id },
+        attributes: ['id']
+      });
+      conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length > 0) {
+        conferenceWhere.id = { [Op.in]: conferenceIds };
+        clientWhere.conferenceId = { [Op.in]: conferenceIds };
+        emailWhere.conferenceId = { [Op.in]: conferenceIds };
+      }
+      
+      console.log(`🔒 TeamLead dashboard - ${conferenceIds.length} assigned conference(s)`);
+    } else if (req.user.role === 'Member') {
+      const assignedConferences = await Conference.findAll({
+        where: {
+          assignedMemberIds: { [Op.contains]: [req.user.id] }
+        },
+        attributes: ['id']
+      });
+      conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length > 0) {
+        conferenceWhere.id = { [Op.in]: conferenceIds };
+        clientWhere.conferenceId = { [Op.in]: conferenceIds };
+        emailWhere.conferenceId = { [Op.in]: conferenceIds };
+      }
+      
+      console.log(`🔒 Member dashboard - ${conferenceIds.length} assigned conference(s)`);
+    } else if (req.user.role === 'CEO') {
+      console.log(`👑 CEO dashboard - All system data`);
+    }
+    
+    // Run all queries in parallel for better performance
+    const [totalClients, totalConferences, totalEmails, recentClients] = await Promise.all([
+      Client.count({ where: clientWhere }),
+      Conference.count({ where: conferenceWhere }),
+      EmailLog.count({ where: emailWhere }),
+      Client.findAll({
+        where: clientWhere,
         limit: 5,
         order: [['createdAt', 'DESC']],
         attributes: ['id', 'firstName', 'lastName', 'email', 'status', 'createdAt']
+      }).catch(() => []) // Return empty array on error
+    ]);
+
+    // Add cache headers for better performance
+    res.set({
+      'Cache-Control': 'private, max-age=300', // Cache for 5 minutes
+      'ETag': `"${req.user.id}-${Date.now()}"`
     });
-  } catch (error) {
-      console.log('No clients found or error fetching clients:', error.message);
-      recentClients = [];
-    }
 
     res.json({ 
       totalClients,
@@ -1085,7 +1136,9 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
       totalEmails,
       recentClients,
       timeRange,
-      conferenceId
+      conferenceId,
+      userRole: req.user.role,
+      cached: false
     });
   } catch (error) {
     console.error('Dashboard error:', error);

@@ -14,6 +14,9 @@ const EmailThread = require('./EmailThread');
 const Campaign = require('./Campaign');
 const Notification = require('./Notification');
 const AuditLog = require('./AuditLog');
+const ClientNote = require('./ClientNote');
+const Task = require('./Task');
+const SearchPreset = require('./SearchPreset');
 
 // Define relationships
 // Organization relationships
@@ -84,6 +87,37 @@ FollowUpJob.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
 
 Client.hasMany(EmailLog, { foreignKey: 'clientId', as: 'emailLogs' });
 EmailLog.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
+
+// ClientNote relationships
+Client.hasMany(ClientNote, { foreignKey: 'clientId', as: 'clientNotes' });
+ClientNote.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
+
+User.hasMany(ClientNote, { foreignKey: 'authorId', as: 'clientNotes' });
+ClientNote.belongsTo(User, { foreignKey: 'authorId', as: 'author' });
+
+// Task relationships
+Organization.hasMany(Task, { foreignKey: 'organizationId', as: 'tasks' });
+Task.belongsTo(Organization, { foreignKey: 'organizationId', as: 'organization' });
+
+User.hasMany(Task, { foreignKey: 'assignedToId', as: 'assignedTasks' });
+Task.belongsTo(User, { foreignKey: 'assignedToId', as: 'assignedTo' });
+
+User.hasMany(Task, { foreignKey: 'assignedById', as: 'createdTasks' });
+Task.belongsTo(User, { foreignKey: 'assignedById', as: 'assignedBy' });
+
+User.hasMany(Task, { foreignKey: 'completedById', as: 'completedTasks' });
+Task.belongsTo(User, { foreignKey: 'completedById', as: 'completedBy' });
+
+// Self-referencing for subtasks
+Task.hasMany(Task, { foreignKey: 'parentTaskId', as: 'subtasks' });
+Task.belongsTo(Task, { foreignKey: 'parentTaskId', as: 'parentTask' });
+
+// SearchPreset relationships
+Organization.hasMany(SearchPreset, { foreignKey: 'organizationId', as: 'searchPresets' });
+SearchPreset.belongsTo(Organization, { foreignKey: 'organizationId', as: 'organization' });
+
+User.hasMany(SearchPreset, { foreignKey: 'userId', as: 'searchPresets' });
+SearchPreset.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 // Email relationships
 Email.hasMany(EmailLog, { foreignKey: 'emailId', as: 'logs' });
@@ -156,5 +190,8 @@ module.exports = {
   EmailThread,
   Campaign,
   Notification,
-  AuditLog
+  AuditLog,
+  ClientNote,
+  Task,
+  SearchPreset
 };

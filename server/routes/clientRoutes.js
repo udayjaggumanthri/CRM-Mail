@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { Client, Conference, EmailTemplate, EmailLog, EmailAccount, Email, FollowUpJob } = require('../models');
-const { Op } = require('sequelize');
+const { Client, Conference, EmailTemplate, EmailLog, EmailAccount, Email, FollowUpJob, ClientNote, User } = require('../models');
+const { Op, sequelize } = require('sequelize');
 const jwt = require('jsonwebtoken');
 const EmailService = require('../services/EmailService');
 const TemplateEngine = require('../services/TemplateEngine');
 const FollowUpAutomation = require('../services/FollowUpAutomation');
+const clientNoteRoutes = require('./clientNoteRoutes');
 
 // JWT Secret from environment or default
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -36,7 +37,9 @@ router.get('/', authenticateToken, async (req, res) => {
       conferenceId, 
       status, 
       country, 
-      search, 
+      search,
+      ownerUserId, // Filter by owner
+      myClients, // Show only my owned clients
       sortBy = 'createdAt', 
       sortOrder = 'DESC',
       page = 1,
@@ -45,6 +48,47 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Build where clause
     const whereClause = {};
+    
+    // Role-based filtering: TeamLeads and Members only see clients from their assigned conferences
+    if (req.user.role === 'TeamLead') {
+      // Get conferences assigned to this TeamLead
+      const assignedConferences = await Conference.findAll({
+        where: { assignedTeamLeadId: req.user.id },
+        attributes: ['id']
+      });
+      const conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length === 0) {
+        // TeamLead has no assigned conferences, return empty list
+        console.log(`🔒 TeamLead ${req.user.email} has no assigned conferences`);
+        return res.json({ clients: [], total: 0, page: 1, limit: parseInt(limit), totalPages: 0 });
+      }
+      
+      whereClause.conferenceId = { [Op.in]: conferenceIds };
+      console.log(`🔒 TeamLead ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s)`);
+    } else if (req.user.role === 'Member') {
+      // Get conferences where this Member is in assignedMemberIds (JSON column)
+      const assignedConferences = await Conference.findAll({
+        where: sequelize.where(
+          sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+          '@>',
+          sequelize.cast(`["${req.user.id}"]`, 'jsonb')
+        ),
+        attributes: ['id']
+      });
+      const conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length === 0) {
+        // Member has no assigned conferences, return empty list
+        console.log(`🔒 Member ${req.user.email} has no assigned conferences`);
+        return res.json({ clients: [], total: 0, page: 1, limit: parseInt(limit), totalPages: 0 });
+      }
+      
+      whereClause.conferenceId = { [Op.in]: conferenceIds };
+      console.log(`🔒 Member ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s)`);
+    } else if (req.user.role === 'CEO') {
+      console.log(`👑 CEO ${req.user.email} - Showing all clients`);
+    }
     
     if (conferenceId) {
       whereClause.conferenceId = conferenceId;
@@ -56,6 +100,18 @@ router.get('/', authenticateToken, async (req, res) => {
     
     if (country && country !== 'All Countries') {
       whereClause.country = country;
+    }
+
+    // Filter by owner
+    if (ownerUserId) {
+      whereClause.ownerUserId = ownerUserId;
+      console.log(`🔍 Filtering clients by owner: ${ownerUserId}`);
+    }
+
+    // "My Clients" filter - show only clients owned by logged-in user
+    if (myClients === 'true') {
+      whereClause.ownerUserId = req.user.id;
+      console.log(`👤 Showing only my clients for ${req.user.email}`);
     }
     
     if (search) {
@@ -78,10 +134,12 @@ router.get('/', authenticateToken, async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(limit)
     });
 
-    // Manually fetch conferences for each client
+    // Manually fetch conferences and owners for each client
     const clients = [];
     for (const client of clientsRaw) {
       const clientData = client.toJSON();
+      
+      // Fetch conference data
       if (clientData.conferenceId) {
         const conference = await Conference.findByPk(clientData.conferenceId, {
           attributes: ['id', 'name', 'startDate', 'endDate'],
@@ -91,6 +149,18 @@ router.get('/', authenticateToken, async (req, res) => {
       } else {
         clientData.conference = null;
       }
+
+      // Fetch owner data
+      if (clientData.ownerUserId) {
+        const owner = await User.findByPk(clientData.ownerUserId, {
+          attributes: ['id', 'name', 'email', 'role'],
+          raw: true
+        });
+        clientData.owner = owner || null;
+      } else {
+        clientData.owner = null;
+      }
+
       clients.push(clientData);
     }
 
@@ -123,6 +193,26 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
+    }
+
+    // Role-based authorization check
+    if (req.user.role !== 'CEO' && client.conferenceId) {
+      const conference = await Conference.findByPk(client.conferenceId);
+      if (conference) {
+        let hasAccess = false;
+        
+        if (req.user.role === 'TeamLead') {
+          hasAccess = conference.assignedTeamLeadId === req.user.id;
+        } else if (req.user.role === 'Member') {
+          const assignedMemberIds = conference.assignedMemberIds || [];
+          hasAccess = assignedMemberIds.includes(req.user.id);
+        }
+        
+        if (!hasAccess) {
+          console.log(`🚫 ${req.user.role} ${req.user.email} attempted to view client from non-assigned conference`);
+          return res.status(403).json({ error: 'You do not have permission to view this client' });
+        }
+      }
     }
 
     res.json(client);
@@ -167,7 +257,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     console.log('📝 Creating client in database...');
     
-    // Create client
+    // Create client with owner assignment
     const client = await Client.create({
       firstName,
       lastName,
@@ -185,8 +275,11 @@ router.post('/', authenticateToken, async (req, res) => {
       lastEmailSent,
       nextEmailDate,
       manualEmailsCount: parseInt(manualEmailsCount) || 0,
-      organizationId: req.user.organizationId || null
+      organizationId: req.user.organizationId || null,
+      ownerUserId: req.body.ownerUserId || req.user.id // Assign to specified user or creator
     });
+
+    console.log(`👤 Client assigned to owner: ${client.ownerUserId}`);
 
     console.log(`✅ Client created: ${client.id}, Conference: ${conferenceId || 'None'}`);
 
@@ -236,6 +329,26 @@ router.put('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
+    // Role-based authorization check
+    if (req.user.role !== 'CEO' && client.conferenceId) {
+      const conference = await Conference.findByPk(client.conferenceId);
+      if (conference) {
+        let hasAccess = false;
+        
+        if (req.user.role === 'TeamLead') {
+          hasAccess = conference.assignedTeamLeadId === req.user.id;
+        } else if (req.user.role === 'Member') {
+          const assignedMemberIds = conference.assignedMemberIds || [];
+          hasAccess = assignedMemberIds.includes(req.user.id);
+        }
+        
+        if (!hasAccess) {
+          console.log(`🚫 ${req.user.role} ${req.user.email} attempted to update client from non-assigned conference`);
+          return res.status(403).json({ error: 'You do not have permission to update this client' });
+        }
+      }
+    }
+
     // Capture old status before update
     const oldStatus = client.status;
     
@@ -266,7 +379,28 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
+    // Role-based authorization check
+    if (req.user.role !== 'CEO' && client.conferenceId) {
+      const conference = await Conference.findByPk(client.conferenceId);
+      if (conference) {
+        let hasAccess = false;
+        
+        if (req.user.role === 'TeamLead') {
+          hasAccess = conference.assignedTeamLeadId === req.user.id;
+        } else if (req.user.role === 'Member') {
+          const assignedMemberIds = conference.assignedMemberIds || [];
+          hasAccess = assignedMemberIds.includes(req.user.id);
+        }
+        
+        if (!hasAccess) {
+          console.log(`🚫 ${req.user.role} ${req.user.email} attempted to delete client from non-assigned conference`);
+          return res.status(403).json({ error: 'You do not have permission to delete this client' });
+        }
+      }
+    }
+
     await client.destroy();
+    console.log(`✅ Client ${client.id} deleted by ${req.user.role} ${req.user.email}`);
     res.json({ message: 'Client deleted successfully' });
   } catch (error) {
     console.error('Error deleting client:', error);
@@ -304,6 +438,213 @@ router.post('/bulk-delete', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error bulk deleting clients:', error);
     res.status(500).json({ error: 'Failed to delete clients', details: error.message });
+  }
+});
+
+// PUT /api/clients/:id/assign - Assign/Reassign client to a user
+router.put('/:id/assign', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ownerUserId } = req.body;
+
+    if (!ownerUserId) {
+      return res.status(400).json({ error: 'Owner user ID is required' });
+    }
+
+    // Get the client
+    const client = await Client.findByPk(id);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    // Get the new owner
+    const newOwner = await User.findByPk(ownerUserId);
+    if (!newOwner) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Permission check for TeamLead - can only assign to subordinates
+    if (req.user.role === 'TeamLead') {
+      // Get subordinates of this TeamLead
+      const subordinates = await User.findAll({
+        where: { managerId: req.user.id },
+        attributes: ['id']
+      });
+      const subordinateIds = subordinates.map(u => u.id);
+      subordinateIds.push(req.user.id); // TeamLead can also assign to self
+      
+      if (!subordinateIds.includes(ownerUserId)) {
+        console.log(`🚫 TeamLead ${req.user.email} attempted to assign client to non-subordinate ${ownerUserId}`);
+        return res.status(403).json({ error: 'You can only assign clients to your team members' });
+      }
+    } else if (req.user.role === 'Member') {
+      // Members can only assign to themselves
+      if (ownerUserId !== req.user.id) {
+        console.log(`🚫 Member ${req.user.email} attempted to assign client to another user`);
+        return res.status(403).json({ error: 'Members can only assign clients to themselves' });
+      }
+    }
+    // CEO can assign to anyone (no check)
+
+    // Update client owner
+    await client.update({ ownerUserId });
+    console.log(`✅ Client ${client.id} assigned to user ${ownerUserId} by ${req.user.role} ${req.user.email}`);
+
+    // Create notification for the assigned user (if different from current user)
+    if (ownerUserId !== req.user.id) {
+      try {
+        const NotificationHelper = require('../utils/notificationHelper');
+        const assignedByUser = await User.findByPk(req.user.id, { attributes: ['id', 'name', 'email'] });
+        await NotificationHelper.notifyClientAssigned(ownerUserId, client, assignedByUser);
+      } catch (notifError) {
+        console.error('Error creating assignment notification:', notifError);
+        // Don't fail the assignment if notification fails
+      }
+    }
+
+    res.json({ 
+      message: 'Client assigned successfully', 
+      client: {
+        id: client.id,
+        ownerUserId: client.ownerUserId,
+        owner: {
+          id: newOwner.id,
+          name: newOwner.name,
+          email: newOwner.email
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error assigning client:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// POST /api/clients/bulk-assign - Assign multiple clients to a user
+router.post('/bulk-assign', authenticateToken, async (req, res) => {
+  try {
+    const { ids, ownerUserId } = req.body;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Invalid or empty client IDs array' });
+    }
+
+    if (!ownerUserId) {
+      return res.status(400).json({ error: 'Owner user ID is required' });
+    }
+
+    // Get the new owner
+    const newOwner = await User.findByPk(ownerUserId);
+    if (!newOwner) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Permission check for TeamLead
+    if (req.user.role === 'TeamLead') {
+      const subordinates = await User.findAll({
+        where: { managerId: req.user.id },
+        attributes: ['id']
+      });
+      const subordinateIds = subordinates.map(u => u.id);
+      subordinateIds.push(req.user.id);
+      
+      if (!subordinateIds.includes(ownerUserId)) {
+        return res.status(403).json({ error: 'You can only assign clients to your team members' });
+      }
+    } else if (req.user.role === 'Member') {
+      if (ownerUserId !== req.user.id) {
+        return res.status(403).json({ error: 'Members can only assign clients to themselves' });
+      }
+    }
+
+    // Update all clients
+    const updateResult = await Client.update(
+      { ownerUserId },
+      { where: { id: ids } }
+    );
+
+    console.log(`✅ Bulk assigned ${updateResult[0]} client(s) to user ${ownerUserId} by ${req.user.role} ${req.user.email}`);
+
+    // Create notification for the assigned user (if different from current user)
+    if (ownerUserId !== req.user.id && updateResult[0] > 0) {
+      try {
+        const NotificationHelper = require('../utils/notificationHelper');
+        const assignedByUser = await User.findByPk(req.user.id, { attributes: ['id', 'name', 'email'] });
+        await NotificationHelper.createNotification({
+          userId: ownerUserId,
+          title: 'Clients Assigned',
+          message: `${updateResult[0]} client(s) have been assigned to you by ${assignedByUser.name}`,
+          type: 'client_added',
+          data: {
+            clientCount: updateResult[0],
+            assignedBy: assignedByUser.name
+          },
+          priority: 'high',
+          link: '/clients?myClients=true'
+        });
+      } catch (notifError) {
+        console.error('Error creating bulk assignment notification:', notifError);
+      }
+    }
+
+    res.json({ 
+      message: `Successfully assigned ${updateResult[0]} client(s) to ${newOwner.name}`,
+      assignedCount: updateResult[0],
+      owner: {
+        id: newOwner.id,
+        name: newOwner.name,
+        email: newOwner.email
+      }
+    });
+  } catch (error) {
+    console.error('Error bulk assigning clients:', error);
+    res.status(500).json({ error: 'Failed to assign clients', details: error.message });
+  }
+});
+
+// GET /api/clients/assignable-users - Get users who can be assigned clients
+router.get('/assignable-users', authenticateToken, async (req, res) => {
+  try {
+    let users = [];
+    
+    if (req.user.role === 'CEO') {
+      // CEO can assign to anyone
+      users = await User.findAll({
+        where: { isActive: true },
+        attributes: ['id', 'name', 'email', 'role'],
+        order: [['name', 'ASC']]
+      });
+      console.log(`👑 CEO can assign to ${users.length} users`);
+    } else if (req.user.role === 'TeamLead') {
+      // TeamLead can assign to self and subordinates
+      const subordinates = await User.findAll({
+        where: { 
+          managerId: req.user.id,
+          isActive: true
+        },
+        attributes: ['id', 'name', 'email', 'role']
+      });
+      
+      // Include self
+      const self = await User.findByPk(req.user.id, {
+        attributes: ['id', 'name', 'email', 'role']
+      });
+      
+      users = [self, ...subordinates];
+      console.log(`🔒 TeamLead can assign to ${users.length} team member(s) (including self)`);
+    } else if (req.user.role === 'Member') {
+      // Member can only assign to self
+      const self = await User.findByPk(req.user.id, {
+        attributes: ['id', 'name', 'email', 'role']
+      });
+      users = [self];
+      console.log(`🔒 Member can only assign to self`);
+    }
+
+    res.json(users);
+  } catch (error) {
+    console.error('Error getting assignable users:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1225,6 +1566,9 @@ router.post('/bulk-upload', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Bulk upload failed', details: error.message });
   }
 });
+
+// Mount client note routes under /api/clients
+router.use('/', clientNoteRoutes);
 
 // Export router and workflow function
 module.exports = router;

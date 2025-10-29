@@ -15,8 +15,10 @@ import {
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '../contexts/AuthContext';
 
 const ConferenceManagement = () => {
+  const { user } = useAuth();
   const [showModal, setShowModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
@@ -92,20 +94,51 @@ const ConferenceManagement = () => {
 
   // Fetch conferences with React Query
   const { data: conferences = [], isLoading, error, refetch } = useQuery('conferences', async () => {
-    const response = await axios.get('/api/conferences');
-    return response.data;
+    try {
+      const response = await axios.get('/api/conferences');
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching conferences:', error);
+      return []; // Return empty array on error
+    }
+  }, {
+    retry: 1,
+    staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+    cacheTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
+    // For Members, enable focus refetch for immediate updates when switching back to browser
+    refetchOnWindowFocus: user?.role === 'Member',
   });
 
   // Fetch templates with React Query
   const { data: templates = [], isLoading: templatesLoading } = useQuery('templates', async () => {
-    const response = await axios.get('/api/templates');
-    return response.data;
+    try {
+      const response = await axios.get('/api/templates');
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching templates:', error);
+      return []; // Return empty array on error
+    }
+  }, {
+    retry: 1,
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   // Fetch users for team assignment
   const { data: users = [] } = useQuery('users', async () => {
-    const response = await axios.get('/api/users');
-    return response.data.users || [];
+    try {
+      const response = await axios.get('/api/users');
+      return response.data.users || [];
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      return []; // Return empty array on error
+    }
+  }, {
+    retry: 1,
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   // Create conference mutation
@@ -701,10 +734,12 @@ const ConferenceManagement = () => {
           <p className="mt-1 text-sm text-gray-500">
             {searchTerm || filterStatus !== 'all' 
               ? 'Try adjusting your search or filter criteria.'
-              : 'Get started by creating a new conference.'
+              : conferences.length === 0
+                ? "You haven't been assigned to any conferences yet. Contact your Team Lead to get access to conference data."
+                : 'Get started by creating a new conference.'
             }
           </p>
-          {!searchTerm && filterStatus === 'all' && (
+          {!searchTerm && filterStatus === 'all' && conferences.length > 0 && (
             <div className="mt-6">
               <button
                 onClick={handleCreate}

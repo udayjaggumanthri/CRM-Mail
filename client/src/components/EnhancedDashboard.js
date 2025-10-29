@@ -28,9 +28,9 @@ const EnhancedDashboard = () => {
   const queryClient = useQueryClient();
   const [selectedTimeRange, setSelectedTimeRange] = useState('7d');
   const [selectedConference, setSelectedConference] = useState('all');
-  const [refreshInterval, setRefreshInterval] = useState(30000); // 30 seconds
+  const [refreshInterval, setRefreshInterval] = useState(5 * 60 * 1000); // 5 minutes instead of 30 seconds
 
-  // Fetch dashboard data
+  // Fetch dashboard data with optimized loading
   const { data: dashboardData, isLoading: dashboardLoading, error: dashboardError } = useQuery(
     ['dashboard', selectedTimeRange, selectedConference],
     async () => {
@@ -41,11 +41,14 @@ const EnhancedDashboard = () => {
     },
     {
       refetchInterval: refreshInterval,
-      refetchOnWindowFocus: true
+      refetchOnWindowFocus: false, // Disable auto-refresh on focus to improve performance
+      staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+      cacheTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
+      retry: 2 // Reduce retries for faster failure handling
     }
   );
 
-  // Fetch analytics data
+  // Fetch analytics data only for CEO users
   const { data: analyticsData, isLoading: analyticsLoading } = useQuery(
     ['analytics', selectedTimeRange],
     async () => {
@@ -53,11 +56,13 @@ const EnhancedDashboard = () => {
       return response.data;
     },
     {
-      enabled: user?.role === 'CEO'
+      enabled: user?.role === 'CEO', // Only fetch for CEO users
+      staleTime: 10 * 60 * 1000, // Analytics data can be stale for 10 minutes
+      cacheTime: 15 * 60 * 1000
     }
   );
 
-  // Fetch system status
+  // Fetch system status with reduced frequency
   const { data: systemStatus, isLoading: statusLoading } = useQuery(
     'system-status',
     async () => {
@@ -65,40 +70,61 @@ const EnhancedDashboard = () => {
       return response.data;
     },
     {
-      refetchInterval: 60000 // 1 minute
+      refetchInterval: 5 * 60 * 1000, // Reduced to 5 minutes
+      staleTime: 2 * 60 * 1000, // Consider fresh for 2 minutes
+      cacheTime: 10 * 60 * 1000
     }
   );
 
-  // Fetch notifications
-  const { data: notifications, isLoading: notificationsLoading } = useQuery(
+  // Fetch notifications with optimized settings
+  const { data: notifications, isLoading: notificationsLoading, error: notificationsError } = useQuery(
     'notifications',
     async () => {
-      const response = await axios.get('/api/notifications', {
-        params: { limit: 10 }
-      });
-      return response.data;
+      try {
+        const response = await axios.get('/api/notifications', {
+          params: { limit: 10 }
+        });
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching notifications:', error);
+        return []; // Return empty array on error
+      }
+    },
+    {
+      refetchInterval: 2 * 60 * 1000, // Reduced to 2 minutes
+      refetchOnWindowFocus: false, // Disable auto-refresh on focus
+      staleTime: 1 * 60 * 1000, // Consider fresh for 1 minute
+      cacheTime: 5 * 60 * 1000,
+      retry: 1 // Only retry once on failure
     }
   );
 
-  // Fetch recent activity
+  // Fetch recent activity with lazy loading
   const { data: recentActivity, isLoading: activityLoading } = useQuery(
     'recent-activity',
     async () => {
       const response = await axios.get('/api/analytics/recent-activity');
       return response.data;
+    },
+    {
+      enabled: !dashboardLoading, // Only fetch after dashboard loads
+      staleTime: 5 * 60 * 1000,
+      cacheTime: 10 * 60 * 1000
     }
   );
 
-  // Auto-refresh functionality
+  // Optimized auto-refresh functionality
   useEffect(() => {
     const interval = setInterval(() => {
+      // Only refresh essential data, not all queries
       queryClient.invalidateQueries(['dashboard']);
-      queryClient.invalidateQueries(['analytics']);
-      queryClient.invalidateQueries(['system-status']);
+      if (user?.role === 'CEO') {
+        queryClient.invalidateQueries(['analytics']);
+      }
     }, refreshInterval);
 
     return () => clearInterval(interval);
-  }, [refreshInterval, queryClient]);
+  }, [refreshInterval, queryClient, user?.role]);
 
   // Manual refresh
   const handleRefresh = () => {
@@ -128,10 +154,14 @@ const EnhancedDashboard = () => {
     }
   };
 
-  if (dashboardLoading || analyticsLoading || statusLoading) {
+  // Show loading only for essential data, allow partial rendering
+  if (dashboardLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600"></div>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading dashboard...</p>
+        </div>
       </div>
     );
   }
@@ -182,28 +212,46 @@ const EnhancedDashboard = () => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold text-gray-900">System Status</h2>
-            <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${status.database === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-              <span className="text-sm text-gray-600">Database</span>
-            </div>
+            {statusLoading ? (
+              <div className="animate-pulse flex items-center space-x-2">
+                <div className="w-3 h-3 rounded-full bg-gray-300"></div>
+                <div className="h-4 w-16 bg-gray-300 rounded"></div>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <div className={`w-3 h-3 rounded-full ${status.database === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className="text-sm text-gray-600">Database</span>
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="flex items-center space-x-3">
-              <div className={`w-3 h-3 rounded-full ${status.emailService === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-              <span className="text-sm text-gray-600">Email Service</span>
-            </div>
-            <div className="flex items-center space-x-3">
-              <div className={`w-3 h-3 rounded-full ${status.followUpService === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-              <span className="text-sm text-gray-600">Follow-up Service</span>
-            </div>
-            <div className="flex items-center space-x-3">
-              <div className={`w-3 h-3 rounded-full ${status.realTimeSync === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-              <span className="text-sm text-gray-600">Real-time Sync</span>
-            </div>
-            <div className="flex items-center space-x-3">
-              <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-              <span className="text-sm text-gray-600">Last Updated: {new Date(status.timestamp).toLocaleTimeString()}</span>
-            </div>
+            {statusLoading ? (
+              [...Array(4)].map((_, i) => (
+                <div key={i} className="flex items-center space-x-3">
+                  <div className="w-3 h-3 rounded-full bg-gray-300 animate-pulse"></div>
+                  <div className="h-4 w-20 bg-gray-300 rounded animate-pulse"></div>
+                </div>
+              ))
+            ) : (
+              <>
+                <div className="flex items-center space-x-3">
+                  <div className={`w-3 h-3 rounded-full ${status.emailService === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                  <span className="text-sm text-gray-600">Email Service</span>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <div className={`w-3 h-3 rounded-full ${status.followUpService === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                  <span className="text-sm text-gray-600">Follow-up Service</span>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <div className={`w-3 h-3 rounded-full ${status.realTimeSync === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                  <span className="text-sm text-gray-600">Real-time Sync</span>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                  <span className="text-sm text-gray-600">Last Updated: {status.timestamp ? new Date(status.timestamp).toLocaleTimeString() : 'N/A'}</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -334,15 +382,29 @@ const EnhancedDashboard = () => {
         <div className="bg-white rounded-lg shadow p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Activity</h3>
           <div className="space-y-4">
-            {recentActivity?.map((activity, index) => (
-              <div key={index} className="flex items-center space-x-3">
-                <div className="w-2 h-2 bg-primary-600 rounded-full"></div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-900">{activity.description}</p>
-                  <p className="text-xs text-gray-500">{activity.timestamp}</p>
-                </div>
+            {activityLoading ? (
+              <div className="space-y-3">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="flex items-center space-x-3">
+                    <div className="w-2 h-2 bg-gray-300 rounded-full animate-pulse"></div>
+                    <div className="flex-1">
+                      <div className="h-4 bg-gray-300 rounded animate-pulse mb-1"></div>
+                      <div className="h-3 bg-gray-200 rounded animate-pulse w-1/3"></div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            )) || (
+            ) : recentActivity?.length > 0 ? (
+              recentActivity.map((activity, index) => (
+                <div key={index} className="flex items-center space-x-3">
+                  <div className="w-2 h-2 bg-primary-600 rounded-full"></div>
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-900">{activity.description}</p>
+                    <p className="text-xs text-gray-500">{activity.timestamp}</p>
+                  </div>
+                </div>
+              ))
+            ) : (
               <div className="text-center py-8">
                 <Activity className="w-12 h-12 text-gray-400 mx-auto mb-2" />
                 <p className="text-gray-500">No recent activity</p>
@@ -358,19 +420,34 @@ const EnhancedDashboard = () => {
             <Bell className="w-5 h-5 text-gray-400" />
           </div>
           <div className="space-y-4">
-            {notifications?.map((notification, index) => (
-              <div key={index} className="flex items-start space-x-3">
-                <div className={`w-2 h-2 rounded-full mt-2 ${
-                  notification.priority === 'high' ? 'bg-red-500' :
-                  notification.priority === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
-                }`}></div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-900">{notification.title}</p>
-                  <p className="text-xs text-gray-500">{notification.message}</p>
-                  <p className="text-xs text-gray-400">{notification.createdAt}</p>
-                </div>
+            {notificationsLoading ? (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                <p className="text-gray-500">Loading notifications...</p>
               </div>
-            )) || (
+            ) : notificationsError ? (
+              <div className="text-center py-8">
+                <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-2" />
+                <p className="text-red-500">Failed to load notifications</p>
+                <p className="text-xs text-gray-400 mt-1">Please refresh the page</p>
+              </div>
+            ) : Array.isArray(notifications) && notifications.length > 0 ? (
+              notifications.map((notification, index) => (
+                <div key={notification.id || index} className="flex items-start space-x-3">
+                  <div className={`w-2 h-2 rounded-full mt-2 ${
+                    notification.priority === 'high' ? 'bg-red-500' :
+                    notification.priority === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
+                  }`}></div>
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-900">{notification.title || notification.message}</p>
+                    <p className="text-xs text-gray-500">{notification.message}</p>
+                    <p className="text-xs text-gray-400">
+                      {notification.createdAt ? new Date(notification.createdAt).toLocaleDateString() : ''}
+                    </p>
+                  </div>
+                </div>
+              ))
+            ) : (
               <div className="text-center py-8">
                 <Bell className="w-12 h-12 text-gray-400 mx-auto mb-2" />
                 <p className="text-gray-500">No notifications</p>

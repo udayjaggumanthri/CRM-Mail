@@ -24,17 +24,59 @@ router.get('/stats', requireRole(['CEO', 'TeamLead', 'Member']), async (req, res
     let whereClause = {};
     if (conferenceId) whereClause.conferenceId = conferenceId;
 
-    // Role-based filtering
-    if (req.user.role === 'Member') {
-      whereClause.ownerUserId = req.user.id;
-    } else if (req.user.role === 'TeamLead') {
-      // Get subordinates' client IDs
-      const subordinates = await User.findAll({
-        where: { managerId: req.user.id },
+    // Role-based filtering by assigned conferences
+    if (req.user.role === 'TeamLead') {
+      // Get conferences assigned to this TeamLead
+      const assignedConferences = await Conference.findAll({
+        where: { assignedTeamLeadId: req.user.id },
         attributes: ['id']
       });
-      const subordinateIds = subordinates.map(sub => sub.id);
-      whereClause.ownerUserId = { [Op.in]: [req.user.id, ...subordinateIds] };
+      const conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length === 0) {
+        // No assigned conferences, return empty stats
+        return res.json({
+          totalClients: 0,
+          clientsByStatus: {},
+          followupStats: [],
+          emailStats: {},
+          campaignStats: {},
+          recentClients: [],
+          upcomingFollowups: []
+        });
+      }
+      
+      whereClause.conferenceId = { [Op.in]: conferenceIds };
+      console.log(`🔒 TeamLead dashboard - Filtering by ${conferenceIds.length} assigned conference(s)`);
+    } else if (req.user.role === 'Member') {
+      // Get conferences where this Member is in assignedMemberIds (JSON column)
+      const assignedConferences = await Conference.findAll({
+        where: sequelize.where(
+          sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+          '@>',
+          sequelize.cast(`["${req.user.id}"]`, 'jsonb')
+        ),
+        attributes: ['id']
+      });
+      const conferenceIds = assignedConferences.map(c => c.id);
+      
+      if (conferenceIds.length === 0) {
+        // No assigned conferences, return empty stats
+        return res.json({
+          totalClients: 0,
+          clientsByStatus: {},
+          followupStats: [],
+          emailStats: {},
+          campaignStats: {},
+          recentClients: [],
+          upcomingFollowups: []
+        });
+      }
+      
+      whereClause.conferenceId = { [Op.in]: conferenceIds };
+      console.log(`🔒 Member dashboard - Filtering by ${conferenceIds.length} assigned conference(s)`);
+    } else if (req.user.role === 'CEO') {
+      console.log(`👑 CEO dashboard - Showing all system data`);
     }
 
     // Basic client stats

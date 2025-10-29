@@ -9,8 +9,7 @@ const Notification = sequelize.define('Notification', {
   },
   userId: { 
     type: DataTypes.STRING, 
-    allowNull: false,
-    comment: 'User who receives the notification'
+    allowNull: false
   },
   type: { 
     type: DataTypes.ENUM(
@@ -35,8 +34,7 @@ const Notification = sequelize.define('Notification', {
   },
   data: { 
     type: DataTypes.JSON,
-    defaultValue: () => ({}),
-    comment: 'Additional notification data'
+    defaultValue: () => ({})
   },
   priority: { 
     type: DataTypes.ENUM('low', 'medium', 'high', 'urgent'), 

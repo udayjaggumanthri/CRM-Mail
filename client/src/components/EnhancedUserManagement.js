@@ -13,7 +13,10 @@ import {
   BuildingOfficeIcon,
   CheckCircleIcon,
   XCircleIcon,
-  ChevronDownIcon
+  ChevronDownIcon,
+  KeyIcon,
+  LockClosedIcon,
+  ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
@@ -27,6 +30,15 @@ const EnhancedUserManagement = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterRole, setFilterRole] = useState('all');
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [passwordData, setPasswordData] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+  const [passwordStep, setPasswordStep] = useState('change'); // 'change' or 'reset'
+  const [currentPasswordError, setCurrentPasswordError] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -121,6 +133,82 @@ const EnhancedUserManagement = () => {
       ...prev,
       [name]: value
     }));
+  };
+
+  const handlePasswordManagement = (user) => {
+    setSelectedUser(user);
+    setPasswordData({
+      currentPassword: '',
+      newPassword: '',
+      confirmPassword: ''
+    });
+    setPasswordStep('change');
+    setCurrentPasswordError('');
+    setShowPasswordModal(true);
+  };
+
+  const handlePasswordSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast.error('New passwords do not match');
+      return;
+    }
+
+    if (passwordData.newPassword.length < 6) {
+      toast.error('Password must be at least 6 characters long');
+      return;
+    }
+
+    try {
+      if (passwordStep === 'change') {
+        // Try to change password with current password
+        await axios.put(`/api/users/${selectedUser.id}/change-password`, {
+          currentPassword: passwordData.currentPassword,
+          newPassword: passwordData.newPassword
+        });
+        toast.success('Password changed successfully');
+        handleClosePasswordModal();
+      } else {
+        // Reset password without current password (CEO only)
+        await axios.put(`/api/users/${selectedUser.id}/reset-password`, {
+          newPassword: passwordData.newPassword
+        });
+        toast.success('Password reset successfully');
+        handleClosePasswordModal();
+      }
+    } catch (error) {
+      console.error('Error with password operation:', error);
+      
+      if (passwordStep === 'change' && error.response?.status === 400) {
+        // Current password is incorrect, offer reset option
+        setCurrentPasswordError('Current password is incorrect');
+        toast.error('Current password is incorrect. Would you like to reset the password instead?');
+      } else {
+        toast.error(error.response?.data?.error || 'Failed to update password');
+      }
+    }
+  };
+
+  const handleSwitchToReset = () => {
+    setPasswordStep('reset');
+    setCurrentPasswordError('');
+    setPasswordData(prev => ({
+      ...prev,
+      currentPassword: ''
+    }));
+  };
+
+  const handleClosePasswordModal = () => {
+    setShowPasswordModal(false);
+    setSelectedUser(null);
+    setPasswordData({
+      currentPassword: '',
+      newPassword: '',
+      confirmPassword: ''
+    });
+    setPasswordStep('change');
+    setCurrentPasswordError('');
   };
 
   const getRoleIcon = (role) => {
@@ -355,22 +443,36 @@ const EnhancedUserManagement = () => {
               </div>
 
               {/* Card Actions */}
-              <div className="px-6 pb-6 flex space-x-2">
-                <button
-                  onClick={() => handleEdit(user)}
-                  className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
-                >
-                  <PencilSquareIcon className="w-4 h-4 mr-2" />
-                  Edit
-                </button>
-                {user.role !== 'CEO' && (
+              <div className="px-6 pb-6">
+                {/* Primary Actions Row */}
+                <div className="flex space-x-2 mb-2">
                   <button
-                    onClick={() => handleDelete(user.id)}
-                    className="flex items-center justify-center px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors duration-200 font-medium"
+                    onClick={() => handleEdit(user)}
+                    className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
                   >
-                    <TrashIcon className="w-4 h-4" />
+                    <PencilSquareIcon className="w-4 h-4 mr-2" />
+                    Edit
                   </button>
-                )}
+                  {user.role !== 'CEO' && (
+                    <button
+                      onClick={() => handleDelete(user.id)}
+                      className="flex items-center justify-center px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors duration-200 font-medium"
+                    >
+                      <TrashIcon className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                
+                {/* Password Management Row */}
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => handlePasswordManagement(user)}
+                    className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
+                  >
+                    <KeyIcon className="w-4 h-4 mr-2" />
+                    Manage Password
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -477,8 +579,9 @@ const EnhancedUserManagement = () => {
                     required
                     className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 appearance-none bg-white cursor-pointer"
                   >
+                    {/* TeamLead can only create Member users */}
                     <option value="Member">Member</option>
-                    <option value="TeamLead">Team Lead</option>
+                    {user?.role === 'CEO' && <option value="TeamLead">Team Lead</option>}
                     {user?.role === 'CEO' && <option value="CEO">CEO</option>}
                   </select>
                 </div>
@@ -543,6 +646,149 @@ const EnhancedUserManagement = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Unified Password Management Modal */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  {passwordStep === 'change' ? 'Change Password' : 'Reset Password'}
+                </h2>
+                <button
+                  onClick={handleClosePasswordModal}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <XCircleIcon className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className={`mb-4 p-3 rounded-lg ${passwordStep === 'change' ? 'bg-blue-50' : 'bg-orange-50'}`}>
+                <p className={`text-sm ${passwordStep === 'change' ? 'text-blue-800' : 'text-orange-800'}`}>
+                  <strong>User:</strong> {selectedUser?.name} ({selectedUser?.email})
+                </p>
+              </div>
+
+              {passwordStep === 'reset' && (
+                <div className="mb-6 p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                  <div className="flex items-start">
+                    <ExclamationTriangleIcon className="w-5 h-5 text-yellow-600 mt-0.5 mr-3" />
+                    <div>
+                      <p className="text-sm text-yellow-800 font-medium">Password Reset</p>
+                      <p className="text-sm text-yellow-700 mt-1">
+                        This will set a new password for the user. They will need to use this new password to log in.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <form onSubmit={handlePasswordSubmit}>
+                <div className="space-y-4">
+                  {passwordStep === 'change' && (
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                        Current Password
+                      </label>
+                      <input
+                        type="password"
+                        value={passwordData.currentPassword}
+                        onChange={(e) => setPasswordData(prev => ({
+                          ...prev,
+                          currentPassword: e.target.value
+                        }))}
+                        className={`w-full px-4 py-3 border-2 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
+                          currentPasswordError 
+                            ? 'border-red-300 focus:ring-red-500' 
+                            : 'border-gray-200 focus:ring-green-500'
+                        }`}
+                        placeholder="Enter current password"
+                        required
+                      />
+                      {currentPasswordError && (
+                        <p className="text-red-500 text-sm mt-1">{currentPasswordError}</p>
+                      )}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      New Password
+                    </label>
+                    <input
+                      type="password"
+                      value={passwordData.newPassword}
+                      onChange={(e) => setPasswordData(prev => ({
+                        ...prev,
+                        newPassword: e.target.value
+                      }))}
+                      className={`w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
+                        passwordStep === 'change' ? 'focus:ring-green-500' : 'focus:ring-orange-500'
+                      }`}
+                      placeholder="Enter new password"
+                      required
+                      minLength={6}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Confirm New Password
+                    </label>
+                    <input
+                      type="password"
+                      value={passwordData.confirmPassword}
+                      onChange={(e) => setPasswordData(prev => ({
+                        ...prev,
+                        confirmPassword: e.target.value
+                      }))}
+                      className={`w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
+                        passwordStep === 'change' ? 'focus:ring-green-500' : 'focus:ring-orange-500'
+                      }`}
+                      placeholder="Confirm new password"
+                      required
+                      minLength={6}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-200">
+                  {passwordStep === 'change' && currentPasswordError && (
+                    <button
+                      type="button"
+                      onClick={handleSwitchToReset}
+                      className="px-4 py-2 text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 font-medium transition-colors duration-200"
+                    >
+                      Reset Instead
+                    </button>
+                  )}
+                  
+                  <div className="flex space-x-3 ml-auto">
+                    <button
+                      type="button"
+                      onClick={handleClosePasswordModal}
+                      className="px-6 py-3 text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200 font-semibold transition-colors duration-200"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className={`px-6 py-3 text-white rounded-xl font-semibold transition-all duration-200 shadow-lg hover:shadow-xl ${
+                        passwordStep === 'change' 
+                          ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700'
+                          : 'bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700'
+                      }`}
+                    >
+                      {passwordStep === 'change' ? 'Change Password' : 'Reset Password'}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       )}

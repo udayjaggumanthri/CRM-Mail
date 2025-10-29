@@ -105,12 +105,17 @@ router.get('/:id', authenticateToken, async (req, res) => {
 // POST /api/users - Create new user
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    // Only CEO can create users
+    // Only CEO and TeamLead can create users
     if (req.user.role !== 'CEO' && req.user.role !== 'TeamLead') {
       return res.status(403).json({ error: 'Only CEO and Team Leads can create users' });
     }
-    
+
     const { name, email, password, role, phone, department, jobTitle, position, managerId } = req.body;
+
+    // TeamLead can only create Member users (hard enforcement)
+    if (req.user.role === 'TeamLead' && role !== 'Member') {
+      return res.status(403).json({ error: 'Team Leads can only create users with Member role' });
+    }
     
     // Validate required fields
     if (!name || !email || !password || !role) {
@@ -131,7 +136,7 @@ router.post('/', authenticateToken, async (req, res) => {
       name,
       email,
       password: hashedPassword,
-      role,
+      role: req.user.role === 'TeamLead' ? 'Member' : role,
       phone,
       department,
       position: position || jobTitle, // Handle both field names
@@ -263,6 +268,90 @@ router.get('/stats/overview', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching user statistics:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// PUT /api/users/:id/change-password - Change user password
+router.put('/:id/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    const user = await User.findByPk(id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Access control - users can only change their own password, or CEO can change any password
+    if (req.user.role !== 'CEO' && req.user.id !== id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Verify current password
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isCurrentPasswordValid) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await user.update({ password: hashedNewPassword });
+
+    console.log(`✅ Password changed for user ${user.email} by ${req.user.email}`);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// PUT /api/users/:id/reset-password - Reset user password (no current password required)
+router.put('/:id/reset-password', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+
+    if (!newPassword) {
+      return res.status(400).json({ error: 'New password is required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    const user = await User.findByPk(id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Access control - only CEO can reset passwords
+    if (req.user.role !== 'CEO') {
+      return res.status(403).json({ error: 'Only CEO can reset user passwords' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await user.update({ password: hashedPassword });
+
+    console.log(`✅ Password reset for user ${user.email} by ${req.user.email}`);
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
     res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });

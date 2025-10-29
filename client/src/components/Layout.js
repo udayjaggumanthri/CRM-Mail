@@ -29,8 +29,8 @@ const Layout = () => {
     { name: 'Templates', href: '/templates', icon: FileText },
   ];
 
-  // Add Users management for CEO
-  if (user?.role === 'CEO') {
+  // Add Users management for CEO and TeamLead
+  if (user?.role === 'CEO' || user?.role === 'TeamLead') {
     navigation.splice(3, 0, { name: 'Users', href: '/users', icon: Users });
   }
 
