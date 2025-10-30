@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { Client, Conference, EmailTemplate, EmailLog, EmailAccount, Email, FollowUpJob, ClientNote, User } = require('../models');
-const { Op, sequelize } = require('sequelize');
+const { Op } = require('sequelize');
+const { sequelize } = require('../config/database');
 const jwt = require('jsonwebtoken');
 const EmailService = require('../services/EmailService');
 const TemplateEngine = require('../services/TemplateEngine');
@@ -68,24 +69,45 @@ router.get('/', authenticateToken, async (req, res) => {
       console.log(`🔒 TeamLead ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s)`);
     } else if (req.user.role === 'Member') {
       // Get conferences where this Member is in assignedMemberIds (JSON column)
-      const assignedConferences = await Conference.findAll({
-        where: sequelize.where(
+      // Handle both string and numeric storage of member IDs
+      const memberIdStr = String(req.user.id);
+      const memberIdNum = parseInt(req.user.id, 10);
+
+      const orConditions = [
+        sequelize.where(
           sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
           '@>',
-          sequelize.cast(`["${req.user.id}"]`, 'jsonb')
-        ),
+          sequelize.cast(`["${memberIdStr}"]`, 'jsonb')
+        )
+      ];
+      if (!Number.isNaN(memberIdNum)) {
+        orConditions.push(
+          sequelize.where(
+            sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+            '@>',
+            sequelize.cast(`[${memberIdNum}]`, 'jsonb')
+          )
+        );
+      }
+
+      const assignedConferences = await Conference.findAll({
+        where: { [Op.or]: orConditions },
         attributes: ['id']
       });
       const conferenceIds = assignedConferences.map(c => c.id);
       
       if (conferenceIds.length === 0) {
-        // Member has no assigned conferences, return empty list
-        console.log(`🔒 Member ${req.user.email} has no assigned conferences`);
-        return res.json({ clients: [], total: 0, page: 1, limit: parseInt(limit), totalPages: 0 });
+        // If no assigned conferences were detected, still allow showing owned clients
+        console.log(`🔒 Member ${req.user.email} has no detected assigned conferences. Falling back to owned clients.`);
+        whereClause.ownerUserId = req.user.id;
+      } else {
+        // Members see clients from assigned conferences OR clients they own
+        whereClause[Op.or] = [
+          { conferenceId: { [Op.in]: conferenceIds } },
+          { ownerUserId: req.user.id }
+        ];
+        console.log(`🔒 Member ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s) or owned by the member`);
       }
-      
-      whereClause.conferenceId = { [Op.in]: conferenceIds };
-      console.log(`🔒 Member ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s)`);
     } else if (req.user.role === 'CEO') {
       console.log(`👑 CEO ${req.user.email} - Showing all clients`);
     }
@@ -1516,14 +1538,17 @@ router.post('/bulk-upload', authenticateToken, async (req, res) => {
               email: row['Email'],
               phone: row['Phone'] || null,
               country: row['Country'] || null,
-              organization: row['Organization'] || null,
+              // Model uses organizationName; map CSV 'Organization' to it
+              organizationName: row['Organization'] || null,
               position: row['Position'] || null,
               status: status,
               conferenceId: conferenceId || null,
               currentStage: stage,
               manualEmailsCount: manualEmailsCount,
               notes: row['Notes'] || null,
-              organizationId: req.user.organizationId || null
+              organizationId: req.user.organizationId || null,
+              // Ensure visibility: set owner to uploader by default
+              ownerUserId: req.user.id
             });
             
             console.log(`✅ Created client: ${client.email} - Conference: ${conferenceId ? 'Yes' : 'None'}`);
