@@ -1,5 +1,23 @@
 import React, { useState } from 'react';
 import { Download, Upload, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import axios from 'axios';
+
+// Set up axios instance for file downloads
+const apiClient = axios.create({
+  baseURL: process.env.REACT_APP_API_URL || '',
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Add auth interceptor
+apiClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 function BulkUpload() {
   const [uploading, setUploading] = useState(false);
@@ -8,18 +26,14 @@ function BulkUpload() {
 
   const handleDownloadTemplate = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:3001/api/clients/template/download', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await apiClient.get('/api/clients/template/download', {
+        responseType: 'blob'
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to download template');
-      }
-
-      const blob = await response.blob();
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+      
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -30,7 +44,7 @@ function BulkUpload() {
       document.body.removeChild(a);
     } catch (error) {
       console.error('Error downloading template:', error);
-      alert('Failed to download template');
+      alert(error.response?.data?.error || 'Failed to download template');
     }
   };
 
@@ -59,25 +73,16 @@ function BulkUpload() {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:3001/api/clients/bulk-upload', {
-        method: 'POST',
+      const response = await apiClient.post('/api/clients/bulk-upload', formData, {
         headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData
+          'Content-Type': 'multipart/form-data'
+        }
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Upload failed');
-      }
-
-      setUploadResult(data.results);
+      setUploadResult(response.data.results);
       setSelectedFile(null);
       
-      if (data.results.success > 0) {
+      if (response.data.results.success > 0) {
         setTimeout(() => {
           window.location.href = '/clients';
         }, 3000);
@@ -87,7 +92,7 @@ function BulkUpload() {
       setUploadResult({
         success: 0,
         failed: 0,
-        errors: [error.message]
+        errors: [error.response?.data?.error || error.message]
       });
     } finally {
       setUploading(false);

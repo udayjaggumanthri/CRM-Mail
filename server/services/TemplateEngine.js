@@ -52,14 +52,16 @@ class TemplateEngine {
         const client = await Client.findByPk(clientId);
         
         if (client) {
-          const fullName = `${client.firstName || ''} ${client.lastName || ''}`.trim();
+          const fullName = (client.name || `${client.firstName || ''} ${client.lastName || ''}`).trim();
+          const first = fullName.split(' ')[0] || '';
+          const last = (() => { const p = fullName.split(' '); return p.length > 1 ? p.slice(1).join(' ') : ''; })();
           
           // Nested format (existing): client.firstName, client.email, etc.
           variables.client = {
             id: client.id,
             name: fullName,
-            firstName: client.firstName || '',
-            lastName: client.lastName || '',
+            firstName: first,
+            lastName: last,
             email: client.email || '',
             phone: client.phone || '',
             country: client.country || '',
@@ -77,8 +79,8 @@ class TemplateEngine {
 
           // Simple format (UI uses this): name, firstName, email, etc.
           variables.name = fullName;
-          variables.firstName = client.firstName || '';
-          variables.lastName = client.lastName || '';
+          variables.firstName = first;
+          variables.lastName = last;
           variables.email = client.email || '';
           variables.phone = client.phone || '';
           variables.country = client.country || '';
@@ -87,8 +89,8 @@ class TemplateEngine {
 
           // Underscore format (migrations use this): client_name, client_email, etc.
           variables.client_name = fullName;
-          variables.client_first_name = client.firstName || '';
-          variables.client_last_name = client.lastName || '';
+          variables.client_first_name = first;
+          variables.client_last_name = last;
           variables.client_email = client.email || '';
           variables.client_phone = client.phone || '';
           variables.client_country = client.country || '';

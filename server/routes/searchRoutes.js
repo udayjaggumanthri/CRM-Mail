@@ -86,8 +86,7 @@ router.post('/global', authenticateToken, async (req, res) => {
       const clientWhereClause = {
         organizationId: req.user.organizationId,
         [Op.or]: [
-          { firstName: { [Op.iLike]: `%${searchTerm}%` } },
-          { lastName: { [Op.iLike]: `%${searchTerm}%` } },
+          { name: { [Op.iLike]: `%${searchTerm}%` } },
           { email: { [Op.iLike]: `%${searchTerm}%` } },
           { organization: { [Op.iLike]: `%${searchTerm}%` } },
           { phone: { [Op.iLike]: `%${searchTerm}%` } },
@@ -231,7 +230,7 @@ router.post('/global', authenticateToken, async (req, res) => {
           {
             model: Client,
             as: 'client',
-            attributes: ['id', 'firstName', 'lastName', 'email']
+            attributes: ['id', 'name', 'email']
           }
         ],
         limit: Math.min(limit, 50),
@@ -307,7 +306,7 @@ router.post('/global', authenticateToken, async (req, res) => {
           {
             model: Client,
             as: 'client',
-            attributes: ['id', 'firstName', 'lastName', 'email']
+            attributes: ['id', 'name', 'email']
           },
           {
             model: User,
@@ -517,8 +516,7 @@ async function searchClientsAdvanced(user, query, filters, sortBy, sortOrder, li
   // Add text search
   if (query) {
     whereClause[Op.or] = [
-      { firstName: { [Op.iLike]: `%${query}%` } },
-      { lastName: { [Op.iLike]: `%${query}%` } },
+      { name: { [Op.iLike]: `%${query}%` } },
       { email: { [Op.iLike]: `%${query}%` } },
       { organization: { [Op.iLike]: `%${query}%` } },
       { phone: { [Op.iLike]: `%${query}%` } },
@@ -635,7 +633,7 @@ async function searchEmailsAdvanced(user, query, filters, sortBy, sortOrder, lim
   return await Email.findAll({
     where: whereClause,
     include: [
-      { model: Client, as: 'client', attributes: ['id', 'firstName', 'lastName', 'email'] }
+      { model: Client, as: 'client', attributes: ['id', 'name', 'email'] }
     ],
     limit,
     offset,

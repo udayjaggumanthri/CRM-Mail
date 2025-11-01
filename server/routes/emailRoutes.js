@@ -54,7 +54,7 @@ router.get('/suggestions', async (req, res) => {
 
     // Also check clients table for matching emails
     const clients = await Client.findAll({
-      attributes: ['email', 'firstName', 'lastName'],
+      attributes: ['email', 'name'],
       where: {
         email: { [Op.iLike]: searchPattern }
       },
@@ -275,7 +275,7 @@ router.get('/', async (req, res) => {
         { model: EmailAccount, as: 'emailAccount', attributes: ['id', 'name', 'email'] },
         { model: EmailFolder, as: 'emailFolder', attributes: ['id', 'name', 'type'] },
         { model: EmailThread, as: 'thread', attributes: ['id', 'subject'] },
-        { model: Client, as: 'client', attributes: ['id', 'firstName', 'lastName', 'email'] }
+        { model: Client, as: 'client', attributes: ['id', 'name', 'email'] }
       ],
       order: orderClause,
       limit: parsedLimit,
@@ -307,7 +307,7 @@ router.get('/:id', async (req, res) => {
         { model: EmailAccount, as: 'emailAccount', attributes: ['id', 'name', 'email'] },
         { model: EmailFolder, as: 'emailFolder', attributes: ['id', 'name', 'type'] },
         { model: EmailThread, as: 'thread', attributes: ['id', 'subject'] },
-        { model: Client, as: 'client', attributes: ['id', 'firstName', 'lastName', 'email'] },
+        { model: Client, as: 'client', attributes: ['id', 'name', 'email'] },
         { model: EmailLog, as: 'logs', order: [['timestamp', 'DESC']] }
       ]
     });
@@ -485,13 +485,35 @@ router.post('/send', upload.any(), async (req, res) => {
         }
       });
 
+      // Threading headers (add-only, preserve existing behavior when none found)
+      let threadingHeaders = {};
+      try {
+        const { clientId, conferenceId } = req.body || {};
+        if (clientId) {
+          const where = { clientId, status: 'sent' };
+          if (conferenceId) where.conferenceId = conferenceId;
+          const root = await Email.findOne({
+            where,
+            order: [['createdAt', 'ASC']],
+            attributes: ['messageId']
+          });
+          if (root?.messageId) {
+            threadingHeaders.inReplyTo = root.messageId;
+            threadingHeaders.references = root.messageId;
+          }
+        }
+      } catch (e) {
+        console.log('Threading lookup skipped:', e.message);
+      }
+
       // Prepare email options
       const mailOptions = {
         from: `${account.name} <${account.email}>`,
         to: to,
         subject: subject,
         text: bodyText || body || (bodyHtml ? bodyHtml.replace(/<[^>]*>/g, '') : ''),
-        html: bodyHtml || body || bodyText
+        html: bodyHtml || body || bodyText,
+        ...threadingHeaders
       };
 
       // Add CC and BCC if provided

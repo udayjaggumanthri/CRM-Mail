@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
@@ -18,7 +18,6 @@ import {
   CalendarIcon,
   MapPinIcon,
   EnvelopeIcon,
-  PhoneIcon,
   GlobeAltIcon,
   ArrowUpTrayIcon
 } from '@heroicons/react/24/outline';
@@ -27,6 +26,34 @@ const Clients = () => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   
+  // Full country list for searchable country picker in Add/Edit form
+  const ALL_COUNTRIES = useMemo(() => ([
+    'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina','Armenia','Australia','Austria','Azerbaijan',
+    'Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize','Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria','Burkina Faso','Burundi',
+    'Cabo Verde','Cambodia','Cameroon','Canada','Central African Republic','Chad','Chile','China','Colombia','Comoros','Congo (Congo-Brazzaville)','Costa Rica','Côte d’Ivoire','Croatia','Cuba','Cyprus','Czechia (Czech Republic)',
+    'Democratic Republic of the Congo','Denmark','Djibouti','Dominica','Dominican Republic',
+    'Ecuador','Egypt','El Salvador','Equatorial Guinea','Eritrea','Estonia','Eswatini (fmr. "Swaziland")','Ethiopia',
+    'Fiji','Finland','France',
+    'Gabon','Gambia','Georgia','Germany','Ghana','Greece','Grenada','Guatemala','Guinea','Guinea-Bissau','Guyana',
+    'Haiti','Holy See','Honduras','Hungary',
+    'Iceland','India','Indonesia','Iran','Iraq','Ireland','Israel','Italy',
+    'Jamaica','Japan','Jordan',
+    'Kazakhstan','Kenya','Kiribati','Kuwait','Kyrgyzstan',
+    'Laos','Latvia','Lebanon','Lesotho','Liberia','Libya','Liechtenstein','Lithuania','Luxembourg',
+    'Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Marshall Islands','Mauritania','Mauritius','Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco','Mozambique','Myanmar (formerly Burma)',
+    'Namibia','Nauru','Nepal','Netherlands','New Zealand','Nicaragua','Niger','Nigeria','North Korea','North Macedonia','Norway',
+    'Oman',
+    'Pakistan','Palau','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal',
+    'Qatar',
+    'Romania','Russia','Rwanda',
+    'Saint Kitts and Nevis','Saint Lucia','Saint Vincent and the Grenadines','Samoa','San Marino','Sao Tome and Principe','Saudi Arabia','Senegal','Serbia','Seychelles','Sierra Leone','Singapore','Slovakia','Slovenia','Solomon Islands','Somalia','South Africa','South Korea','South Sudan','Spain','Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria',
+    'Tajikistan','Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia','Turkey','Turkmenistan','Tuvalu',
+    'Uganda','Ukraine','United Arab Emirates','United Kingdom','United States of America','Uruguay','Uzbekistan',
+    'Vanuatu','Venezuela','Vietnam',
+    'Yemen',
+    'Zambia','Zimbabwe'
+  ]), []);
+
   // State management
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All Statuses');
@@ -50,24 +77,51 @@ const Clients = () => {
   const [uploadResult, setUploadResult] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
 
+  // Country combobox state (declared after formData below)
+
   // Form state
   const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
+    name: '',
     email: '',
-    phone: '',
     country: '',
-    organization: '',
-    position: '',
     status: 'Lead',
     currentStage: 'initial',
     conferenceId: '',
     notes: ''
   });
 
+  // Country combobox state (Add/Edit modal only) - placed after formData so it can read formData.country safely
+  const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
+  const [countryQuery, setCountryQuery] = useState('');
+  const countryRef = useRef(null);
+  const filteredCountries = useMemo(() => {
+    const q = (countryQuery || formData.country || '').trim().toLowerCase();
+    if (!q) return ALL_COUNTRIES;
+    return ALL_COUNTRIES.filter(c => c.toLowerCase().includes(q));
+  }, [ALL_COUNTRIES, countryQuery, formData.country]);
+
+  // Close country dropdown on outside click or Escape key
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (countryRef.current && !countryRef.current.contains(e.target)) {
+        setCountryDropdownOpen(false);
+      }
+    };
+    const handleKey = (e) => {
+      if (e.key === 'Escape') setCountryDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, []);
+
   // Fetch clients with advanced filtering
+  const [emailActivityFilter, setEmailActivityFilter] = useState('all');
   const { data: clientsData, isLoading, error: clientsError, refetch } = useQuery(
-    ['clients', conferenceFilter, statusFilter, countryFilter, searchTerm, sortBy, sortOrder],
+    ['clients', conferenceFilter, statusFilter, countryFilter, searchTerm, sortBy, sortOrder, emailActivityFilter],
     async () => {
       try {
         const params = new URLSearchParams();
@@ -77,6 +131,8 @@ const Clients = () => {
         if (searchTerm) params.append('search', searchTerm);
         params.append('sortBy', sortBy);
         params.append('sortOrder', sortOrder);
+        if (emailActivityFilter === 'today') params.append('emailFilter', 'today');
+        if (emailActivityFilter === 'upcoming') params.append('emailFilter', 'upcoming');
         
         const response = await axios.get(`/api/clients?${params.toString()}`);
         console.log('Clients API response:', response.data);
@@ -269,13 +325,9 @@ const Clients = () => {
   // Helper functions
   const resetForm = () => {
     setFormData({
-      firstName: '',
-      lastName: '',
+      name: '',
       email: '',
-      phone: '',
       country: '',
-      organization: '',
-      position: '',
       status: 'Lead',
       conferenceId: '',
       notes: ''
@@ -307,13 +359,9 @@ const Clients = () => {
   const handleEdit = (client) => {
     setSelectedClient(client);
     setFormData({
-      firstName: client.firstName || '',
-      lastName: client.lastName || '',
+      name: client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim(),
       email: client.email || '',
-      phone: client.phone || '',
       country: client.country || '',
-      organization: client.organization || '',
-      position: client.position || '',
       status: client.status || 'Lead',
       conferenceId: client.conferenceId || '',
       notes: client.notes || ''
@@ -327,7 +375,7 @@ const Clients = () => {
   };
 
   const handleDelete = (client) => {
-    if (window.confirm(`Are you sure you want to delete ${client.firstName} ${client.lastName}?`)) {
+    if (window.confirm(`Are you sure you want to delete ${client.name || (client.firstName + ' ' + client.lastName)}?`)) {
       deleteClientMutation.mutate(client.id);
     }
   };
@@ -372,14 +420,11 @@ const Clients = () => {
 
   const handleExport = () => {
     const csvContent = [
-      ['Name', 'Email', 'Phone', 'Country', 'Organization', 'Position', 'Status', 'Conference', 'Date Added'],
+      ['Name', 'Email', 'Country', 'Status', 'Conference', 'Date Added'],
       ...clients.map(client => [
-        `${client.firstName} ${client.lastName}`,
+        client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim(),
         client.email,
-        client.phone || '',
         client.country || '',
-        client.organization || '',
-        client.position || '',
         client.status,
         client.conference?.name || '',
         new Date(client.createdAt).toLocaleDateString()
@@ -483,9 +528,12 @@ const Clients = () => {
     return colors[status] || 'bg-gray-100 text-gray-800';
   };
 
-  const getInitials = (firstName, lastName) => {
-    return `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase();
-  };
+const getInitialsFromName = (name) => {
+  const parts = (name || '').trim().split(' ').filter(Boolean);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
+  return `${parts[0].charAt(0)}${parts[parts.length - 1].charAt(0)}`.toUpperCase();
+};
 
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
@@ -581,7 +629,7 @@ const Clients = () => {
         <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             {/* Search */}
-            <div className="relative">
+            <div className="relative" ref={countryRef}>
               <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
@@ -625,6 +673,17 @@ const Clients = () => {
               {conferences?.map(conference => (
                 <option key={conference.id} value={conference.id}>{conference.name}</option>
               ))}
+            </select>
+
+            {/* Email Activity Filter (additive) */}
+            <select
+              value={emailActivityFilter}
+              onChange={(e) => setEmailActivityFilter(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            >
+              <option value="all">All Activity</option>
+              <option value="today">Emails Sent Today</option>
+              <option value="upcoming">Upcoming Emails (7 days)</option>
             </select>
           </div>
 
@@ -787,26 +846,20 @@ const Clients = () => {
                           <div className="flex-shrink-0 h-10 w-10">
                           <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
                             <span className="text-sm font-medium text-primary-700">
-                                {getInitials(client.firstName, client.lastName)}
+                                {getInitialsFromName(client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim())}
                             </span>
                           </div>
                         </div>
                         <div className="ml-4">
                           <div className="text-sm font-medium text-gray-900">
-                            {client.firstName} {client.lastName}
+                            {client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim()}
                           </div>
-                            <div className="text-sm text-gray-500">
-                              {client.organization && `${client.organization}`}
-                              {client.position && ` • ${client.position}`}
-                          </div>
+                          <div className="text-sm text-gray-500"></div>
                         </div>
                       </div>
                     </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-900">{client.email}</div>
-                        {client.phone && (
-                          <div className="text-sm text-gray-500">{client.phone}</div>
-                        )}
                     </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center text-sm text-gray-900">
@@ -880,14 +933,14 @@ const Clients = () => {
                   <div className="flex items-center">
                     <div className="h-12 w-12 rounded-full bg-primary-100 flex items-center justify-center">
                       <span className="text-lg font-medium text-primary-700">
-                        {getInitials(client.firstName, client.lastName)}
+                        {getInitialsFromName(client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim())}
                       </span>
                     </div>
                     <div className="ml-3">
                       <h3 className="text-lg font-semibold text-gray-900">
-                        {client.firstName} {client.lastName}
+                        {client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim()}
                       </h3>
-                      <p className="text-sm text-gray-600">{client.organization}</p>
+                      <p className="text-sm text-gray-600"></p>
                     </div>
                   </div>
                   <input
@@ -903,12 +956,6 @@ const Clients = () => {
                     <EnvelopeIcon className="w-4 h-4 mr-2" />
                     {client.email}
                   </div>
-                  {client.phone && (
-                    <div className="flex items-center text-sm text-gray-600">
-                      <PhoneIcon className="w-4 h-4 mr-2" />
-                      {client.phone}
-                    </div>
-                  )}
                   <div className="flex items-center text-sm text-gray-600">
                     <MapPinIcon className="w-4 h-4 mr-2" />
                     {client.country}
@@ -983,32 +1030,18 @@ const Clients = () => {
           Basic Information
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
+          <div className="md:col-span-2">
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              First Name *
+              Name *
             </label>
             <input
               type="text"
-              name="firstName"
-              value={formData.firstName}
+              name="name"
+              value={formData.name}
               onChange={handleInputChange}
               required
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
-              placeholder="Enter first name"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Last Name *
-            </label>
-            <input
-              type="text"
-              name="lastName"
-              value={formData.lastName}
-              onChange={handleInputChange}
-              required
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
-              placeholder="Enter last name"
+              placeholder="Enter full name"
             />
           </div>
         </div>
@@ -1035,58 +1068,51 @@ const Clients = () => {
               placeholder="email@example.com"
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Phone Number
-            </label>
-            <input
-              type="tel"
-              name="phone"
-              value={formData.phone}
-              onChange={handleInputChange}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
-              placeholder="+1 (555) 000-0000"
-            />
-          </div>
+          
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Country
             </label>
-            <input
-              type="text"
-              name="country"
-              value={formData.country}
-              onChange={handleInputChange}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
-              placeholder="United States"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                name="country"
+                value={formData.country}
+                onFocus={() => setCountryDropdownOpen(true)}
+                onChange={(e) => {
+                  setCountryQuery(e.target.value);
+                  setFormData(prev => ({ ...prev, country: e.target.value }));
+                  setCountryDropdownOpen(true);
+                }}
+                placeholder="Select Country"
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
+                autoComplete="off"
+              />
+              {countryDropdownOpen && (
+                <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow">
+                  {filteredCountries.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
+                  ) : (
+                    filteredCountries.map((c) => (
+                      <div
+                        key={c}
+                        onMouseDown={() => {
+                          setFormData(prev => ({ ...prev, country: c }));
+                          setCountryQuery('');
+                          setCountryDropdownOpen(false);
+                        }}
+                        className="px-3 py-2 text-sm cursor-pointer hover:bg-gray-100"
+                      >
+                        {c}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Organization
-            </label>
-            <input
-              type="text"
-              name="organization"
-              value={formData.organization}
-              onChange={handleInputChange}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
-              placeholder="Company name"
-            />
-          </div>
-          <div className="md:col-span-2">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Position
-            </label>
-            <input
-              type="text"
-              name="position"
-              value={formData.position}
-              onChange={handleInputChange}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
-              placeholder="Job title"
-            />
-          </div>
+          
+          
         </div>
       </div>
 
@@ -1252,12 +1278,12 @@ const Clients = () => {
                   <div className="flex items-center">
                     <div className="h-16 w-16 rounded-full bg-primary-100 flex items-center justify-center">
                       <span className="text-2xl font-medium text-primary-700">
-                        {getInitials(selectedClient.firstName, selectedClient.lastName)}
+                        {getInitialsFromName(selectedClient.name || `${selectedClient.firstName || ''} ${selectedClient.lastName || ''}`.trim())}
                       </span>
                     </div>
                     <div className="ml-4">
                       <h3 className="text-xl font-semibold text-gray-900">
-                        {selectedClient.firstName} {selectedClient.lastName}
+                        {selectedClient.name || `${selectedClient.firstName || ''} ${selectedClient.lastName || ''}`.trim()}
                       </h3>
                       <p className="text-gray-600">{selectedClient.organization}</p>
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(selectedClient.status)}`}>
@@ -1274,12 +1300,7 @@ const Clients = () => {
                           <EnvelopeIcon className="w-4 h-4 mr-2 text-gray-400" />
                           <span className="text-sm text-gray-600">{selectedClient.email}</span>
                         </div>
-                        {selectedClient.phone && (
-                          <div className="flex items-center">
-                            <PhoneIcon className="w-4 h-4 mr-2 text-gray-400" />
-                            <span className="text-sm text-gray-600">{selectedClient.phone}</span>
-                          </div>
-                        )}
+                        
                         <div className="flex items-center">
                           <MapPinIcon className="w-4 h-4 mr-2 text-gray-400" />
                           <span className="text-sm text-gray-600">{selectedClient.country}</span>
@@ -1290,12 +1311,6 @@ const Clients = () => {
                     <div>
                       <h4 className="font-medium text-gray-900 mb-3">Professional Information</h4>
                       <div className="space-y-2">
-                        {selectedClient.position && (
-                          <div>
-                            <span className="text-sm font-medium text-gray-500">Position:</span>
-                            <span className="text-sm text-gray-600 ml-2">{selectedClient.position}</span>
-                          </div>
-                        )}
                         <div>
                           <span className="text-sm font-medium text-gray-500">Conference:</span>
                           <span className="text-sm text-gray-600 ml-2">
@@ -1478,8 +1493,8 @@ const Clients = () => {
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
                   <h3 className="font-semibold text-blue-900 mb-2">🎯 Flexible Bulk Upload</h3>
                   <div className="space-y-2 text-sm text-blue-800">
-                    <p className="font-medium">✅ Required: First Name, Last Name, Email only</p>
-                    <p>📋 Optional: Conference, Status, Stage, Phone, Country, Organization, Position</p>
+                    <p className="font-medium">✅ Required: Name and Email only</p>
+                    <p>📋 Optional: Conference, Status, Stage, Country</p>
                     <div className="mt-3 pt-3 border-t border-blue-200">
                       <p className="font-medium mb-1">Two ways to use:</p>
                       <ul className="list-disc list-inside space-y-1 ml-2">
@@ -1503,7 +1518,7 @@ const Clients = () => {
                       Download Excel Template
                     </button>
                     <p className="text-sm text-gray-500 mt-2">
-                      Template includes example data, detailed instructions, and dropdown options. Only First Name, Last Name, and Email are required!
+                      Template includes example data, detailed instructions, and dropdown options. Only Name and Email are required!
                     </p>
                   </div>
 
@@ -1632,9 +1647,6 @@ const Clients = () => {
 };
 
 // Helper functions
-const getInitials = (firstName, lastName) => {
-  return `${firstName?.charAt(0) || ''}${lastName?.charAt(0) || ''}`.toUpperCase();
-};
 
 const getStatusColor = (status) => {
   switch (status) {

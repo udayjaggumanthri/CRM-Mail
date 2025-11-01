@@ -67,13 +67,8 @@ const Templates = () => {
   const availableVariables = [
     // Client variables
     { key: 'name', label: 'Client Name', icon: User, description: 'Full name of the client (John Doe)' },
-    { key: 'firstName', label: 'First Name', icon: User, description: 'Client first name only (John)' },
-    { key: 'lastName', label: 'Last Name', icon: User, description: 'Client last name only (Doe)' },
     { key: 'email', label: 'Client Email', icon: Mail, description: 'Email address of the client' },
-    { key: 'phone', label: 'Client Phone', icon: Mail, description: 'Phone number of the client' },
     { key: 'country', label: 'Client Country', icon: Globe, description: 'Country of the client' },
-    { key: 'organization', label: 'Organization', icon: Building, description: 'Client organization/company' },
-    { key: 'position', label: 'Position', icon: User, description: 'Client job position' },
     // Conference variables
     { key: 'conferenceName', label: 'Conference Name', icon: Building, description: 'Name of the conference' },
     { key: 'conferenceVenue', label: 'Conference Venue', icon: MapPin, description: 'Venue of the conference' },

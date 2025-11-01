@@ -8,6 +8,9 @@ const EmailService = require('../services/EmailService');
 const TemplateEngine = require('../services/TemplateEngine');
 const FollowUpAutomation = require('../services/FollowUpAutomation');
 const clientNoteRoutes = require('./clientNoteRoutes');
+const XLSX = require('xlsx');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 // JWT Secret from environment or default
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -138,15 +141,37 @@ router.get('/', authenticateToken, async (req, res) => {
     
     if (search) {
       whereClause[Op.or] = [
-        { firstName: { [Op.like]: `%${search}%` } },
-        { lastName: { [Op.like]: `%${search}%` } },
-        { email: { [Op.like]: `%${search}%` } },
-        { organization: { [Op.like]: `%${search}%` } }
+        { name: { [Op.like]: `%${search}%` } },
+        { email: { [Op.like]: `%${search}%` } }
       ];
     }
 
-    // Map sortBy 'name' to 'firstName' since we don't have a 'name' column
-    const actualSortBy = sortBy === 'name' ? 'firstName' : sortBy;
+    // Additive email activity filters
+    if (req.query && req.query.emailFilter) {
+      const emailFilter = req.query.emailFilter;
+      if (emailFilter === 'today') {
+        const start = new Date(); start.setHours(0,0,0,0);
+        const end = new Date(); end.setHours(23,59,59,999);
+        const { EmailLog } = require('../models');
+        const logs = await EmailLog.findAll({ where: { status: 'sent', sentAt: { [Op.between]: [start, end] } }, attributes: ['clientId'] });
+        const ids = Array.from(new Set(logs.map(l => l.clientId).filter(Boolean)));
+        if (ids.length === 0) {
+          return res.json({ clients: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 });
+        }
+        whereClause.id = { [Op.in]: ids };
+      } else if (emailFilter === 'upcoming') {
+        const next7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const { FollowUpJob } = require('../models');
+        const jobs = await FollowUpJob.findAll({ where: { status: 'active', nextSendAt: { [Op.lte]: next7 } }, attributes: ['clientId'] });
+        const ids = Array.from(new Set(jobs.map(j => j.clientId).filter(Boolean)));
+        if (ids.length === 0) {
+          return res.json({ clients: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 });
+        }
+        whereClause.id = { [Op.in]: ids };
+      }
+    }
+
+    const actualSortBy = sortBy === 'name' ? 'name' : sortBy;
 
     // Get clients with pagination
     const { count, rows: clientsRaw } = await Client.findAndCountAll({
@@ -248,13 +273,11 @@ router.get('/:id', authenticateToken, async (req, res) => {
 router.post('/', authenticateToken, async (req, res) => {
   try {
     const {
+      name,
       firstName,
       lastName,
       email,
-      phone,
       country,
-      organization,
-      position,
       status = 'Lead',
       conferenceId,
       notes,
@@ -266,9 +289,12 @@ router.post('/', authenticateToken, async (req, res) => {
       manualEmailsCount = 0
     } = req.body;
 
+    // Construct name from legacy fields if not provided
+    const resolvedName = (name && String(name).trim()) || `${firstName || ''} ${lastName || ''}`.trim();
+
     // Validate required fields
-    if (!firstName || !lastName || !email) {
-      return res.status(400).json({ error: 'First name, last name, and email are required' });
+    if (!resolvedName || !email) {
+      return res.status(400).json({ error: 'Name and email are required' });
     }
 
     // Check if client already exists
@@ -281,13 +307,9 @@ router.post('/', authenticateToken, async (req, res) => {
     
     // Create client with owner assignment
     const client = await Client.create({
-      firstName,
-      lastName,
+      name: resolvedName,
       email,
-      phone,
       country,
-      organization,
-      position,
       status,
       conferenceId,
       notes,
@@ -298,7 +320,7 @@ router.post('/', authenticateToken, async (req, res) => {
       nextEmailDate,
       manualEmailsCount: parseInt(manualEmailsCount) || 0,
       organizationId: req.user.organizationId || null,
-      ownerUserId: req.body.ownerUserId || req.user.id // Assign to specified user or creator
+      ownerUserId: req.body.ownerUserId || req.user.id
     });
 
     console.log(`👤 Client assigned to owner: ${client.ownerUserId}`);
@@ -327,8 +349,7 @@ router.post('/', authenticateToken, async (req, res) => {
       message: 'Client created successfully', 
       client: {
         id: client.id,
-        firstName: client.firstName,
-        lastName: client.lastName,
+        name: client.name,
         email: client.email,
         status: client.status,
         currentStage: client.currentStage
@@ -1326,8 +1347,6 @@ async function createDefaultTemplates(conferenceId) {
 // GET /api/clients/template/download - Download Excel template
 router.get('/template/download', authenticateToken, async (req, res) => {
   try {
-    const XLSX = require('xlsx');
-    
     // Get all conferences for dropdown validation
     const conferences = await Conference.findAll({
       attributes: ['id', 'name'],
@@ -1337,13 +1356,9 @@ router.get('/template/download', authenticateToken, async (req, res) => {
     // Create template data with example row
     const templateData = [
       {
-        'First Name': 'John',
-        'Last Name': 'Doe',
+        'Name': 'John Doe',
         'Email': 'john.doe@example.com',
-        'Phone': '+1234567890',
         'Country': 'USA',
-        'Organization': 'Tech Corp',
-        'Position': 'Professor',
         'Conference': conferences.length > 0 ? conferences[0].name : 'Select Conference',
         'Status': 'Lead',
         'Stage': 'initial',
@@ -1357,13 +1372,9 @@ router.get('/template/download', authenticateToken, async (req, res) => {
     
     // Set column widths
     worksheet['!cols'] = [
-      { wch: 15 }, // First Name
-      { wch: 15 }, // Last Name
+      { wch: 25 }, // Name
       { wch: 25 }, // Email
-      { wch: 15 }, // Phone
       { wch: 15 }, // Country
-      { wch: 20 }, // Organization
-      { wch: 20 }, // Position
       { wch: 25 }, // Conference
       { wch: 20 }, // Status
       { wch: 15 }, // Stage
@@ -1382,8 +1393,8 @@ router.get('/template/download', authenticateToken, async (req, res) => {
       [''],
       ['Instructions:'],
       ['1. Fill in client details in the "Clients" sheet'],
-      ['2. REQUIRED fields: First Name, Last Name, Email'],
-      ['3. OPTIONAL fields: Conference, Status, Stage, Emails Already Sent, Phone, Country, Organization, Position, Notes'],
+      ['2. REQUIRED fields: Name, Email'],
+      ['3. OPTIONAL fields: Conference, Status, Stage, Emails Already Sent, Country, Notes'],
       ['4. Use the dropdown values for Status, Stage, and Conference columns if provided'],
       ['5. Delete the example row before uploading'],
       [''],
@@ -1436,154 +1447,136 @@ router.get('/template/download', authenticateToken, async (req, res) => {
 });
 
 // POST /api/clients/bulk-upload - Upload and process Excel file
-router.post('/bulk-upload', authenticateToken, async (req, res) => {
+router.post('/bulk-upload', authenticateToken, upload.single('file'), async (req, res) => {
   try {
-    const XLSX = require('xlsx');
-    const multer = require('multer');
-    const upload = multer({ storage: multer.memoryStorage() });
-    
     // Handle file upload
-    upload.single('file')(req, res, async (err) => {
-      if (err) {
-        return res.status(400).json({ error: 'File upload failed', details: err.message });
-      }
-      
-      if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
-      }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    // Parse Excel file
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+    
+    if (data.length === 0) {
+      return res.status(400).json({ error: 'Excel file is empty' });
+    }
+    
+    // Get all conferences for mapping
+    const conferences = await Conference.findAll({
+      attributes: ['id', 'name']
+    });
+    const conferenceMap = {};
+    conferences.forEach(c => {
+      conferenceMap[c.name] = c.id;
+    });
+    
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: []
+    };
+    
+    // Process each row
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const rowNum = i + 2; // Excel rows start at 1, plus header
       
       try {
-        // Parse Excel file
-        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const data = XLSX.utils.sheet_to_json(worksheet);
-        
-        if (data.length === 0) {
-          return res.status(400).json({ error: 'Excel file is empty' });
+        // Validate REQUIRED: Name+Email OR First+Last+Email
+        const csvName = row['Name'] && String(row['Name']).trim();
+        const csvFirst = row['First Name'] && String(row['First Name']).trim();
+        const csvLast = row['Last Name'] && String(row['Last Name']).trim();
+        if ((!csvName && !(csvFirst && csvLast)) || !row['Email']) {
+          results.failed++;
+          results.errors.push(`Row ${rowNum}: Missing required fields (Name or First+Last, and Email)`);
+          continue;
         }
         
-        // Get all conferences for mapping
-        const conferences = await Conference.findAll({
-          attributes: ['id', 'name']
-        });
-        const conferenceMap = {};
-        conferences.forEach(c => {
-          conferenceMap[c.name] = c.id;
-        });
+        // Check for duplicate email
+        const existingClient = await Client.findOne({ where: { email: row['Email'] } });
+        if (existingClient) {
+          results.failed++;
+          results.errors.push(`Row ${rowNum}: Client with email "${row['Email']}" already exists`);
+          continue;
+        }
         
-        const results = {
-          success: 0,
-          failed: 0,
-          errors: []
-        };
-        
-        // Process each row
-        for (let i = 0; i < data.length; i++) {
-          const row = data[i];
-          const rowNum = i + 2; // Excel rows start at 1, plus header
-          
-          try {
-            // Validate only REQUIRED fields: firstName, lastName, email
-            if (!row['First Name'] || !row['Last Name'] || !row['Email']) {
-              results.failed++;
-              results.errors.push(`Row ${rowNum}: Missing required fields (First Name, Last Name, or Email)`);
-              continue;
-            }
-            
-            // Check for duplicate email
-            const existingClient = await Client.findOne({ where: { email: row['Email'] } });
-            if (existingClient) {
-              results.failed++;
-              results.errors.push(`Row ${rowNum}: Client with email "${row['Email']}" already exists`);
-              continue;
-            }
-            
-            // Conference is OPTIONAL - map if provided
-            let conferenceId = null;
-            if (row['Conference']) {
-              conferenceId = conferenceMap[row['Conference']];
-              if (!conferenceId) {
-                results.failed++;
-                results.errors.push(`Row ${rowNum}: Conference "${row['Conference']}" not found`);
-                continue;
-              }
-            }
-            
-            // Status is OPTIONAL - default to 'Lead'
-            const validStatuses = ['Lead', 'Abstract Submitted', 'Registered', 'Unresponsive', 'Registration Unresponsive', 'Rejected', 'Completed'];
-            const status = row['Status'] || 'Lead';
-            if (!validStatuses.includes(status)) {
-              results.failed++;
-              results.errors.push(`Row ${rowNum}: Invalid status "${status}". Valid options: ${validStatuses.join(', ')}`);
-              continue;
-            }
-            
-            // Stage is OPTIONAL - default to 'initial'
-            const validStages = ['initial', 'stage1', 'stage2', 'completed'];
-            const stage = row['Stage'] || 'initial';
-            if (!validStages.includes(stage)) {
-              results.failed++;
-              results.errors.push(`Row ${rowNum}: Invalid stage "${stage}". Valid options: ${validStages.join(', ')}`);
-              continue;
-            }
-            
-            // Parse manualEmailsCount (optional, default 0)
-            const manualEmailsCount = parseInt(row['Emails Already Sent']) || 0;
-            
-            // Create client with all optional fields
-            const client = await Client.create({
-              firstName: row['First Name'],
-              lastName: row['Last Name'],
-              email: row['Email'],
-              phone: row['Phone'] || null,
-              country: row['Country'] || null,
-              // Model uses organizationName; map CSV 'Organization' to it
-              organizationName: row['Organization'] || null,
-              position: row['Position'] || null,
-              status: status,
-              conferenceId: conferenceId || null,
-              currentStage: stage,
-              manualEmailsCount: manualEmailsCount,
-              notes: row['Notes'] || null,
-              organizationId: req.user.organizationId || null,
-              // Ensure visibility: set owner to uploader by default
-              ownerUserId: req.user.id
-            });
-            
-            console.log(`✅ Created client: ${client.email} - Conference: ${conferenceId ? 'Yes' : 'None'}`);
-            
-            // Start automatic email workflow ONLY if conference is assigned
-            if (conferenceId) {
-              try {
-                console.log(`🚀 Starting email workflow for ${client.email}`);
-                await startAutomaticEmailWorkflow(client.id, conferenceId);
-              } catch (emailError) {
-                console.error(`❌ Failed to start workflow for ${client.email}:`, emailError.message);
-                // Don't fail the entire import if email workflow fails
-              }
-            } else {
-              console.log(`⚠️  No conference assigned for ${client.email} - skipping email workflow`);
-            }
-            
-            results.success++;
-            
-          } catch (rowError) {
+        // Conference is OPTIONAL - map if provided
+        let conferenceId = null;
+        if (row['Conference']) {
+          conferenceId = conferenceMap[row['Conference']];
+          if (!conferenceId) {
             results.failed++;
-            results.errors.push(`Row ${rowNum}: ${rowError.message}`);
+            results.errors.push(`Row ${rowNum}: Conference "${row['Conference']}" not found`);
+            continue;
           }
         }
         
-        // Send response
-        res.json({
-          message: 'Bulk upload completed',
-          results: results
+        // Status is OPTIONAL - default to 'Lead'
+        const validStatuses = ['Lead', 'Abstract Submitted', 'Registered', 'Unresponsive', 'Registration Unresponsive', 'Rejected', 'Completed'];
+        const status = row['Status'] || 'Lead';
+        if (!validStatuses.includes(status)) {
+          results.failed++;
+          results.errors.push(`Row ${rowNum}: Invalid status "${status}". Valid options: ${validStatuses.join(', ')}`);
+          continue;
+        }
+        
+        // Stage is OPTIONAL - default to 'initial'
+        const validStages = ['initial', 'stage1', 'stage2', 'completed'];
+        const stage = row['Stage'] || 'initial';
+        if (!validStages.includes(stage)) {
+          results.failed++;
+          results.errors.push(`Row ${rowNum}: Invalid stage "${stage}". Valid options: ${validStages.join(', ')}`);
+          continue;
+        }
+        
+        // Parse manualEmailsCount (optional, default 0)
+        const manualEmailsCount = parseInt(row['Emails Already Sent']) || 0;
+        
+        // Create client with all optional fields
+        const client = await Client.create({
+          name: csvName || `${csvFirst || ''} ${csvLast || ''}`.trim(),
+          email: row['Email'],
+          country: row['Country'] || null,
+          status: status,
+          conferenceId: conferenceId || null,
+          currentStage: stage,
+          manualEmailsCount: manualEmailsCount,
+          notes: row['Notes'] || null,
+          organizationId: req.user.organizationId || null,
+          // Ensure visibility: set owner to uploader by default
+          ownerUserId: req.user.id
         });
         
-      } catch (processingError) {
-        console.error('Error processing Excel file:', processingError);
-        res.status(500).json({ error: 'Failed to process Excel file', details: processingError.message });
+        console.log(`✅ Created client: ${client.email} - Conference: ${conferenceId ? 'Yes' : 'None'}`);
+        
+        // Start automatic email workflow ONLY if conference is assigned
+        if (conferenceId) {
+          try {
+            console.log(`🚀 Starting email workflow for ${client.email}`);
+            await startAutomaticEmailWorkflow(client.id, conferenceId);
+          } catch (emailError) {
+            console.error(`❌ Failed to start workflow for ${client.email}:`, emailError.message);
+            // Don't fail the entire import if email workflow fails
+          }
+        } else {
+          console.log(`⚠️  No conference assigned for ${client.email} - skipping email workflow`);
+        }
+        
+        results.success++;
+        
+      } catch (rowError) {
+        results.failed++;
+        results.errors.push(`Row ${rowNum}: ${rowError.message}`);
       }
+    }
+    
+    // Send response
+    res.json({
+      message: 'Bulk upload completed',
+      results: results
     });
     
   } catch (error) {

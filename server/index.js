@@ -87,6 +87,30 @@ async function initializeDatabase() {
     await sequelize.authenticate();
     console.log('✅ Database connection established');
     
+    // Preflight: ensure clients.name exists for backward compatibility
+    try {
+      const qi = sequelize.getQueryInterface();
+      const { DataTypes } = require('sequelize');
+      const table = await qi.describeTable('clients').catch(() => ({}));
+      if (table && !table.name) {
+        console.log('🛠️ Adding clients.name column (preflight)...');
+        await qi.addColumn('clients', 'name', { type: DataTypes.STRING, allowNull: true });
+        await sequelize.query(
+          `UPDATE clients
+             SET name = TRIM(CONCAT(COALESCE(firstName, ''),
+               CASE WHEN COALESCE(firstName,'')<>'' AND COALESCE(lastName,'')<>'' THEN ' ' ELSE '' END,
+               COALESCE(lastName,'')))
+           WHERE name IS NULL OR name = ''`
+        );
+        await qi.changeColumn('clients', 'name', { type: DataTypes.STRING, allowNull: false, defaultValue: '' });
+        try { await qi.removeColumn('clients', 'firstName'); } catch {}
+        try { await qi.removeColumn('clients', 'lastName'); } catch {}
+        console.log('✅ clients.name column ensured');
+      }
+    } catch (e) {
+      console.log('ℹ️ Preflight name column check skipped:', e.message);
+    }
+    
     // Sync database - create tables if they don't exist
     await sequelize.sync({ force: false });
     console.log('✅ Database connected and synced');
@@ -178,8 +202,7 @@ app.post('/api/auth/login', async (req, res) => {
         id: user.id, 
         email: user.email, 
         role: user.roleDetails?.name || user.role || 'Member',
-        firstName: user.name,
-        lastName: user.name,
+        name: user.name,
         organizationId: user.organizationId
       },
     JWT_SECRET,
@@ -191,8 +214,7 @@ app.post('/api/auth/login', async (req, res) => {
     user: {
       id: user.id,
       email: user.email,
-        firstName: user.name,
-        lastName: user.name,
+      name: user.name,
         role: user.roleDetails?.name || user.role || 'Member'
     }
   });
@@ -220,8 +242,7 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
     res.json({
       id: user.id,
       email: user.email,
-      firstName: user.name,
-      lastName: user.name,
+      name: user.name,
       role: user.roleDetails?.name || user.role || 'Member'
     });
   } catch (error) {
@@ -353,7 +374,7 @@ app.get('/api/clients/for-email', authenticateToken, async (req, res) => {
 
     const clients = await Client.findAll({
       where: whereClause,
-      attributes: ['id', 'firstName', 'lastName', 'email', 'organization'],
+      attributes: ['id', 'name', 'email', 'organization'],
       limit: 100,
       order: [['createdAt', 'DESC']]
     });
@@ -407,13 +428,13 @@ async function sendDirectEmail(client, emailType, conferenceName = 'Conference')
         htmlContent = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #2c3e50;">Welcome to ${conferenceName}!</h2>
-            <p>Dear ${client.firstName},</p>
+            <p>Dear ${client.name || client.firstName},</p>
             <p>We are excited to invite you to participate in <strong>${conferenceName}</strong>!</p>
             <p>We look forward to your participation!</p>
             <p>Best regards,<br>Conference Team</p>
           </div>
         `;
-        textContent = `Welcome to ${conferenceName}!\n\nDear ${client.firstName},\n\nWe are excited to invite you to participate in ${conferenceName}!\n\nWe look forward to your participation!\n\nBest regards,\nConference Team`;
+        textContent = `Welcome to ${conferenceName}!\n\nDear ${client.name || client.firstName},\n\nWe are excited to invite you to participate in ${conferenceName}!\n\nWe look forward to your participation!\n\nBest regards,\nConference Team`;
         break;
         
       case 'abstract_submission':
@@ -421,13 +442,13 @@ async function sendDirectEmail(client, emailType, conferenceName = 'Conference')
         htmlContent = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #e74c3c;">Abstract Submission Reminder</h2>
-            <p>Dear ${client.firstName},</p>
+            <p>Dear ${client.name || client.firstName},</p>
             <p>This is a friendly reminder about the abstract submission for <strong>${conferenceName}</strong>.</p>
             <p>Please submit your abstract to confirm your participation.</p>
             <p>Best regards,<br>Conference Team</p>
           </div>
         `;
-        textContent = `Abstract Submission Reminder\n\nDear ${client.firstName},\n\nThis is a friendly reminder about the abstract submission for ${conferenceName}.\n\nPlease submit your abstract to confirm your participation.\n\nBest regards,\nConference Team`;
+        textContent = `Abstract Submission Reminder\n\nDear ${client.name || client.firstName},\n\nThis is a friendly reminder about the abstract submission for ${conferenceName}.\n\nPlease submit your abstract to confirm your participation.\n\nBest regards,\nConference Team`;
         break;
         
       case 'registration_reminder':
@@ -435,14 +456,14 @@ async function sendDirectEmail(client, emailType, conferenceName = 'Conference')
         htmlContent = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #e74c3c;">Registration Reminder</h2>
-            <p>Dear ${client.firstName},</p>
+            <p>Dear ${client.name || client.firstName},</p>
             <p>Thank you for your interest in <strong>${conferenceName}</strong>!</p>
             <p>We noticed you haven't completed your registration yet. This is a final reminder to secure your spot.</p>
             <p>Please complete your registration to confirm your participation.</p>
             <p>Best regards,<br>Conference Team</p>
           </div>
         `;
-        textContent = `Registration Reminder\n\nDear ${client.firstName},\n\nThank you for your interest in ${conferenceName}!\n\nWe noticed you haven't completed your registration yet. This is a final reminder to secure your spot.\n\nPlease complete your registration to confirm your participation.\n\nBest regards,\nConference Team`;
+        textContent = `Registration Reminder\n\nDear ${client.name || client.firstName},\n\nThank you for your interest in ${conferenceName}!\n\nWe noticed you haven't completed your registration yet. This is a final reminder to secure your spot.\n\nPlease complete your registration to confirm your participation.\n\nBest regards,\nConference Team`;
         break;
         
       default:
@@ -450,12 +471,12 @@ async function sendDirectEmail(client, emailType, conferenceName = 'Conference')
         htmlContent = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #2c3e50;">Update from ${conferenceName}</h2>
-            <p>Dear ${client.firstName},</p>
+            <p>Dear ${client.name || client.firstName},</p>
             <p>This is an update regarding your participation in <strong>${conferenceName}</strong>.</p>
             <p>Best regards,<br>Conference Team</p>
           </div>
         `;
-        textContent = `Update from ${conferenceName}\n\nDear ${client.firstName},\n\nThis is an update regarding your participation in ${conferenceName}.\n\nBest regards,\nConference Team`;
+        textContent = `Update from ${conferenceName}\n\nDear ${client.name || client.firstName},\n\nThis is an update regarding your participation in ${conferenceName}.\n\nBest regards,\nConference Team`;
     }
 
     // Send email
@@ -1111,8 +1132,29 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
       console.log(`👑 CEO dashboard - All system data`);
     }
     
+    // Calculate time ranges
+    const endDate = new Date();
+    let startDate;
+    switch (timeRange) {
+      case '1d': startDate = new Date(Date.now() - 24 * 60 * 60 * 1000); break;
+      case '7d': startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); break;
+      case '30d': startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); break;
+      case '90d': startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); break;
+      default: startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    }
+    
     // Run all queries in parallel for better performance
-    const [totalClients, totalConferences, totalEmails, recentClients] = await Promise.all([
+    const [
+      totalClients, 
+      totalConferences, 
+      totalEmails, 
+      recentClients,
+      clientStatusData,
+      emailStatusData,
+      conferences,
+      bouncedEmails,
+      unansweredReplies
+    ] = await Promise.all([
       Client.count({ where: clientWhere }),
       Conference.count({ where: conferenceWhere }),
       EmailLog.count({ where: emailWhere }),
@@ -1120,9 +1162,87 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
         where: clientWhere,
         limit: 5,
         order: [['createdAt', 'DESC']],
-        attributes: ['id', 'firstName', 'lastName', 'email', 'status', 'createdAt']
-      }).catch(() => []) // Return empty array on error
+        attributes: ['id', 'name', 'email', 'status', 'createdAt']
+      }).catch(() => []), // Return empty array on error
+      Client.findAll({
+        where: clientWhere,
+        attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+        group: ['status'],
+        raw: true
+      }).catch(() => []),
+      EmailLog.findAll({
+        where: {
+          ...emailWhere,
+          sentAt: { [Op.gte]: startDate }
+        },
+        attributes: [
+          'status',
+          [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+        ],
+        group: ['status'],
+        raw: true
+      }).catch(() => []),
+      Conference.findAll({
+        where: conferenceWhere,
+        attributes: ['id', 'name', 'startDate', 'endDate', 'venue', 'primaryContactUserId', 'revenue'],
+        include: [{ model: User, as: 'primaryContact', attributes: ['id', 'name', 'email'], required: false }],
+        limit: 50
+      }).catch(() => []),
+      EmailLog.findAll({
+        where: {
+          ...emailWhere,
+          status: 'bounced',
+          sentAt: { [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+        },
+        limit: 20,
+        order: [['sentAt', 'DESC']],
+        include: [{ model: Client, as: 'client', attributes: ['id', 'name', 'email'], required: false }]
+      }).catch(() => []),
+      Email.findAll({
+        where: {
+          folder: 'inbox',
+          isRead: false,
+          date: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+          clientId: { [Op.ne]: null }
+        },
+        limit: 20,
+        order: [['date', 'DESC']],
+        include: [{ model: Client, as: 'client', attributes: ['id', 'name', 'email'], required: false }]
+      }).catch(() => [])
     ]);
+
+    // Calculate KPIs
+    const statusCounts = {};
+    clientStatusData.forEach(item => {
+      statusCounts[item.status] = parseInt(item.count);
+    });
+    const abstractsSubmitted = statusCounts['Abstract Submitted'] || 0;
+    const registered = statusCounts['Registered'] || 0;
+    const conversionRate = abstractsSubmitted > 0 ? (registered / abstractsSubmitted * 100).toFixed(2) : 0;
+    
+    // Calculate total revenue
+    let totalRevenue = 0;
+    if (Array.isArray(conferences)) {
+      conferences.forEach(c => {
+        if (c.revenue && c.revenue.actual) {
+          totalRevenue += parseFloat(c.revenue.actual) || 0;
+        }
+      });
+    }
+    
+    // Calculate email performance
+    const emailCounts = {};
+    emailStatusData.forEach(item => {
+      emailCounts[item.status] = parseInt(item.count);
+    });
+    const totalSent = emailCounts['sent'] || 0;
+    const totalDelivered = emailCounts['delivered'] || 0;
+    const totalBounced = emailCounts['bounced'] || 0;
+    const totalReplied = emailCounts['replied'] || 0;
+    
+    const deliveryRate = totalSent > 0 ? (totalDelivered / totalSent * 100).toFixed(2) : 0;
+    const bounceRate = totalSent > 0 ? (totalBounced / totalSent * 100).toFixed(2) : 0;
+    const replyRate = totalSent > 0 ? (totalReplied / totalSent * 100).toFixed(2) : 0;
 
     // Add cache headers for better performance
     res.set({
@@ -1131,6 +1251,7 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
     });
 
     res.json({ 
+      // Original fields (preserved)
       totalClients,
       totalConferences,
       totalEmails,
@@ -1138,7 +1259,47 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
       timeRange,
       conferenceId,
       userRole: req.user.role,
-      cached: false
+      cached: false,
+      // New additive fields
+      conferences: conferences.map(c => ({
+        id: c.id,
+        name: c.name,
+        startDate: c.startDate,
+        endDate: c.endDate,
+        venue: c.venue,
+        primaryContact: c.primaryContact ? {
+          name: c.primaryContact.name,
+          email: c.primaryContact.email
+        } : null
+      })),
+      kpis: {
+        abstractsSubmitted,
+        registered,
+        conversionRate: parseFloat(conversionRate),
+        totalRevenue
+      },
+      emailPerformance: {
+        deliveryRate: parseFloat(deliveryRate),
+        bounceRate: parseFloat(bounceRate),
+        replyRate: parseFloat(replyRate)
+      },
+      needsAttention: {
+        bouncedEmails: bouncedEmails.map(b => ({
+          id: b.id,
+          clientId: b.clientId,
+          clientName: b.client?.name,
+          subject: b.subject,
+          status: b.status,
+          sentAt: b.sentAt
+        })),
+        unansweredReplies: unansweredReplies.map(e => ({
+          id: e.id,
+          clientId: e.clientId,
+          clientName: e.client?.name,
+          subject: e.subject,
+          date: e.date
+        }))
+      }
     });
   } catch (error) {
     console.error('Dashboard error:', error);

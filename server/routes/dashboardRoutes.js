@@ -9,6 +9,7 @@ const {
   EmailTemplate,
   User 
 } = require('../models');
+const { sequelize } = require('../config/database');
 const { requireRole } = require('../middleware/rbac');
 const router = express.Router();
 
@@ -209,6 +210,33 @@ router.get('/stats', requireRole(['CEO', 'TeamLead', 'Member']), async (req, res
       }));
     }
 
+    // Conferences overview (scoped)
+    const conferences = await Conference.findAll({
+      where: whereClause.conferenceId ? { id: whereClause.conferenceId } : undefined,
+      attributes: ['id', 'name', 'startDate', 'endDate', 'venue'],
+      include: [{ model: User, as: 'primaryContact', attributes: ['id', 'name', 'email'] }]
+    });
+
+    // Needs attention
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const bouncedEmails = await EmailLog.findAll({
+      where: { status: 'bounced', sentAt: { [Op.gte]: sevenDaysAgo }, ...(whereClause.conferenceId ? { conferenceId: whereClause.conferenceId } : {}) },
+      limit: 20,
+      order: [['sentAt', 'DESC']],
+      include: [{ model: Client, as: 'client', attributes: ['id', 'name', 'email'] }]
+    });
+
+    // Unanswered replies = inbound unread emails in last 24h (scope by client.conferenceId if available)
+    const { Email } = require('../models');
+    const unansweredRaw = await Email.findAll({
+      where: { folder: 'inbox', isRead: false, date: { [Op.gte]: oneDayAgo }, clientId: { [Op.ne]: null } },
+      include: [{ model: Client, as: 'client', attributes: ['id', 'name', 'email'], ...(whereClause.conferenceId ? { where: { conferenceId: whereClause.conferenceId } } : {}) }],
+      order: [['date', 'DESC']],
+      limit: 20
+    });
+
     const stats = {
       overview: {
         totalClients,
@@ -217,6 +245,14 @@ router.get('/stats', requireRole(['CEO', 'TeamLead', 'Member']), async (req, res
         unresponsive: statusCounts['Unresponsive'] || 0,
         conversionRate: parseFloat(conversionRate)
       },
+      conferences: conferences.map(c => ({
+        id: c.id,
+        name: c.name,
+        startDate: c.startDate,
+        endDate: c.endDate,
+        venue: c.venue,
+        primaryContact: c.primaryContact ? { id: c.primaryContact.id, name: c.primaryContact.name, email: c.primaryContact.email } : null
+      })),
       emailPerformance: {
         totalSent,
         totalDelivered,
@@ -225,6 +261,10 @@ router.get('/stats', requireRole(['CEO', 'TeamLead', 'Member']), async (req, res
         deliveryRate: parseFloat(deliveryRate),
         bounceRate: parseFloat(bounceRate),
         replyRate: parseFloat(replyRate)
+      },
+      needsAttention: {
+        bouncedEmails: bouncedEmails.map(b => ({ id: b.id, clientId: b.clientId, clientName: b.client?.name, subject: b.subject, status: b.status, sentAt: b.sentAt })),
+        unansweredReplies: unansweredRaw.map(e => ({ id: e.id, clientId: e.clientId, clientName: e.client?.name, subject: e.subject, date: e.date }))
       },
       followups: {
         active: followupStats.filter(f => f.status === 'active').length,

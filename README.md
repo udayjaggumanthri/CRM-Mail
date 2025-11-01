@@ -5,44 +5,75 @@ A comprehensive CRM system for managing conference clients with automated email 
 ## Features
 
 ### Core Features
-- **Bulk Email System**: Send emails in bulk to clients/leads
+- **Bulk Email System**: Send emails in bulk to clients/leads with attachment support
 - **Automated Follow-up Workflow**: 
   - Stage 1: Abstract submission (7-day intervals, up to 6 follow-ups)
   - Stage 2: Registration (3-day intervals, up to 6 follow-ups)
 - **Email Templates**: Central repository with merge fields support
 - **Client Management**: Complete client profiles with status tracking
+  - Single unified name field for simplicity
+  - Searchable country dropdown with full country list
+  - Email activity filters (sent today, upcoming)
+  - Bulk upload with Excel templates
 - **SMTP Integration**: Multiple SMTP accounts with system/user permissions
-- **Role-Based Access Control**: CEO, Manager, and Agent roles
+- **Role-Based Access Control**: CEO, TeamLead, and Member roles with granular permissions
 
 ### Dashboard & Analytics
-- **Client Overview Dashboard**: Filter, sort, and export capabilities
-- **Admin/CEO Dashboard**: KPIs including conversion rates and revenue tracking
+- **Role-Based Dashboards**:
+  - **CEO**: Full system visibility with organization-wide KPIs
+  - **TeamLead**: Conference-assigned data with team metrics  
+  - **Member**: Personal client metrics and assigned conferences
+- **Real-time KPIs**: Conversion rates, revenue tracking, email performance
+- **Conference Overview**: Grid view with dates, venue, and contact info
+- **Email Health Metrics**: Delivery rate, bounce rate, reply rate
+- **Needs Attention**: Bounced emails and unanswered replies monitoring
+- **Client Overview**: Filter, sort, and export capabilities
+
+### Email Management
+- **Gmail-Style Interface**: Modern full-page email view
+- **Email Threading**: Organized conversations by client/conference
+- **Rich Text Editor**: Bold, italic, font size, formatting options
+- **File Attachments**: Upload and attach files to emails
+- **Email Suggestions**: Autocomplete from past interactions
+- **Reply/Forward/Star/Archive**: Complete email management
+- **CEO Communication Oversight**: Global communications page with reply/intervention
 - **Email Logs**: Complete communication history with threaded view
-- **Real-time Statistics**: Active follow-ups, emails sent, conversion rates
 
 ### Security & Compliance
 - **Authentication**: JWT-based authentication
-- **RBAC**: Role-based access control
+- **RBAC**: Role-based access control with hierarchy support
 - **Email Security**: SSL/TLS encryption
 - **Audit Logging**: Complete action tracking
 - **Opt-out Management**: Unsubscribe link support
+- **Data Privacy**: GDPR compliance features
+
+### Deployment & Infrastructure
+- **Docker Support**: Full containerization with development and production configs
+- **Nginx Integration**: Production-ready reverse proxy with SSL support
+- **Database Migrations**: Safe, reversible schema evolution
+- **Health Checks**: Automatic service monitoring
+- **PowerShell Scripts**: Windows deployment automation
 
 ## Tech Stack
 
 ### Backend
 - **Node.js** with Express.js
-- **In-memory Database** (for development)
-- **JWT Authentication**
+- **PostgreSQL** database (production) / In-memory (development)
+- **Sequelize ORM** for database management
+- **JWT Authentication** with role-based tokens
 - **Nodemailer** for SMTP integration
 - **Node-cron** for scheduled tasks
+- **xlsx** for Excel file handling
 
 ### Frontend
-- **React.js** with functional components
+- **React.js** with functional components and hooks
 - **React Router** for navigation
-- **React Query** for data fetching
+- **React Query** for data fetching and caching
 - **Tailwind CSS** for styling
 - **Lucide React** for icons
 - **React Hot Toast** for notifications
+- **ReactQuill** for rich text editing
+- **Headless UI** for accessible components
 
 ## Quick Start
 
@@ -56,7 +87,7 @@ A comprehensive CRM system for managing conference clients with automated email 
 1. **Clone the repository**:
    ```bash
    git clone <repository-url>
-   cd crm
+   cd crm1
    ```
 
 2. **Set up environment**:
@@ -75,8 +106,8 @@ A comprehensive CRM system for managing conference clients with automated email 
    ```
 
 4. **Access the application**:
-   - Frontend: http://localhost:3000
-   - Backend API: http://localhost:5001
+   - Frontend: http://localhost:5000
+   - Backend API: http://localhost:3001
 
 ### Option 2: Local Development
 
@@ -88,53 +119,76 @@ A comprehensive CRM system for managing conference clients with automated email 
 
 1. **Clone and install dependencies**:
    ```bash
-   cd crm
+   cd crm1
    npm run install-all
    ```
 
 2. **Start the development servers**:
    ```bash
-   npm run dev
+   # On Windows
+   npm start
+   # Or use the Windows script
+   .\start-windows.bat
+   
+   # On Linux/Mac
+   npm start
+   # Or use the shell script
+   ./start.sh
    ```
 
    This will start:
-   - Backend server on `http://localhost:5001`
-   - Frontend development server on `http://localhost:3000`
+   - Backend server on `http://localhost:3001`
+   - Frontend development server on `http://localhost:5000`
 
 ### Demo Accounts
 
 The system comes with pre-configured demo accounts:
 
-- **CEO**: `admin@crm.com` / `admin123`
-- **Manager**: `manager@crm.com` / `manager123`
-- **Agent**: `agent@crm.com` / `agent123`
+- **CEO**: `admin@crm.com` / `admin123` (Full system access)
+- **TeamLead**: `manager@crm.com` / `manager123` (Conference management)
+- **Member**: `agent@crm.com` / `agent123` (Client management)
 
 ## Usage Guide
 
 ### 1. Adding Clients
 - Navigate to the Clients page
-- Click "Add Client" to create new leads
+- Click "Add Client" to create new leads with single name field
+- Use searchable country dropdown for international clients
+- Bulk upload via Excel template for multiple clients
 - Clients automatically enter Stage 1 follow-up workflow
 
 ### 2. Managing Email Templates
 - Go to Templates page
 - Create templates for different stages (Abstract Invitation, Follow-up, Registration)
-- Use merge fields: `{Name}`, `{ConferenceName}`, `{Email}`, `{Country}`
+- Use merge fields: `{name}`, `{email}`, `{country}`, `{conferenceName}`
+- Preview templates with sample data
 
 ### 3. SMTP Configuration
-- Access Settings (CEO/Manager only)
+- Access Settings (CEO only)
 - Add SMTP accounts for email sending
 - Configure system vs user-specific accounts
+- Test connections before deployment
 
 ### 4. Automated Workflows
 - **Stage 1**: Abstract submission follow-ups (7-day intervals)
 - **Stage 2**: Registration follow-ups (3-day intervals)
 - Automatic status transitions based on client actions
+- Email threading for organized conversations
 
 ### 5. Monitoring & Analytics
-- Dashboard shows real-time KPIs
-- Email logs track all communications
-- Follow-up job management with pause/resume capabilities
+- **Role-Based Dashboards**: See data relevant to your role
+- **Real-time KPIs**: Conversion rates, revenue, email performance
+- **Conference Overview**: Track conference progress and contacts
+- **Needs Attention**: Monitor bounced emails and pending replies
+- **Email Logs**: Complete communication history with threading
+
+### 6. Email Management
+- **Gmail-Style View**: Modern full-page email interface
+- **Rich Text Compose**: Format emails with bold, italic, font sizes
+- **Attachments**: Upload files and documents
+- **Thread View**: All conversations organized by client
+- **Reply/Forward**: Complete email management
+- **CEO Oversight**: Global communications for CEO role
 
 ## API Endpoints
 
@@ -329,16 +383,55 @@ docker system prune -f
 
 ## Contributing
 
+Contributions are welcome! Please follow these steps:
+
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
 4. Test thoroughly
-5. Submit a pull request
+5. Commit your changes (`git commit -m 'Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+### Development Guidelines
+- Follow existing code style
+- Write meaningful commit messages
+- Add tests for new features
+- Update documentation as needed
+- Ensure backward compatibility
+
+## Recent Updates
+
+### Major Features (2025)
+- ✅ Role-based dashboards with KPIs and analytics
+- ✅ Email threading for organized conversations
+- ✅ CEO global communications oversight
+- ✅ Simplified client model with unified name field
+- ✅ Searchable country dropdown
+- ✅ Email activity filters
+- ✅ Gmail-style email interface
+- ✅ Rich text editor with attachments
+- ✅ Docker deployment improvements
+- ✅ Database migrations for schema evolution
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed change history.
+
+## Support
+
+For support and questions, please create an issue in the repository.
 
 ## License
 
 MIT License - see LICENSE file for details.
 
-## Support
+## Acknowledgments
 
-For support and questions, please create an issue in the repository.
+- Built with React and Node.js
+- Styled with Tailwind CSS
+- Email processing with Nodemailer
+- Database management with Sequelize
+- Containerization with Docker
+
+---
+
+**Last Updated**: January 2025

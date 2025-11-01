@@ -266,11 +266,6 @@ const EnhancedDashboard = () => {
             </div>
             <Users className="w-8 h-8 text-primary-600" />
           </div>
-          <div className="mt-4">
-            <span className="text-sm text-green-600">
-              +{stats.newClientsThisWeek || 0} this week
-            </span>
-          </div>
         </div>
 
         <div className="bg-white rounded-lg shadow p-6">
@@ -280,26 +275,6 @@ const EnhancedDashboard = () => {
               <p className="text-3xl font-bold text-gray-900">{stats.totalEmails || 0}</p>
             </div>
             <Mail className="w-8 h-8 text-primary-600" />
-          </div>
-          <div className="mt-4">
-            <span className="text-sm text-green-600">
-              +{stats.emailsSentToday || 0} today
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Active Follow-ups</p>
-              <p className="text-3xl font-bold text-gray-900">{stats.activeFollowups || 0}</p>
-            </div>
-            <Activity className="w-8 h-8 text-primary-600" />
-          </div>
-          <div className="mt-4">
-            <span className="text-sm text-blue-600">
-              {stats.followUpSuccessRate || 0}% success rate
-            </span>
           </div>
         </div>
 
@@ -311,66 +286,82 @@ const EnhancedDashboard = () => {
             </div>
             <Calendar className="w-8 h-8 text-primary-600" />
           </div>
-          <div className="mt-4">
-            <span className="text-sm text-green-600">
-              {stats.activeConferences || 0} active
-            </span>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Conversion Rate</p>
+              <p className="text-3xl font-bold text-primary-600">{stats.kpis?.conversionRate || 0}%</p>
+            </div>
+            <TrendingUp className="w-8 h-8 text-primary-600" />
           </div>
         </div>
       </div>
 
-      {/* Charts and Analytics */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Email Performance Chart */}
+      {/* Quick Stats Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">Email Performance</h3>
-            <button
-              onClick={() => handleExport('emails')}
-              className="flex items-center px-3 py-1 text-sm text-primary-600 hover:text-primary-700"
-            >
-              <Download className="w-4 h-4 mr-1" />
-              Export
-            </button>
+            <h3 className="text-lg font-semibold text-gray-900">Submission Stats</h3>
+            <CheckCircle className="w-6 h-6 text-green-500" />
           </div>
-          <div className="h-64 flex items-center justify-center">
-            <div className="text-center">
-              <BarChart3 className="w-12 h-12 text-gray-400 mx-auto mb-2" />
-              <p className="text-gray-500">Email performance chart</p>
-              <p className="text-sm text-gray-400">
-                Open Rate: {stats.emailOpenRate || 0}% | 
-                Click Rate: {stats.emailClickRate || 0}%
-              </p>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Abstracts Submitted</span>
+              <span className="text-2xl font-bold text-gray-900">{stats.kpis?.abstractsSubmitted || 0}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Registered</span>
+              <span className="text-2xl font-bold text-primary-600">{stats.kpis?.registered || 0}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Conversion Rate</span>
+              <span className="text-2xl font-bold text-green-600">{stats.kpis?.conversionRate || 0}%</span>
             </div>
           </div>
         </div>
 
-        {/* Client Status Distribution */}
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">Client Status</h3>
-            <button
-              onClick={() => handleExport('clients')}
-              className="flex items-center px-3 py-1 text-sm text-primary-600 hover:text-primary-700"
-            >
-              <Download className="w-4 h-4 mr-1" />
-              Export
-            </button>
+            <h3 className="text-lg font-semibold text-gray-900">Email Health</h3>
+            <TrendingUp className="w-6 h-6 text-blue-500" />
           </div>
-          <div className="h-64 flex items-center justify-center">
-            <div className="text-center">
-              <PieChart className="w-12 h-12 text-gray-400 mx-auto mb-2" />
-              <p className="text-gray-500">Client status distribution</p>
-              <div className="mt-4 space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>Leads: {stats.leads || 0}</span>
-                  <span>Abstracts: {stats.abstractsSubmitted || 0}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span>Registered: {stats.registered || 0}</span>
-                  <span>Unresponsive: {stats.unresponsive || 0}</span>
-                </div>
-              </div>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Delivery Rate</span>
+              <span className="text-2xl font-bold text-green-600">{stats.emailPerformance?.deliveryRate || 0}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Reply Rate</span>
+              <span className="text-2xl font-bold text-primary-600">{stats.emailPerformance?.replyRate || 0}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Bounce Rate</span>
+              <span className="text-2xl font-bold text-red-600">{stats.emailPerformance?.bounceRate || 0}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Revenue</h3>
+            <Activity className="w-6 h-6 text-green-500" />
+          </div>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Total Revenue</span>
+              <span className="text-2xl font-bold text-green-600">
+                {Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(stats.kpis?.totalRevenue || 0)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Conferences</span>
+              <span className="text-2xl font-bold text-primary-600">{stats.totalConferences || 0}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-600">Active Clients</span>
+              <span className="text-2xl font-bold text-gray-900">{stats.totalClients || 0}</span>
             </div>
           </div>
         </div>
@@ -474,6 +465,84 @@ const EnhancedDashboard = () => {
               <Calendar className="w-5 h-5 mr-2" />
               Create Conference
             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Conferences Overview (role-scoped) */}
+      <div className="mt-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Conferences Overview</h3>
+          </div>
+          {Array.isArray(stats.conferences) && stats.conferences.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {stats.conferences.map((c) => (
+                <div key={c.id} className="border rounded-lg p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-gray-600">Name</p>
+                      <p className="font-semibold text-gray-900">{c.name}</p>
+                    </div>
+                    <Calendar className="w-5 h-5 text-primary-600" />
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="text-gray-500">Start</p>
+                      <p className="text-gray-900">{c.startDate ? new Date(c.startDate).toLocaleDateString() : '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">End</p>
+                      <p className="text-gray-900">{c.endDate ? new Date(c.endDate).toLocaleDateString() : '—'}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-gray-500">Venue</p>
+                      <p className="text-gray-900">{c.venue || '—'}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-gray-500">Primary Contact</p>
+                      <p className="text-gray-900">{c.primaryContact?.name || '—'} {c.primaryContact?.email ? `• ${c.primaryContact.email}` : ''}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-gray-500">No conferences available</div>
+          )}
+        </div>
+      </div>
+
+      {/* Needs Attention */}
+      <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Bounced Emails (7 days)</h3>
+          <div className="space-y-3">
+            {(stats.needsAttention?.bouncedEmails || []).length === 0 ? (
+              <div className="text-gray-500">No bounced emails</div>
+            ) : (
+              (stats.needsAttention?.bouncedEmails || []).map((e) => (
+                <div key={e.id} className="flex justify-between text-sm">
+                  <span className="text-gray-700">{e.clientName || 'Unknown client'}</span>
+                  <span className="text-gray-500">{e.sentAt ? new Date(e.sentAt).toLocaleDateString() : ''}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Unanswered Replies (24h)</h3>
+          <div className="space-y-3">
+            {(stats.needsAttention?.unansweredReplies || []).length === 0 ? (
+              <div className="text-gray-500">No pending replies</div>
+            ) : (
+              (stats.needsAttention?.unansweredReplies || []).map((e) => (
+                <div key={e.id} className="flex justify-between text-sm">
+                  <span className="text-gray-700">{e.clientName || 'Unknown client'}</span>
+                  <span className="text-gray-500">{e.date ? new Date(e.date).toLocaleTimeString() : ''}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

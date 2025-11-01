@@ -7,13 +7,9 @@ const Client = sequelize.define('Client', {
     primaryKey: true,
     defaultValue: () => require('uuid').v4()
   },
-  firstName: { 
-    type: DataTypes.STRING, 
-    allowNull: false 
-  },
-  lastName: { 
-    type: DataTypes.STRING, 
-    allowNull: false 
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false
   },
   email: { 
     type: DataTypes.STRING, 
@@ -22,17 +18,8 @@ const Client = sequelize.define('Client', {
       isEmail: true
     }
   },
-  phone: { 
-    type: DataTypes.STRING 
-  },
   country: { 
     type: DataTypes.STRING 
-  },
-  organizationName: {
-    type: DataTypes.STRING
-  },
-  position: {
-    type: DataTypes.STRING
   },
   status: { 
     type: DataTypes.ENUM('Lead', 'Abstract Submitted', 'Registered', 'Unresponsive', 'Registration Unresponsive', 'Rejected', 'Completed'), 
@@ -230,17 +217,30 @@ const Client = sequelize.define('Client', {
     { fields: ['status'] },
     { fields: ['currentStage'] },
     { fields: ['country'] },
-    { fields: ['organizationName'] },
     { fields: ['ownerUserId'] },
     { fields: ['isActive'] },
     { fields: ['isUnsubscribed'] },
     { fields: ['priority'] },
     { fields: ['followUpPaused'] },
     { fields: ['nextFollowUpDate'] },
-    { fields: ['firstName', 'lastName'] },
+    { fields: ['name'] },
     { fields: ['organizationId', 'status'] },
     { fields: ['organizationId', 'currentStage'] }
   ]
+}, {
+  tableName: 'clients',
+  timestamps: true,
+  getterMethods: {
+    firstName() {
+      const full = this.getDataValue('name') || '';
+      return full.split(' ')[0] || '';
+    },
+    lastName() {
+      const full = this.getDataValue('name') || '';
+      const parts = full.split(' ');
+      return parts.length > 1 ? parts.slice(1).join(' ') : '';
+    }
+  }
 });
 
 module.exports = Client;
