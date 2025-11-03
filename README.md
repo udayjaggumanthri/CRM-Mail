@@ -48,11 +48,9 @@ A comprehensive CRM system for managing conference clients with automated email 
 - **Data Privacy**: GDPR compliance features
 
 ### Deployment & Infrastructure
-- **Docker Support**: Full containerization with development and production configs
-- **Nginx Integration**: Production-ready reverse proxy with SSL support
 - **Database Migrations**: Safe, reversible schema evolution
-- **Health Checks**: Automatic service monitoring
 - **PowerShell Scripts**: Windows deployment automation
+- **Cross-Platform**: Works on Windows, Linux, and Mac
 
 ## Tech Stack
 
@@ -77,12 +75,12 @@ A comprehensive CRM system for managing conference clients with automated email 
 
 ## Quick Start
 
-### Option 1: Docker (Recommended)
+### Prerequisites
+- Node.js (v14 or higher)
+- npm or yarn
+- PostgreSQL database (for production)
 
-#### Prerequisites
-- Docker and Docker Compose installed
-
-#### Installation
+### Installation
 
 1. **Clone the repository**:
    ```bash
@@ -96,34 +94,12 @@ A comprehensive CRM system for managing conference clients with automated email 
    # Edit .env file with your configuration
    ```
 
-3. **Start with Docker**:
+3. **Install dependencies**:
    ```bash
-   # Development mode
-   ./scripts/docker-setup.sh setup dev
-   
-   # Or manually
-   docker-compose -f docker-compose.dev.yml up --build -d
-   ```
-
-4. **Access the application**:
-   - Frontend: http://localhost:5000
-   - Backend API: http://localhost:3001
-
-### Option 2: Local Development
-
-#### Prerequisites
-- Node.js (v14 or higher)
-- npm or yarn
-
-#### Installation
-
-1. **Clone and install dependencies**:
-   ```bash
-   cd crm1
    npm run install-all
    ```
 
-2. **Start the development servers**:
+4. **Start the development servers**:
    ```bash
    # On Windows
    npm start
@@ -136,9 +112,9 @@ A comprehensive CRM system for managing conference clients with automated email 
    ./start.sh
    ```
 
-   This will start:
-   - Backend server on `http://localhost:3001`
-   - Frontend development server on `http://localhost:5000`
+5. **Access the application**:
+   - Frontend: http://localhost:5000
+   - Backend API: http://localhost:3001
 
 ### Demo Accounts
 
@@ -246,28 +222,26 @@ NODE_ENV=development
 
 ### Project Structure
 ```
-crm/
+crm1/
 ├── client/                 # React frontend
 │   ├── src/
 │   │   ├── components/     # React components
 │   │   ├── contexts/       # React contexts
 │   │   └── ...
-│   ├── Dockerfile          # Production Dockerfile
-│   ├── Dockerfile.dev      # Development Dockerfile
-│   └── nginx.conf          # Nginx configuration
+│   ├── package.json
+│   └── public/             # Static files
 ├── server/                 # Node.js backend
 │   ├── index.js           # Main server file
-│   ├── healthcheck.js     # Health check script
-│   ├── Dockerfile          # Production Dockerfile
-│   ├── Dockerfile.dev      # Development Dockerfile
+│   ├── config/            # Configuration files
+│   ├── models/            # Database models
+│   ├── routes/            # API routes
+│   ├── services/          # Business logic
+│   ├── database/          # Migrations and seeds
 │   └── package.json
 ├── scripts/                # Utility scripts
-│   └── docker-setup.sh    # Docker setup script
-├── docker-compose.yml      # Production Docker Compose
-├── docker-compose.dev.yml  # Development Docker Compose
-├── docker-compose.prod.yml # Production Docker Compose
-├── .dockerignore           # Docker ignore file
 ├── env.example             # Environment variables example
+├── start.sh                # Linux/Mac startup script
+├── start-windows.bat      # Windows startup script
 └── package.json           # Root package.json
 ```
 
@@ -276,75 +250,7 @@ crm/
 2. Frontend: Create components in `client/src/components/`
 3. Update navigation in `Layout.js` if needed
 
-## Docker Commands
-
-### Development Mode
-```bash
-# Start development environment
-./scripts/docker-setup.sh setup dev
-
-# View logs
-./scripts/docker-setup.sh logs
-
-# View specific service logs
-./scripts/docker-setup.sh logs backend
-
-# Stop containers
-./scripts/docker-setup.sh stop
-
-# Restart containers
-./scripts/docker-setup.sh restart dev
-```
-
-### Production Mode
-```bash
-# Start production environment
-./scripts/docker-setup.sh setup prod
-
-# Or manually
-docker-compose -f docker-compose.prod.yml up --build -d
-```
-
-### Manual Docker Commands
-```bash
-# Build and start development
-docker-compose -f docker-compose.dev.yml up --build -d
-
-# Build and start production
-docker-compose -f docker-compose.prod.yml up --build -d
-
-# View container status
-docker-compose ps
-
-# View logs
-docker-compose logs -f
-
-# Stop containers
-docker-compose down
-
-# Clean up (removes volumes and images)
-docker-compose down -v --remove-orphans
-docker system prune -f
-```
-
 ## Production Deployment
-
-### Docker Production Deployment
-1. **Set up environment variables**:
-   ```bash
-   cp env.example .env
-   # Edit .env with production values
-   ```
-
-2. **Deploy with Docker Compose**:
-   ```bash
-   ./scripts/docker-setup.sh setup prod
-   ```
-
-3. **Configure reverse proxy** (optional):
-   - Use the included nginx configuration
-   - Set up SSL certificates
-   - Configure domain names
 
 ### Traditional Deployment
 1. Set production environment variables
@@ -411,7 +317,7 @@ Contributions are welcome! Please follow these steps:
 - ✅ Email activity filters
 - ✅ Gmail-style email interface
 - ✅ Rich text editor with attachments
-- ✅ Docker deployment improvements
+- ✅ Simplified deployment process
 - ✅ Database migrations for schema evolution
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed change history.
@@ -430,7 +336,6 @@ MIT License - see LICENSE file for details.
 - Styled with Tailwind CSS
 - Email processing with Nodemailer
 - Database management with Sequelize
-- Containerization with Docker
 
 ---
 
