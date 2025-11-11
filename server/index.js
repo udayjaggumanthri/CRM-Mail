@@ -25,7 +25,9 @@ const emailAccountRoutes = require('./routes/emailAccountRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const userRoutes = require('./routes/userRoutes');
 const clientRoutes = require('./routes/clientRoutes');
+const { rescheduleConferenceFollowUps } = clientRoutes;
 const { router: imapRoutes, realTimeImapService } = require('./routes/imapRoutes');
+const templateDraftRoutes = require('./routes/templateDraftRoutes');
 const { requireRole, requireConferenceAccess, requireUserManagement, requireClientAccess } = require('./middleware/rbac');
 require('dotenv').config();
 
@@ -47,6 +49,104 @@ const imapService = new ImapService();
 const followUpService = new FollowUpService();
 const emailService = new EmailService();
 const emailJobScheduler = new EmailJobScheduler();
+
+const normalizeShortName = (value) => {
+  if (typeof value !== 'string') {
+    return value === null ? null : undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.slice(0, 100);
+};
+
+const INTERVAL_UNITS = new Set(['minutes', 'hours', 'days']);
+const DEFAULT_STAGE1_INTERVAL = { value: 7, unit: 'days' };
+const DEFAULT_STAGE2_INTERVAL = { value: 3, unit: 'days' };
+const DEFAULT_MAX_ATTEMPTS = { Stage1: 6, Stage2: 6 };
+const DEFAULT_WORKING_HOURS = { start: '09:00', end: '17:00' };
+const DEFAULT_TIMEZONE = 'UTC';
+
+const normalizeIntervalConfig = (raw, fallback) => {
+  if (raw === null || raw === undefined) {
+    return { ...fallback };
+  }
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return { value: raw, unit: 'days' };
+  }
+
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const parsed = Number(raw.trim());
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return { value: parsed, unit: 'days' };
+    }
+  }
+
+  if (typeof raw === 'object') {
+    const value = Number(raw.value);
+    const unit = typeof raw.unit === 'string' ? raw.unit.toLowerCase() : fallback.unit;
+    if (Number.isFinite(value) && value > 0) {
+      return {
+        value,
+        unit: INTERVAL_UNITS.has(unit) ? unit : fallback.unit
+      };
+    }
+  }
+
+  return { ...fallback };
+};
+
+const normalizeMaxAttempts = (raw, fallback) => {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(parsed));
+};
+
+const normalizeWorkingHours = (raw) => {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_WORKING_HOURS };
+  }
+  const start = typeof raw.start === 'string' && raw.start.trim() ? raw.start.trim() : DEFAULT_WORKING_HOURS.start;
+  const end = typeof raw.end === 'string' && raw.end.trim() ? raw.end.trim() : DEFAULT_WORKING_HOURS.end;
+  return { start, end };
+};
+
+const normalizeConferenceSettings = (rawSettings = {}) => {
+  const normalizedFollowups = {
+    Stage1: normalizeIntervalConfig(rawSettings.followup_intervals?.Stage1, DEFAULT_STAGE1_INTERVAL),
+    Stage2: normalizeIntervalConfig(rawSettings.followup_intervals?.Stage2, DEFAULT_STAGE2_INTERVAL)
+  };
+
+  const normalizedAttempts = {
+    Stage1: normalizeMaxAttempts(rawSettings.max_attempts?.Stage1, DEFAULT_MAX_ATTEMPTS.Stage1),
+    Stage2: normalizeMaxAttempts(rawSettings.max_attempts?.Stage2, DEFAULT_MAX_ATTEMPTS.Stage2)
+  };
+
+  const skipWeekends = rawSettings.skip_weekends === undefined ? true : Boolean(rawSettings.skip_weekends);
+  const timezone = typeof rawSettings.timezone === 'string' && rawSettings.timezone.trim()
+    ? rawSettings.timezone.trim()
+    : DEFAULT_TIMEZONE;
+  const workingHours = normalizeWorkingHours(rawSettings.working_hours);
+
+  return {
+    ...rawSettings,
+    followup_intervals: {
+      ...(rawSettings.followup_intervals || {}),
+      ...normalizedFollowups
+    },
+    max_attempts: {
+      ...(rawSettings.max_attempts || {}),
+      ...normalizedAttempts
+    },
+    skip_weekends: skipWeekends,
+    timezone,
+    working_hours: workingHours
+  };
+};
 
 // Create HTTP server and WebSocket
 const server = http.createServer(app);
@@ -107,8 +207,27 @@ async function initializeDatabase() {
         try { await qi.removeColumn('clients', 'lastName'); } catch {}
         console.log('✅ clients.name column ensured');
       }
+      
+      // Ensure conferences table no longer has legacy initialTemplateId column
+      const conferenceTable = await qi.describeTable('conferences').catch(() => null);
+      if (conferenceTable && conferenceTable.initialTemplateId) {
+        const dialect = sequelize.getDialect();
+        if (dialect === 'postgres') {
+          try {
+            await sequelize.query('ALTER TABLE "conferences" DROP CONSTRAINT IF EXISTS "conferences_initialTemplateId_fkey";');
+          } catch (constraintError) {
+            console.log('ℹ️ Skipping dropping legacy initialTemplateId FK:', constraintError.message);
+          }
+        }
+        console.log('🛠️ Removing legacy conferences.initialTemplateId column (preflight)...');
+        await qi.removeColumn('conferences', 'initialTemplateId').catch((removeError) => {
+          if (!/does not exist/i.test(removeError.message)) {
+            throw removeError;
+          }
+        });
+      }
     } catch (e) {
-      console.log('ℹ️ Preflight name column check skipped:', e.message);
+      console.log('ℹ️ Preflight adjustments skipped:', e.message);
     }
     
     // Sync database - create tables if they don't exist
@@ -776,15 +895,21 @@ app.post('/api/conferences', authenticateToken, async (req, res) => {
     // Clean the request body to handle empty template IDs
     const conferenceData = { ...req.body };
     
+    const shortName = normalizeShortName(conferenceData.shortName);
+    conferenceData.shortName = shortName !== undefined ? shortName : null;
+
     // Set template IDs to null if they are empty strings or undefined
-    if (!conferenceData.initialTemplateId || conferenceData.initialTemplateId === '') {
-      conferenceData.initialTemplateId = null;
-    }
     if (!conferenceData.stage1TemplateId || conferenceData.stage1TemplateId === '') {
       conferenceData.stage1TemplateId = null;
     }
     if (!conferenceData.stage2TemplateId || conferenceData.stage2TemplateId === '') {
       conferenceData.stage2TemplateId = null;
+    }
+
+    if (conferenceData.settings) {
+      conferenceData.settings = normalizeConferenceSettings(conferenceData.settings);
+    } else {
+      conferenceData.settings = normalizeConferenceSettings();
     }
     
     // Ensure other required fields have defaults
@@ -823,8 +948,35 @@ app.put('/api/conferences/:id', authenticateToken, async (req, res) => {
     }
     // CEO can edit all conferences (no check needed)
 
-    await conference.update(req.body);
+    const updateData = { ...req.body };
+    if (Object.prototype.hasOwnProperty.call(updateData, 'shortName')) {
+      const normalized = normalizeShortName(updateData.shortName);
+      if (normalized !== undefined) {
+        updateData.shortName = normalized;
+      } else {
+        delete updateData.shortName;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updateData, 'settings')) {
+      updateData.settings = normalizeConferenceSettings(updateData.settings);
+    }
+
+    const previousState = conference.toJSON();
+
+    await conference.update(updateData);
+    await conference.reload();
     console.log(`✅ Conference ${conference.id} updated by ${req.user.role} ${req.user.email}`);
+    
+    if (hasFollowupSettingsChanged(previousState, conference.toJSON())) {
+      try {
+        const { updatedCount, pausedCount } = await rescheduleConferenceFollowUps(conference);
+        console.log(`🔁 Follow-up jobs refreshed for conference ${conference.id}: updated=${updatedCount}, paused=${pausedCount}`);
+      } catch (scheduleError) {
+        console.error(`❌ Failed to reschedule follow-ups for conference ${conference.id}:`, scheduleError.message);
+      }
+    }
+
     res.json(conference);
   } catch (error) {
     console.error('Update conference error:', error);
@@ -861,6 +1013,44 @@ app.delete('/api/conferences/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+function hasFollowupSettingsChanged(previous, current) {
+  if (!previous || !current) {
+    return false;
+  }
+
+  const templateFields = ['stage1TemplateId', 'stage2TemplateId'];
+  for (const field of templateFields) {
+    const prevValue = previous[field] || null;
+    const currValue = current[field] || null;
+    if (prevValue !== currValue) {
+      return true;
+    }
+  }
+
+  const prevSettings = previous.settings || {};
+  const currSettings = current.settings || {};
+
+  const prevIntervals = JSON.stringify(prevSettings.followup_intervals || {});
+  const currIntervals = JSON.stringify(currSettings.followup_intervals || {});
+  if (prevIntervals !== currIntervals) {
+    return true;
+  }
+
+  const prevAttempts = JSON.stringify(prevSettings.max_attempts || {});
+  const currAttempts = JSON.stringify(currSettings.max_attempts || {});
+  if (prevAttempts !== currAttempts) {
+    return true;
+  }
+
+  const prevSkipWeekends = prevSettings.skip_weekends !== undefined ? prevSettings.skip_weekends : true;
+  const currSkipWeekends = currSettings.skip_weekends !== undefined ? currSettings.skip_weekends : true;
+  if (prevSkipWeekends !== currSkipWeekends) {
+    return true;
+  }
+
+  return false;
+}
 
 // Add missing template endpoints
 app.get('/api/templates', authenticateToken, async (req, res) => {
@@ -914,7 +1104,8 @@ app.delete('/api/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
-
+// Template drafts endpoints
+app.use('/api/template-drafts', authenticateToken, templateDraftRoutes);
 
 // Bulk assign conference endpoint
 app.post('/api/clients/bulk-assign-conference', authenticateToken, async (req, res) => {

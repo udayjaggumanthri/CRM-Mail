@@ -1,37 +1,39 @@
-const { sequelize } = require('../../config/database');
+module.exports = {
+  up: async (queryInterface, Sequelize) => {
+    await queryInterface.sequelize.transaction(async (transaction) => {
+      const tableInfo = await queryInterface.describeTable('conferences');
+      if (tableInfo.initialTemplateId) {
+        console.log('✅ initialTemplateId already exists on conferences, skipping');
+        return;
+      }
 
-async function addInitialTemplateToConferences() {
-  try {
-    console.log('Adding initial template field to conferences table...');
-    
-    // Add initialTemplateId column
-    await sequelize.query(`
-      ALTER TABLE conferences 
-      ADD COLUMN initialTemplateId VARCHAR(255) NULL COMMENT 'Reference to EmailTemplate for Initial Invitation'
-    `);
-    
-    console.log('✅ Initial template field added successfully to conferences table');
-  } catch (error) {
-    if (error.message.includes('Duplicate column name')) {
-      console.log('✅ Initial template field already exists, skipping...');
-    } else {
-      console.error('❌ Error adding initial template field:', error);
-      throw error;
-    }
-  }
-}
-
-// Run migration if called directly
-if (require.main === module) {
-  addInitialTemplateToConferences()
-    .then(() => {
-      console.log('Migration completed successfully');
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error('Migration failed:', error);
-      process.exit(1);
+      await queryInterface.addColumn(
+        'conferences',
+        'initialTemplateId',
+        {
+          type: Sequelize.STRING,
+          allowNull: true,
+          comment: 'Reference to EmailTemplate for Initial Invitation'
+        },
+        { transaction }
+      );
     });
-}
+  },
 
-module.exports = { addInitialTemplateToConferences };
+  down: async (queryInterface) => {
+    await queryInterface.sequelize.transaction(async (transaction) => {
+      try {
+        const tableInfo = await queryInterface.describeTable('conferences');
+        if (!tableInfo.initialTemplateId) {
+          return;
+        }
+        await queryInterface.removeColumn('conferences', 'initialTemplateId', { transaction });
+      } catch (error) {
+        if (error.name === 'SequelizeDatabaseError' && /does not exist/i.test(error.message)) {
+          return;
+        }
+        throw error;
+      }
+    });
+  }
+};

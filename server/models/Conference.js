@@ -11,6 +11,11 @@ const Conference = sequelize.define('Conference', {
     type: DataTypes.STRING, 
     allowNull: false 
   },
+  shortName: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'Short abbreviation for the conference name'
+  },
   venue: { 
     type: DataTypes.STRING, 
     allowNull: false 
@@ -72,12 +77,6 @@ const Conference = sequelize.define('Conference', {
       }
     }),
     comment: 'Conference settings - followup_intervals support: { value: number, unit: "days"|"hours"|"minutes" }'
-  },
-  // Initial Invitation Template ID
-  initialTemplateId: {
-    type: DataTypes.STRING,
-    allowNull: true,
-    comment: 'Reference to EmailTemplate for Initial Invitation'
   },
   // Stage 1 Template ID (Abstract Submission)
   stage1TemplateId: {

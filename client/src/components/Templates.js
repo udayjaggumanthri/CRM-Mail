@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -7,21 +7,218 @@ import {
   Edit,
   Trash2,
   Eye,
-  Copy,
   Mail,
   Paperclip,
   X,
-  Download,
   Upload,
   Code,
   User,
   Building,
   Globe,
   Calendar,
-  MapPin
+  MapPin,
+  File
 } from 'lucide-react';
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
+import ReactQuill, { Quill } from 'react-quill';
+import 'react-quill/dist/quill.snow.css';
+
+// Register font whitelist to match email compose editor
+const Font = Quill.import('formats/font');
+Font.whitelist = [
+  'arial',
+  'timesnewroman',
+  'helvetica',
+  'georgia',
+  'verdana',
+  'trebuchetms',
+  'tahoma',
+  'couriernew',
+  'lucidasansunicode',
+  'palatinolinotype'
+];
+Quill.register(Font, true);
+
+const quillModules = {
+  toolbar: [
+    [{ header: [1, 2, 3, false] }],
+    [{ font: ['arial', 'timesnewroman', 'helvetica', 'georgia', 'verdana', 'trebuchetms', 'tahoma', 'couriernew', 'lucidasansunicode', 'palatinolinotype'] }],
+    ['bold', 'italic', 'underline', 'strike'],
+    [{ color: [] }, { background: [] }],
+    [{ list: 'ordered' }, { list: 'bullet' }],
+    [{ align: [] }],
+    ['link', 'image'],
+    ['clean']
+  ]
+};
+
+const quillFormats = [
+  'header',
+  'font',
+  'bold',
+  'italic',
+  'underline',
+  'strike',
+  'color',
+  'background',
+  'list',
+  'bullet',
+  'align',
+  'link',
+  'image'
+];
+
+const TEMPLATE_EDITOR_STYLES = `
+  .template-editor .ql-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    font-size: 14px;
+    min-height: 0;
+    border-radius: 0 0 0.5rem 0.5rem;
+  }
+  .template-editor .ql-editor {
+    flex: 1;
+    min-height: 250px;
+    padding: 12px;
+    text-align: left;
+    line-height: 1.6;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .template-editor .ql-editor.ql-blank::before {
+    left: 12px;
+    right: 12px;
+    text-align: left;
+    font-style: normal;
+    color: #9ca3af;
+  }
+  .template-editor .ql-toolbar {
+    border-top: 1px solid #e5e7eb;
+    border-left: 1px solid #e5e7eb;
+    border-right: 1px solid #e5e7eb;
+    border-bottom: none;
+    padding: 8px;
+    border-radius: 0.5rem 0.5rem 0 0;
+  }
+  .template-editor .ql-toolbar .ql-formats {
+    margin-right: 8px;
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-font {
+    max-width: 160px;
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label,
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label::before,
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label::after {
+    white-space: nowrap;
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
+    max-width: 160px;
+    vertical-align: middle;
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-options {
+    min-width: 180px;
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item,
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item::before,
+  .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item::after {
+    white-space: nowrap;
+  }
+  /* Font family assignments */
+  .ql-font-arial,
+  *[class*="ql-font-arial"] {
+    font-family: Arial, sans-serif !important;
+  }
+  .ql-font-timesnewroman,
+  *[class*="ql-font-timesnewroman"] {
+    font-family: 'Times New Roman', Times, serif !important;
+  }
+  .ql-font-helvetica,
+  *[class*="ql-font-helvetica"] {
+    font-family: Helvetica, Arial, sans-serif !important;
+  }
+  .ql-font-georgia,
+  *[class*="ql-font-georgia"] {
+    font-family: Georgia, serif !important;
+  }
+  .ql-font-verdana,
+  *[class*="ql-font-verdana"] {
+    font-family: Verdana, Geneva, sans-serif !important;
+  }
+  .ql-font-trebuchetms,
+  *[class*="ql-font-trebuchetms"] {
+    font-family: 'Trebuchet MS', Helvetica, sans-serif !important;
+  }
+  .ql-font-tahoma,
+  *[class*="ql-font-tahoma"] {
+    font-family: Tahoma, Geneva, sans-serif !important;
+  }
+  .ql-font-couriernew,
+  *[class*="ql-font-couriernew"] {
+    font-family: 'Courier New', Courier, monospace !important;
+  }
+  .ql-font-lucidasansunicode,
+  *[class*="ql-font-lucidasansunicode"] {
+    font-family: 'Lucida Sans Unicode', 'Lucida Grande', sans-serif !important;
+  }
+  .ql-font-palatinolinotype,
+  *[class*="ql-font-palatinolinotype"] {
+    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
+  }
+  .template-editor .ql-editor [style*="font-family:"] {
+    font-family: inherit !important;
+  }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="arial"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="arial"]::before { content: 'Arial' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="timesnewroman"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="timesnewroman"]::before { content: 'Times New Roman' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="helvetica"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="helvetica"]::before { content: 'Helvetica' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="georgia"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="georgia"]::before { content: 'Georgia' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="verdana"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="verdana"]::before { content: 'Verdana' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="trebuchetms"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="trebuchetms"]::before { content: 'Trebuchet MS' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="tahoma"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="tahoma"]::before { content: 'Tahoma' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="couriernew"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="couriernew"]::before { content: 'Courier New' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="lucidasansunicode"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="lucidasansunicode"]::before { content: 'Lucida Sans Unicode' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="palatinolinotype"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="palatinolinotype"]::before { content: 'Palatino Linotype' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label:not([data-value])::before {
+    content: 'Sans Serif' !important;
+  }
+`;
+
+const stripHtml = (html) => {
+  if (!html) return '';
+  if (typeof window === 'undefined') {
+    return html.replace(/<[^>]+>/g, ' ').trim();
+  }
+  const div = window.document.createElement('div');
+  div.innerHTML = html;
+  return (div.textContent || div.innerText || '').trim();
+};
+
+const getInitialTemplateForm = () => ({
+  name: '',
+  stage: '',
+  subject: '',
+  bodyHtml: '',
+  bodyText: '',
+  description: '',
+  variables: [],
+  sendAfterDays: 1,
+  followUpNumber: 1
+});
 
 const Templates = () => {
   const [showAddModal, setShowAddModal] = useState(false);
@@ -29,38 +226,11 @@ const Templates = () => {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [attachments, setAttachments] = useState([]);
-  const [formData, setFormData] = useState({
-    name: '',
-    stage: '',
-    subject: '',
-    bodyHtml: '',
-    bodyText: '',
-    description: '',
-    variables: [],
-    sendAfterDays: 1,
-    followUpNumber: 1
-  });
-  const [previewData, setPreviewData] = useState({
-    name: 'John Doe',
-    firstName: 'John',
-    lastName: 'Doe',
-    email: 'john.doe@example.com',
-    phone: '+1-555-0123',
-    country: 'United States',
-    organization: 'Example Corp',
-    position: 'Senior Manager',
-    conferenceName: 'Tech Conference 2024',
-    conferenceDate: 'December 15, 2024 to December 17, 2024',
-    conferenceStartDate: 'December 15, 2024',
-    conferenceEndDate: 'December 17, 2024',
-    conferenceVenue: 'Convention Center, New York',
-    conferenceWebsite: 'https://techconf2024.com',
-    conferenceDescription: 'Annual Technology Conference',
-    abstractDeadline: 'November 30, 2024',
-    registrationDeadline: 'December 1, 2024',
-    currentDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-    currentYear: new Date().getFullYear()
-  });
+  const bodyEditorRef = useRef(null);
+  const [formData, setFormData] = useState(getInitialTemplateForm());
+  const [activeTab, setActiveTab] = useState('templates');
+  const [activeDraftId, setActiveDraftId] = useState(null);
+  const [draftIdBeingDeleted, setDraftIdBeingDeleted] = useState(null);
   const queryClient = useQueryClient();
 
   // Dynamic variables available for templates
@@ -71,6 +241,7 @@ const Templates = () => {
     { key: 'country', label: 'Client Country', icon: Globe, description: 'Country of the client' },
     // Conference variables
     { key: 'conferenceName', label: 'Conference Name', icon: Building, description: 'Name of the conference' },
+    { key: 'conferenceShortName', label: 'Conference Short Name', icon: Building, description: 'Short / abbreviated name of the conference' },
     { key: 'conferenceVenue', label: 'Conference Venue', icon: MapPin, description: 'Venue of the conference' },
     { key: 'conferenceDate', label: 'Conference Date Range', icon: Calendar, description: 'Full date range (June 15 to 17, 2024)' },
     { key: 'conferenceStartDate', label: 'Start Date', icon: Calendar, description: 'Conference start date only' },
@@ -84,6 +255,88 @@ const Templates = () => {
     { key: 'currentYear', label: 'Current Year', icon: Calendar, description: 'Current year (2025)' }
   ];
 
+  const { data: templateDrafts = [], isLoading: draftsLoading } = useQuery('template-drafts', async () => {
+    const response = await axios.get('/api/template-drafts');
+    return response.data;
+  });
+
+  const createTemplateDraftMutation = useMutation(async (draftData) => {
+    const response = await axios.post('/api/template-drafts', draftData);
+    return response.data;
+  }, {
+    onSuccess: (data) => {
+      queryClient.invalidateQueries('template-drafts');
+      setActiveDraftId(data.id);
+      setActiveTab('drafts');
+      if (data.attachments) {
+        setAttachments(
+          data.attachments.map((att, idx) => ({
+            ...att,
+            id: att.id || `${data.id}-${idx}`
+          }))
+        );
+      }
+      toast.success('Draft saved');
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || 'Failed to save draft');
+    }
+  });
+
+  const updateTemplateDraftMutation = useMutation(async ({ id, data }) => {
+    const response = await axios.put(`/api/template-drafts/${id}`, data);
+    return response.data;
+  }, {
+    onSuccess: (data) => {
+      queryClient.invalidateQueries('template-drafts');
+      setActiveDraftId(data.id);
+      setActiveTab('drafts');
+      if (data.attachments) {
+        setAttachments(
+          data.attachments.map((att, idx) => ({
+            ...att,
+            id: att.id || `${data.id}-${idx}`
+          }))
+        );
+      }
+      toast.success('Draft updated');
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || 'Failed to update draft');
+    }
+  });
+
+  const deleteTemplateDraftMutation = useMutation(
+    async ({ id }) => {
+      await axios.delete(`/api/template-drafts/${id}`);
+      return id;
+    },
+    {
+      onMutate: (variables) => {
+        setDraftIdBeingDeleted(variables.id);
+      },
+      onSuccess: (_, variables) => {
+        queryClient.invalidateQueries('template-drafts');
+        if (variables?.closeOnSuccess) {
+          resetForm();
+          setShowAddModal(false);
+        }
+        if (!variables?.silent) {
+          toast.success('Draft deleted');
+        }
+      },
+      onError: (error) => {
+        toast.error(error.response?.data?.error || 'Failed to delete draft');
+      },
+      onSettled: () => {
+        setDraftIdBeingDeleted(null);
+      }
+    }
+  );
+
+  const isSavingDraft = createTemplateDraftMutation.isLoading || updateTemplateDraftMutation.isLoading;
+  const isDeletingDraft = deleteTemplateDraftMutation.isLoading;
+
   const { data: templates, isLoading } = useQuery('templates', async () => {
     const response = await axios.get('/api/templates');
     return response.data;
@@ -96,7 +349,13 @@ const Templates = () => {
     onSuccess: () => {
       queryClient.invalidateQueries('templates');
       setShowAddModal(false);
+      setActiveTab('templates');
       toast.success('Template created successfully');
+      if (activeDraftId) {
+        deleteTemplateDraftMutation.mutate({ id: activeDraftId, silent: true });
+      }
+      setActiveDraftId(null);
+      resetForm();
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to create template');
@@ -112,6 +371,7 @@ const Templates = () => {
       setShowEditModal(false);
       setSelectedTemplate(null);
       toast.success('Template updated successfully');
+      setActiveDraftId(null);
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to update template');
@@ -133,7 +393,6 @@ const Templates = () => {
 
   const getStageBadge = (stage) => {
     const stageClasses = {
-      'initial_invitation': 'bg-purple-100 text-purple-800',
       'abstract_submission': 'bg-blue-100 text-blue-800',
       'registration': 'bg-green-100 text-green-800'
     };
@@ -142,7 +401,6 @@ const Templates = () => {
 
   const getStageName = (stage) => {
     const stageNames = {
-      'initial_invitation': 'Initial Invitation',
       'abstract_submission': 'Abstract Submission',
       'registration': 'Registration'
     };
@@ -150,6 +408,8 @@ const Templates = () => {
   };
 
   const handleEdit = (template) => {
+    setActiveDraftId(null);
+    setActiveTab('templates');
     setSelectedTemplate(template);
     setShowEditModal(true);
   };
@@ -165,6 +425,14 @@ const Templates = () => {
     setFormData(prev => ({
       ...prev,
       [name]: value
+    }));
+  };
+
+  const handleBodyChange = (value) => {
+    setFormData(prev => ({
+      ...prev,
+      bodyHtml: value,
+      bodyText: stripHtml(value)
     }));
   };
 
@@ -184,48 +452,131 @@ const Templates = () => {
     setAttachments(prev => prev.filter(att => att.id !== id));
   };
 
-  const insertVariable = (variable) => {
-    const textarea = document.getElementById('bodyHtml');
-    if (textarea) {
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const text = textarea.value;
-      const before = text.substring(0, start);
-      const after = text.substring(end, text.length);
-      const newText = before + `{${variable}}` + after;
-      
-      setFormData(prev => ({
-        ...prev,
-        bodyHtml: newText
-      }));
-      
-      // Focus back to textarea
-      setTimeout(() => {
-        textarea.focus();
-        textarea.setSelectionRange(start + variable.length + 2, start + variable.length + 2);
-      }, 0);
+  const buildDraftPayload = () => ({
+    name: formData.name || '',
+    stage: formData.stage || null,
+    subject: formData.subject || '',
+    bodyHtml: formData.bodyHtml || '',
+    bodyText: stripHtml(formData.bodyHtml || ''),
+    description: formData.description || '',
+    variables: formData.variables || [],
+    sendAfterDays: formData.sendAfterDays || 1,
+    followUpNumber: formData.followUpNumber || 1,
+    attachments: attachments.map(att => ({
+      name: att.name,
+      size: att.size,
+      type: att.type
+    }))
+  });
+
+  const handleSaveDraft = () => {
+    if (isSavingDraft) return;
+    const payload = buildDraftPayload();
+    if (!payload.bodyHtml || payload.bodyHtml.trim() === '') {
+      toast.error('Email body is required before saving a draft');
+      return;
+    }
+
+    if (activeDraftId) {
+      updateTemplateDraftMutation.mutate({ id: activeDraftId, data: payload });
+    } else {
+      createTemplateDraftMutation.mutate(payload);
     }
   };
 
-  const resetForm = () => {
+  const handleEditDraft = (draft) => {
+    if (!draft) return;
+    setActiveDraftId(draft.id);
     setFormData({
-      name: '',
-      stage: '',
-      subject: '',
-      bodyHtml: '',
-      bodyText: '',
-      description: '',
-      variables: [],
-      sendAfterDays: 1,
-      followUpNumber: 1
+      name: draft.name || '',
+      stage: draft.stage || '',
+      subject: draft.subject || '',
+      bodyHtml: draft.bodyHtml || '',
+      bodyText: draft.bodyText || '',
+      description: draft.description || '',
+      variables: draft.variables || [],
+      sendAfterDays: draft.sendAfterDays || 1,
+      followUpNumber: draft.followUpNumber || 1
     });
+    setAttachments(
+      (draft.attachments || []).map((att, idx) => ({
+        ...att,
+        id: att.id || `${draft.id}-${idx}`
+      }))
+    );
+    setShowAddModal(true);
+  };
+
+  const handleDeleteDraft = (id) => {
+    if (!id) return;
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm('Delete this template draft permanently?');
+      if (!confirmed) return;
+    }
+    const closeOnSuccess = activeDraftId === id;
+    deleteTemplateDraftMutation.mutate({ id, closeOnSuccess });
+  };
+
+  const insertVariable = (variable) => {
+    const notation = `{${variable}}`;
+    const quillInstance = bodyEditorRef.current?.getEditor?.();
+
+    if (quillInstance) {
+      const selection = quillInstance.getSelection(true);
+      let index = quillInstance.getLength();
+
+      if (selection) {
+        index = selection.index;
+        if (selection.length > 0) {
+          quillInstance.deleteText(selection.index, selection.length, 'user');
+        }
+      }
+
+      quillInstance.insertText(index, notation, 'user');
+      quillInstance.setSelection(index + notation.length, 0, 'user');
+      quillInstance.focus();
+      return;
+    }
+
+    // Fallback: update state directly
+    setFormData(prev => {
+      const updatedHtml = `${prev.bodyHtml || ''}${notation}`;
+      return {
+        ...prev,
+        bodyHtml: updatedHtml,
+        bodyText: stripHtml(updatedHtml)
+      };
+    });
+  };
+
+  const resetForm = () => {
+    setFormData(getInitialTemplateForm());
     setAttachments([]);
+    setActiveDraftId(null);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (!formData.name?.trim()) {
+      toast.error('Template name is required');
+      return;
+    }
+    if (!formData.stage) {
+      toast.error('Please select a stage');
+      return;
+    }
+    if (!formData.subject?.trim()) {
+      toast.error('Subject is required');
+      return;
+    }
+    const bodyTextValue = stripHtml(formData.bodyHtml);
+    if (!bodyTextValue) {
+      toast.error('Email body is required');
+      return;
+    }
     const templateData = {
       ...formData,
+      bodyText: bodyTextValue,
       attachments: attachments.map(att => ({
         name: att.name,
         size: att.size,
@@ -244,6 +595,8 @@ const Templates = () => {
     setShowAddModal(false);
     setShowEditModal(false);
     setSelectedTemplate(null);
+    setActiveDraftId(null);
+    setActiveTab('templates');
     resetForm();
   };
 
@@ -253,7 +606,7 @@ const Templates = () => {
   };
 
   const renderPreview = (template) => {
-    // Use the same sample data as previewData state
+    // Sample data for preview rendering
     const sampleData = {
       // Client variables
       name: 'John Doe',
@@ -266,6 +619,7 @@ const Templates = () => {
       position: 'Senior Manager',
       // Conference variables
       conferenceName: 'Tech Conference 2024',
+      conferenceShortName: 'TC24',
       conferenceVenue: 'Convention Center, New York',
       conferenceDate: 'December 15, 2024 to December 17, 2024',
       conferenceStartDate: 'December 15, 2024',
@@ -298,6 +652,7 @@ const Templates = () => {
 
   return (
     <div className="space-y-6">
+      <style>{TEMPLATE_EDITOR_STYLES}</style>
       {/* Enhanced Header */}
       <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl shadow-sm border border-blue-100 p-8">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -320,7 +675,11 @@ const Templates = () => {
             </div>
           </div>
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              resetForm();
+              setActiveTab('templates');
+              setShowAddModal(true);
+            }}
             className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 font-medium shadow-sm flex items-center"
           >
             <Plus className="h-5 w-5 mr-2" />
@@ -329,83 +688,190 @@ const Templates = () => {
         </div>
       </div>
 
-      {/* Templates Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {isLoading ? (
-          <div className="col-span-full flex justify-center py-8">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-          </div>
-        ) : templates?.length === 0 ? (
-          <div className="col-span-full text-center py-8">
-            <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-500">No templates created yet</p>
-          </div>
-        ) : (
-          templates?.map((template) => (
-            <div key={template.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 p-6">
-              <div className="flex justify-between items-start mb-4">
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-1">{template.name}</h3>
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStageBadge(template.stage)}`}>
-                    {getStageName(template.stage)}
-                  </span>
-                </div>
-              </div>
-              
-              <div className="space-y-3 mb-4">
-                <div>
-                  <p className="text-sm font-medium text-gray-700 mb-1">Subject:</p>
-                  <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded border-l-2 border-blue-200">
-                    {template.subject}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-700 mb-1">Preview:</p>
-                  <p className="text-sm text-gray-500 bg-gray-50 p-2 rounded line-clamp-3">
-                    {template.bodyText?.substring(0, 120) || template.bodyHtml?.replace(/<[^>]*>/g, '').substring(0, 120)}...
-                  </p>
-                </div>
-              </div>
-              
-              <div className="flex justify-between items-center pt-4 border-t border-gray-100">
-                <div className="flex items-center space-x-2 text-xs text-gray-500">
-                  <span>Version {template.version}</span>
-                  {template.attachments && template.attachments.length > 0 && (
-                    <span className="flex items-center">
-                      <Paperclip className="h-3 w-3 mr-1" />
-                      {template.attachments.length} files
-                    </span>
-                  )}
-                </div>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => handlePreview(template)}
-                    className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
-                    title="Preview"
-                  >
-                    <Eye className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => handleEdit(template)}
-                    className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all duration-200"
-                    title="Edit"
-                  >
-                    <Edit className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(template)}
-                    className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
-                    title="Delete"
-                    disabled={deleteTemplateMutation.isLoading}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))
+      <div className="flex items-center justify-between">
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab('templates')}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'templates'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+            }`}
+          >
+            Templates
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('drafts')}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'drafts'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+            }`}
+          >
+            Drafts
+          </button>
+        </div>
+        {activeTab === 'drafts' && (
+          <p className="text-xs text-gray-500">
+            Drafts are private to you until published.
+          </p>
         )}
       </div>
+
+      {/* Templates / Drafts Grid */}
+      {activeTab === 'templates' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {isLoading ? (
+            <div className="col-span-full flex justify-center py-8">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+            </div>
+          ) : templates?.length === 0 ? (
+            <div className="col-span-full text-center py-8">
+              <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-500">No templates created yet</p>
+            </div>
+          ) : (
+            templates?.map((template) => (
+              <div key={template.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 p-6">
+                <div className="flex justify-between items-start mb-4">
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-1">{template.name}</h3>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStageBadge(template.stage)}`}>
+                      {getStageName(template.stage)}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">Subject:</p>
+                    <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded border-l-2 border-blue-200">
+                      {template.subject}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">Preview:</p>
+                    <p className="text-sm text-gray-500 bg-gray-50 p-2 rounded line-clamp-3">
+                      {template.bodyText?.substring(0, 120) || template.bodyHtml?.replace(/<[^>]*>/g, '').substring(0, 120)}...
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex justify-between items-center pt-4 border-t border-gray-100">
+                  <div className="flex items-center space-x-2 text-xs text-gray-500">
+                    <span>Version {template.version}</span>
+                    {template.attachments && template.attachments.length > 0 && (
+                      <span className="flex items-center">
+                        <Paperclip className="h-3 w-3 mr-1" />
+                        {template.attachments.length} files
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => handlePreview(template)}
+                      className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
+                      title="Preview"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => handleEdit(template)}
+                      className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all duration-200"
+                      title="Edit"
+                    >
+                      <Edit className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(template)}
+                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
+                      title="Delete"
+                      disabled={deleteTemplateMutation.isLoading}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {draftsLoading ? (
+            <div className="col-span-full flex justify-center py-8">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+            </div>
+          ) : templateDrafts.length === 0 ? (
+            <div className="col-span-full text-center py-8">
+              <File className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-500">No drafts saved yet</p>
+              <p className="text-sm text-gray-400 mt-1">Use “Save Draft” in the composer to keep work-in-progress templates.</p>
+            </div>
+          ) : (
+            templateDrafts.map((draft) => (
+              <div key={draft.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 p-6">
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900 mb-1">{draft.name || 'Untitled Draft'}</h3>
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span>{draft.stage ? getStageName(draft.stage) : 'Stage not set'}</span>
+                      <span>•</span>
+                      <span>Updated {draft.updatedAt ? new Date(draft.updatedAt).toLocaleString() : 'recently'}</span>
+                    </div>
+                  </div>
+                  <span className="text-xs uppercase tracking-wide text-blue-600 bg-blue-50 px-2 py-1 rounded-full">
+                    Draft
+                  </span>
+                </div>
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">Subject:</p>
+                    <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded border-l-2 border-blue-200">
+                      {draft.subject || '(no subject)'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-1">Preview:</p>
+                    <p className="text-sm text-gray-500 bg-gray-50 p-2 rounded line-clamp-3">
+                      {draft.bodyText?.substring(0, 120) || draft.bodyHtml?.replace(/<[^>]*>/g, '').substring(0, 120) || 'No content yet'}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex justify-between items-center pt-4 border-t border-gray-100">
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                    {draft.attachments?.length ? (
+                      <span className="flex items-center">
+                        <Paperclip className="h-3 w-3 mr-1" />
+                        {draft.attachments.length} files
+                      </span>
+                    ) : (
+                      <span>No attachments</span>
+                    )}
+                  </div>
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => handleEditDraft(draft)}
+                      className="px-3 py-1.5 text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+                    >
+                      Edit Draft
+                    </button>
+                    <button
+                      onClick={() => handleDeleteDraft(draft.id)}
+                      className="px-3 py-1.5 text-sm text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"
+                      disabled={isDeletingDraft && draftIdBeingDeleted === draft.id}
+                    >
+                      {isDeletingDraft && draftIdBeingDeleted === draft.id ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
       {/* Add Template Modal */}
       <Transition appear show={showAddModal} as={Fragment}>
@@ -439,10 +905,12 @@ const Templates = () => {
                     <div className="flex items-center justify-between">
                       <div>
                         <Dialog.Title className="text-2xl font-bold text-gray-900">
-                          Create New Template
+                          {activeDraftId ? 'Edit Template Draft' : 'Create New Template'}
                         </Dialog.Title>
                         <p className="text-sm text-gray-600 mt-1">
-                          Create dynamic email templates with attachments and variables
+                          {activeDraftId
+                            ? 'Update your draft and publish when it is ready.'
+                            : 'Create dynamic email templates with attachments and variables'}
                         </p>
                       </div>
                       <button
@@ -483,11 +951,9 @@ const Templates = () => {
                               name="stage"
                               value={formData.stage}
                               onChange={handleChange}
-                              required
                               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
                             >
                               <option value="">Select Stage</option>
-                              <option value="initial_invitation">Initial Invitation</option>
                               <option value="abstract_submission">Abstract Submission</option>
                               <option value="registration">Registration</option>
                             </select>
@@ -517,16 +983,17 @@ const Templates = () => {
                             <label className="block text-sm font-medium text-gray-700 mb-2">
                               Email Body (HTML) *
                             </label>
-                            <textarea
-                              id="bodyHtml"
-                              name="bodyHtml"
-                              value={formData.bodyHtml}
-                              onChange={handleChange}
-                              rows={8}
-                              required
-                              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white resize-none"
-                              placeholder="Use {name}, {conferenceName}, {email}, {country} for variables"
-                            />
+                            <div className="border border-gray-300 rounded-lg bg-white overflow-hidden">
+                              <ReactQuill
+                                ref={bodyEditorRef}
+                                value={formData.bodyHtml}
+                                onChange={handleBodyChange}
+                                modules={quillModules}
+                                formats={quillFormats}
+                                placeholder="Use {name}, {conferenceName}, {email}, {country} for variables"
+                                className="template-editor"
+                              />
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -607,21 +1074,41 @@ const Templates = () => {
                       </div>
 
                       {/* Form Actions */}
-                      <div className="flex justify-end space-x-4 pt-6 border-t border-gray-200">
-                        <button
-                          type="button"
-                          onClick={handleCloseModal}
-                          className="px-6 py-3 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-all duration-200 font-medium"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="submit"
-                          disabled={addTemplateMutation.isLoading}
-                          className="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-sm"
-                        >
-                          {addTemplateMutation.isLoading ? 'Creating...' : 'Create Template'}
-                        </button>
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-6 border-t border-gray-200">
+                        {activeDraftId && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDraft(activeDraftId)}
+                            disabled={isDeletingDraft && draftIdBeingDeleted === activeDraftId}
+                            className="inline-flex items-center justify-center px-4 py-2 text-sm text-red-600 bg-red-50 hover:bg-red-100 border border-red-100 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {isDeletingDraft && draftIdBeingDeleted === activeDraftId ? 'Deleting Draft…' : 'Delete Draft'}
+                          </button>
+                        )}
+                        <div className="flex items-center justify-end gap-3 sm:ml-auto">
+                          <button
+                            type="button"
+                            onClick={handleCloseModal}
+                            className="px-6 py-3 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-all duration-200 font-medium"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaveDraft}
+                            disabled={isSavingDraft}
+                            className="px-6 py-3 text-blue-600 bg-blue-50 border border-blue-100 rounded-lg hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {isSavingDraft ? 'Saving…' : activeDraftId ? 'Update Draft' : 'Save Draft'}
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={addTemplateMutation.isLoading}
+                            className="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-sm"
+                          >
+                            {addTemplateMutation.isLoading ? 'Creating...' : 'Create Template'}
+                          </button>
+                        </div>
                       </div>
                     </form>
                   </div>
@@ -752,17 +1239,36 @@ const Templates = () => {
 };
 
 const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
+  const editorRef = useRef(null);
   const [formData, setFormData] = useState({
     name: template?.name || '',
     stage: template?.stage || '',
     subject: template?.subject || '',
     bodyHtml: template?.bodyHtml || '',
-    bodyText: template?.bodyText || ''
+    bodyText: template?.bodyText || stripHtml(template?.bodyHtml || '')
   });
+
+  useEffect(() => {
+    setFormData({
+      name: template?.name || '',
+      stage: template?.stage || '',
+      subject: template?.subject || '',
+      bodyHtml: template?.bodyHtml || '',
+      bodyText: template?.bodyText || stripHtml(template?.bodyHtml || '')
+    });
+  }, [template]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSubmit(formData);
+    const bodyTextValue = stripHtml(formData.bodyHtml);
+    if (!bodyTextValue) {
+      toast.error('Email body is required');
+      return;
+    }
+    onSubmit({
+      ...formData,
+      bodyText: bodyTextValue
+    });
   };
 
   const handleChange = (e) => {
@@ -772,13 +1278,11 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
     });
   };
 
-  const handleBodyHtmlChange = (e) => {
-    const html = e.target.value;
-    const text = html.replace(/<[^>]*>/g, ''); // Strip HTML tags for text version
+  const handleBodyChange = (value) => {
     setFormData({
       ...formData,
-      bodyHtml: html,
-      bodyText: text
+      bodyHtml: value,
+      bodyText: stripHtml(value)
     });
   };
 
@@ -810,7 +1314,6 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
             className="input-field"
           >
             <option value="">Select Stage</option>
-            <option value="initial_invitation">Initial Invitation</option>
             <option value="abstract_submission">Abstract Submission</option>
             <option value="registration">Registration</option>
           </select>
@@ -834,17 +1337,19 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
       
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          Email Body (HTML)
+          Email Body (HTML) *
         </label>
-        <textarea
-          name="bodyHtml"
-          rows="8"
-          required
-          value={formData.bodyHtml}
-          onChange={handleBodyHtmlChange}
-          className="input-field"
-          placeholder="Use {Name}, {ConferenceName}, {Email}, {Country} for variables"
-        />
+        <div className="border border-gray-300 rounded-lg bg-white overflow-hidden">
+          <ReactQuill
+            ref={editorRef}
+            value={formData.bodyHtml}
+            onChange={handleBodyChange}
+            modules={quillModules}
+            formats={quillFormats}
+            placeholder="Use {Name}, {ConferenceName}, {Email}, {Country} for variables"
+            className="template-editor"
+          />
+        </div>
         <p className="text-xs text-gray-500 mt-1">
           Available variables: {'{Name}'}, {'{ConferenceName}'}, {'{Email}'}, {'{Country}'}
         </p>

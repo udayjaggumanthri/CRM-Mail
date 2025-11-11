@@ -83,6 +83,32 @@ const Settings = () => {
     }
   });
 
+  const setPriorityMutation = useMutation(async ({ id, priority }) => {
+    const response = await axios.post(`/api/smtp-accounts/${id}/set-priority`, { priority });
+    return response.data;
+  }, {
+    onSuccess: () => {
+      queryClient.invalidateQueries('smtp-accounts');
+      toast.success('SMTP priority updated');
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || 'Failed to update priority');
+    }
+  });
+
+  const toggleActiveMutation = useMutation(async ({ id, isActive }) => {
+    const response = await axios.put(`/api/smtp-accounts/${id}`, { isActive });
+    return response.data;
+  }, {
+    onSuccess: () => {
+      queryClient.invalidateQueries('smtp-accounts');
+      toast.success('SMTP account updated');
+    },
+    onError: (error) => {
+      toast.error(error.response?.data?.error || 'Failed to update SMTP account');
+    }
+  });
+
   const tabs = [
     { id: 'smtp', name: 'SMTP Accounts', icon: Mail },
     { id: 'imap', name: 'IMAP Settings', icon: Inbox },
@@ -96,6 +122,31 @@ const Settings = () => {
 
   const handleTestSmtp = (smtpId) => {
     testSmtpMutation.mutate(smtpId);
+  };
+
+  const sortedSmtpAccounts = React.useMemo(() => {
+    if (!Array.isArray(smtpAccounts)) return [];
+    return [...smtpAccounts].sort((a, b) => {
+      const priorityA = a.sendPriority ?? 1000;
+      const priorityB = b.sendPriority ?? 1000;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      const createdAtA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const createdAtB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return createdAtA - createdAtB;
+    });
+  }, [smtpAccounts]);
+
+  const handleSetPrimary = (accountId) => {
+    setPriorityMutation.mutate({ id: accountId, priority: 1 });
+  };
+
+  const handleMovePriority = (account, direction) => {
+    const nextPriority = Math.max(1, (account.sendPriority || 1) + direction);
+    setPriorityMutation.mutate({ id: account.id, priority: nextPriority });
+  };
+
+  const handleToggleActive = (account) => {
+    toggleActiveMutation.mutate({ id: account.id, isActive: !account.isActive });
   };
 
   return (
@@ -150,16 +201,33 @@ const Settings = () => {
               <div className="col-span-full flex justify-center py-8">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
               </div>
-            ) : smtpAccounts?.length === 0 ? (
+            ) : sortedSmtpAccounts.length === 0 ? (
               <div className="col-span-full text-center py-8">
                 <Server className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <p className="text-gray-500">No SMTP accounts configured</p>
               </div>
             ) : (
-              smtpAccounts?.map((account) => (
+              sortedSmtpAccounts.map((account, index) => (
                 <div key={account.id} className="card">
                   <div className="flex justify-between items-start mb-3">
-                    <h3 className="text-lg font-medium text-gray-900">{account.name}</h3>
+                    <div>
+                      <h3 className="text-lg font-medium text-gray-900 flex items-center space-x-2">
+                        <span>{account.name}</span>
+                        {account.sendPriority === 1 && (
+                          <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-800">
+                            Primary
+                          </span>
+                        )}
+                        {account.sendPriority === 2 && (
+                          <span className="px-2 py-0.5 text-xs rounded-full bg-purple-100 text-purple-700">
+                            Secondary
+                          </span>
+                        )}
+                      </h3>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Priority {account.sendPriority ?? '—'}
+                      </p>
+                    </div>
                     <div className="flex space-x-2">
                       <button
                         onClick={() => handleTestSmtp(account.id)}
@@ -210,6 +278,50 @@ const Settings = () => {
                         {account.allowUsers ? 'Yes' : 'No'}
                       </span>
                     </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="font-medium">Active for Sending:</span>
+                      <button
+                        onClick={() => handleToggleActive(account)}
+                        disabled={toggleActiveMutation.isLoading}
+                        className={`px-2 py-1 text-xs rounded ${
+                          account.isActive
+                            ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                        }`}
+                      >
+                        {account.isActive ? 'Active' : 'Paused'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {account.sendPriority !== 1 && (
+                      <button
+                        onClick={() => handleSetPrimary(account.id)}
+                        disabled={setPriorityMutation.isLoading}
+                        className="btn-secondary text-xs"
+                      >
+                        Set as Primary
+                      </button>
+                    )}
+                    {account.sendPriority > 1 && (
+                      <button
+                        onClick={() => handleMovePriority(account, -1)}
+                        disabled={setPriorityMutation.isLoading}
+                        className="btn-secondary text-xs"
+                      >
+                        Move Up
+                      </button>
+                    )}
+                    {account.sendPriority < sortedSmtpAccounts.length && (
+                      <button
+                        onClick={() => handleMovePriority(account, 1)}
+                        disabled={setPriorityMutation.isLoading}
+                        className="btn-secondary text-xs"
+                      >
+                        Move Down
+                      </button>
+                    )}
                   </div>
                 </div>
               ))

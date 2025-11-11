@@ -313,7 +313,11 @@ class FollowUpAutomation {
           organizationId: conference.organizationId,
           isActive: true,
           type: ['smtp', 'both']
-        }
+        },
+        order: [
+          ['sendPriority', 'ASC'],
+          ['createdAt', 'ASC']
+        ]
       });
 
       return smtpAccount;

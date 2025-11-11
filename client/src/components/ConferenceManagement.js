@@ -34,6 +34,7 @@ const ConferenceManagement = () => {
   const [activeTemplateStage, setActiveTemplateStage] = useState('stage1');
   const [formData, setFormData] = useState({
     name: '',
+    shortName: '',
     venue: '',
     startDate: '',
     endDate: '',
@@ -42,7 +43,6 @@ const ConferenceManagement = () => {
     currency: 'USD',
     abstractDeadline: '',
     registrationDeadline: '',
-    initialTemplateId: '',
     stage1TemplateId: '',
     stage2TemplateId: '',
     // Conference Settings
@@ -62,11 +62,6 @@ const ConferenceManagement = () => {
     // Available team members for selection
     availableTeamLeads: [],
     availableMembers: [],
-    initialTemplate: {
-      subject: '',
-      bodyHtml: '',
-      bodyText: ''
-    },
     stage1Template: {
       subject: '',
       bodyHtml: '',
@@ -95,8 +90,8 @@ const ConferenceManagement = () => {
   // Fetch conferences with React Query
   const { data: conferences = [], isLoading, error, refetch } = useQuery('conferences', async () => {
     try {
-      const response = await axios.get('/api/conferences');
-      return response.data;
+    const response = await axios.get('/api/conferences');
+    return response.data;
     } catch (error) {
       console.error('Error fetching conferences:', error);
       return []; // Return empty array on error
@@ -112,8 +107,8 @@ const ConferenceManagement = () => {
   // Fetch templates with React Query
   const { data: templates = [], isLoading: templatesLoading } = useQuery('templates', async () => {
     try {
-      const response = await axios.get('/api/templates');
-      return response.data;
+    const response = await axios.get('/api/templates');
+    return response.data;
     } catch (error) {
       console.error('Error fetching templates:', error);
       return []; // Return empty array on error
@@ -128,8 +123,8 @@ const ConferenceManagement = () => {
   // Fetch users for team assignment
   const { data: users = [] } = useQuery('users', async () => {
     try {
-      const response = await axios.get('/api/users');
-      return response.data.users || [];
+    const response = await axios.get('/api/users');
+    return response.data.users || [];
     } catch (error) {
       console.error('Error fetching users:', error);
       return []; // Return empty array on error
@@ -227,11 +222,13 @@ const ConferenceManagement = () => {
           const name = (conference.name || '').toString().toLowerCase();
           const venue = (conference.venue || '').toString().toLowerCase();
           const description = (conference.description || '').toString().toLowerCase();
+          const shortName = (conference.shortName || '').toString().toLowerCase();
           const searchLower = searchTerm.toLowerCase();
           
           return name.includes(searchLower) ||
                  venue.includes(searchLower) ||
-                 description.includes(searchLower);
+                 description.includes(searchLower) ||
+                 shortName.includes(searchLower);
         } catch (error) {
           console.warn('Error in search filter:', error, conference);
           return false;
@@ -303,6 +300,7 @@ const ConferenceManagement = () => {
     setEditingConference(null);
     setFormData({
       name: '',
+      shortName: '',
       venue: '',
       startDate: '',
       endDate: '',
@@ -311,7 +309,6 @@ const ConferenceManagement = () => {
       currency: 'USD',
       abstractDeadline: '',
       registrationDeadline: '',
-      initialTemplateId: '',
       stage1TemplateId: '',
       stage2TemplateId: '',
       // Conference Settings
@@ -331,11 +328,6 @@ const ConferenceManagement = () => {
       // Available team members for selection
       availableTeamLeads: [],
       availableMembers: [],
-      initialTemplate: {
-        subject: '',
-        bodyHtml: '',
-        bodyText: ''
-      },
       stage1Template: {
         subject: '',
         bodyHtml: '',
@@ -386,6 +378,7 @@ const ConferenceManagement = () => {
     
     setFormData({
       name: conference.name,
+      shortName: conference.shortName || '',
       venue: conference.venue,
       startDate: conference.startDate ? conference.startDate.split('T')[0] : '',
       endDate: conference.endDate ? conference.endDate.split('T')[0] : '',
@@ -394,7 +387,6 @@ const ConferenceManagement = () => {
       currency: conference.currency || 'USD',
       abstractDeadline: conference.abstractDeadline ? conference.abstractDeadline.split('T')[0] : '',
       registrationDeadline: conference.registrationDeadline ? conference.registrationDeadline.split('T')[0] : '',
-      initialTemplateId: conference.initialTemplateId || '',
       stage1TemplateId: conference.stage1TemplateId || '',
       stage2TemplateId: conference.stage2TemplateId || '',
       // Conference Settings
@@ -408,11 +400,6 @@ const ConferenceManagement = () => {
       workingHoursStart: settings.working_hours?.start || '09:00',
       workingHoursEnd: settings.working_hours?.end || '17:00',
       timezone: settings.timezone || 'UTC',
-      initialTemplate: conference.initialTemplate || {
-        subject: '',
-        bodyHtml: '',
-        bodyText: ''
-      },
       stage1Template: conference.stage1Template || {
         subject: '',
         bodyHtml: '',
@@ -458,16 +445,58 @@ const ConferenceManagement = () => {
     e.preventDefault();
     
     // Transform interval data to new format
+    const trimmedShortName = (formData.shortName || '').trim().slice(0, 50);
+
+    const parsePositiveNumber = (value, fallback, label) => {
+      const raw = value !== undefined && value !== null ? String(value).trim() : '';
+      if (raw === '') {
+        return fallback;
+      }
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        toast.error(`${label} must be a positive number`);
+        return null;
+      }
+      return parsed;
+    };
+
+    const normalizeUnit = (unit) => {
+      const allowed = ['minutes', 'hours', 'days'];
+      if (typeof unit === 'string' && allowed.includes(unit)) {
+        return unit;
+      }
+      return 'days';
+    };
+
+    const stage1IntervalValue = parsePositiveNumber(formData.stage1IntervalValue, 7, 'Stage 1 interval');
+    if (stage1IntervalValue === null) return;
+    const stage2IntervalValue = parsePositiveNumber(formData.stage2IntervalValue, 3, 'Stage 2 interval');
+    if (stage2IntervalValue === null) return;
+    const stage1MaxFollowUps = parsePositiveNumber(formData.stage1MaxFollowUps, 6, 'Stage 1 max follow-ups');
+    if (stage1MaxFollowUps === null) return;
+    const stage2MaxFollowUps = parsePositiveNumber(formData.stage2MaxFollowUps, 6, 'Stage 2 max follow-ups');
+    if (stage2MaxFollowUps === null) return;
+
+    const stage1Unit = normalizeUnit(formData.stage1IntervalUnit);
+    const stage2Unit = normalizeUnit(formData.stage2IntervalUnit);
+
     const submitData = {
       ...formData,
+      shortName: trimmedShortName,
+      stage1IntervalValue,
+      stage1IntervalUnit: stage1Unit,
+      stage1MaxFollowUps,
+      stage2IntervalValue,
+      stage2IntervalUnit: stage2Unit,
+      stage2MaxFollowUps,
       settings: {
         followup_intervals: {
-          Stage1: { value: parseInt(formData.stage1IntervalValue), unit: formData.stage1IntervalUnit },
-          Stage2: { value: parseInt(formData.stage2IntervalValue), unit: formData.stage2IntervalUnit }
+          Stage1: { value: stage1IntervalValue, unit: stage1Unit },
+          Stage2: { value: stage2IntervalValue, unit: stage2Unit }
         },
         max_attempts: {
-          Stage1: parseInt(formData.stage1MaxFollowUps),
-          Stage2: parseInt(formData.stage2MaxFollowUps)
+          Stage1: Math.floor(stage1MaxFollowUps),
+          Stage2: Math.floor(stage2MaxFollowUps)
         },
         skip_weekends: formData.skipWeekends,
         timezone: formData.timezone,
@@ -647,7 +676,12 @@ const ConferenceManagement = () => {
           <div key={conference.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-6 hover:shadow-lg transition-shadow">
             <div className="flex items-start justify-between mb-4">
               <div className="flex-1">
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">{conference.name}</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                  {conference.name}
+                  {conference.shortName ? (
+                    <span className="text-sm text-gray-500 ml-2">({conference.shortName})</span>
+                  ) : null}
+                </h3>
                 {getStatusBadge(conference)}
               </div>
               <div className="flex items-center gap-2">
@@ -736,7 +770,7 @@ const ConferenceManagement = () => {
               ? 'Try adjusting your search or filter criteria.'
               : conferences.length === 0
                 ? "You haven't been assigned to any conferences yet. Contact your Team Lead to get access to conference data."
-                : 'Get started by creating a new conference.'
+              : 'Get started by creating a new conference.'
             }
           </p>
           {!searchTerm && filterStatus === 'all' && conferences.length > 0 && (
@@ -795,6 +829,23 @@ const ConferenceManagement = () => {
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
                       placeholder="Enter conference name"
                     />
+                    <div className="mt-4 space-y-1">
+                      <label className="text-sm font-medium text-gray-700">
+                        Conference Short Name
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Optional abbreviation displayed alongside the full name (e.g., CRM2025)
+                      </p>
+                      <input
+                        type="text"
+                        name="shortName"
+                        value={formData.shortName}
+                        onChange={handleInputChange}
+                        placeholder="e.g., CRM2025"
+                        maxLength={50}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      />
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1223,74 +1274,12 @@ const ConferenceManagement = () => {
                   <p className="text-sm text-gray-600">Configure email templates for each stage of your conference workflow</p>
                 </div>
                 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  {/* Initial Invitation Template Selection */}
-                  <div className="bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl p-6 border border-purple-100">
-                    <div className="flex items-center mb-4">
-                      <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center mr-3">
-                        <span className="text-purple-600 font-semibold text-sm">1</span>
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-semibold text-gray-900">Initial Invitation</h4>
-                        <p className="text-xs text-gray-600">First contact with participants</p>
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Select Template
-                        </label>
-                        <select
-                          name="initialTemplateId"
-                          value={formData.initialTemplateId || ''}
-                          onChange={(e) => {
-                            const templateId = e.target.value;
-                            const selectedTemplate = templates?.find(t => t.id === templateId);
-                            setFormData(prev => ({
-                              ...prev,
-                              initialTemplateId: templateId,
-                              initialTemplate: selectedTemplate ? {
-                                subject: selectedTemplate.subject,
-                                bodyHtml: selectedTemplate.bodyHtml,
-                                bodyText: selectedTemplate.bodyText
-                              } : { subject: '', bodyHtml: '', bodyText: '' }
-                            }));
-                          }}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 bg-white"
-                        >
-                          <option value="">Choose Initial Template</option>
-                          {templates?.filter(t => t.stage === 'initial_invitation').map(template => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Initial Template Preview */}
-                      {formData.initialTemplate && formData.initialTemplate.subject && (
-                        <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
-                          <h5 className="text-sm font-medium text-gray-700 mb-3 flex items-center">
-                            <span className="w-2 h-2 bg-purple-400 rounded-full mr-2"></span>
-                            Preview
-                          </h5>
-                          <div className="space-y-2">
-                            <p className="text-sm font-medium text-gray-900">Subject: {formData.initialTemplate.subject}</p>
-                            <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded border-l-2 border-purple-200">
-                              {formData.initialTemplate.bodyText || formData.initialTemplate.bodyHtml?.replace(/<[^>]*>/g, '')}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   {/* Stage 1 Template Selection */}
                   <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-6 border border-blue-100">
                     <div className="flex items-center mb-4">
                       <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-                        <span className="text-blue-600 font-semibold text-sm">2</span>
+                        <span className="text-blue-600 font-semibold text-sm">1</span>
                       </div>
                       <div>
                         <h4 className="text-sm font-semibold text-gray-900">Abstract Submission</h4>
@@ -1352,7 +1341,7 @@ const ConferenceManagement = () => {
                   <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-6 border border-green-100">
                     <div className="flex items-center mb-4">
                       <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center mr-3">
-                        <span className="text-green-600 font-semibold text-sm">3</span>
+                        <span className="text-green-600 font-semibold text-sm">2</span>
                       </div>
                       <div>
                         <h4 className="text-sm font-semibold text-gray-900">Registration</h4>
@@ -1481,11 +1470,24 @@ const ConferenceManagement = () => {
 
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-gray-900">{viewingConference.name}</h3>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    {viewingConference.name}
+                    {viewingConference.shortName ? (
+                      <span className="text-sm text-gray-500 ml-2">({viewingConference.shortName})</span>
+                    ) : null}
+                  </h3>
+                </div>
                 {getStatusBadge(viewingConference)}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {viewingConference.shortName && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-500">Short Name:</span>
+                    <span className="text-gray-700">{viewingConference.shortName}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <MapPinIcon className="h-5 w-5 text-gray-400" />
                   <span className="text-gray-600">{viewingConference.venue}</span>

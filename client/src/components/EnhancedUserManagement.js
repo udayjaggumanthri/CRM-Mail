@@ -446,21 +446,21 @@ const EnhancedUserManagement = () => {
               <div className="px-6 pb-6">
                 {/* Primary Actions Row */}
                 <div className="flex space-x-2 mb-2">
+                <button
+                  onClick={() => handleEdit(user)}
+                  className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
+                >
+                  <PencilSquareIcon className="w-4 h-4 mr-2" />
+                  Edit
+                </button>
+                {user.role !== 'CEO' && (
                   <button
-                    onClick={() => handleEdit(user)}
-                    className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
+                    onClick={() => handleDelete(user.id)}
+                    className="flex items-center justify-center px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors duration-200 font-medium"
                   >
-                    <PencilSquareIcon className="w-4 h-4 mr-2" />
-                    Edit
+                    <TrashIcon className="w-4 h-4" />
                   </button>
-                  {user.role !== 'CEO' && (
-                    <button
-                      onClick={() => handleDelete(user.id)}
-                      className="flex items-center justify-center px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors duration-200 font-medium"
-                    >
-                      <TrashIcon className="w-4 h-4" />
-                    </button>
-                  )}
+                )}
                 </div>
                 
                 {/* Password Management Row */}

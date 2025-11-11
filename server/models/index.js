@@ -6,6 +6,7 @@ const Conference = require('./Conference');
 const Client = require('./Client');
 const Email = require('./Email');
 const EmailTemplate = require('./EmailTemplate');
+const EmailTemplateDraft = require('./EmailTemplateDraft');
 const FollowUpJob = require('./FollowUpJob');
 const EmailLog = require('./EmailLog');
 const EmailAccount = require('./EmailAccount');
@@ -32,6 +33,9 @@ Client.belongsTo(Organization, { foreignKey: 'organizationId', as: 'organization
 Organization.hasMany(EmailTemplate, { foreignKey: 'organizationId', as: 'emailTemplates' });
 EmailTemplate.belongsTo(Organization, { foreignKey: 'organizationId', as: 'organization' });
 
+Organization.hasMany(EmailTemplateDraft, { foreignKey: 'organizationId', as: 'emailTemplateDrafts' });
+EmailTemplateDraft.belongsTo(Organization, { foreignKey: 'organizationId', as: 'organization' });
+
 Organization.hasMany(EmailAccount, { foreignKey: 'organizationId', as: 'emailAccounts' });
 EmailAccount.belongsTo(Organization, { foreignKey: 'organizationId', as: 'organization' });
 
@@ -49,6 +53,9 @@ Conference.belongsTo(User, { foreignKey: 'primaryContactUserId', as: 'primaryCon
 
 User.hasMany(EmailTemplate, { foreignKey: 'createdBy', as: 'templates' });
 EmailTemplate.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+
+User.hasMany(EmailTemplateDraft, { foreignKey: 'createdBy', as: 'templateDrafts' });
+EmailTemplateDraft.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
 
 User.hasMany(FollowUpJob, { foreignKey: 'createdBy', as: 'followUpJobs' });
 FollowUpJob.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
@@ -158,7 +165,6 @@ Campaign.belongsTo(EmailAccount, { foreignKey: 'smtpAccountId', as: 'smtpAccount
 EmailAccount.hasMany(Campaign, { foreignKey: 'smtpAccountId', as: 'campaigns' });
 
 // Conference template associations
-Conference.belongsTo(EmailTemplate, { foreignKey: 'initialTemplateId', as: 'initialTemplate' });
 Conference.belongsTo(EmailTemplate, { foreignKey: 'stage1TemplateId', as: 'stage1Template' });
 Conference.belongsTo(EmailTemplate, { foreignKey: 'stage2TemplateId', as: 'stage2Template' });
 
@@ -183,6 +189,7 @@ module.exports = {
   Client,
   Email,
   EmailTemplate,
+  EmailTemplateDraft,
   FollowUpJob,
   EmailLog,
   EmailAccount,

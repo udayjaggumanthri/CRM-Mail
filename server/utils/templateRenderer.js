@@ -137,6 +137,7 @@ class TemplateRenderer {
 
     return {
       'conference_name': conference.name || '',
+      'conference_short_name': conference.shortName || '',
       'conference_venue': conference.venue || '',
       'conference_date': formatDate(conference.startDate),
       'conference_start_date': formatDate(conference.startDate),
@@ -260,6 +261,7 @@ class TemplateRenderer {
       'client_email': 'john.doe@example.com',
       'client_company': 'Acme Corp',
       'conference_name': 'Tech Conference 2024',
+      'conference_short_name': 'TC24',
       'conference_venue': 'Convention Center',
       'conference_date': 'June 15, 2024',
       'abstract_deadline': 'May 15, 2024',

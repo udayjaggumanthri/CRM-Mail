@@ -5,12 +5,184 @@ const { Op } = require('sequelize');
 const { sequelize } = require('../config/database');
 const jwt = require('jsonwebtoken');
 const EmailService = require('../services/EmailService');
-const TemplateEngine = require('../services/TemplateEngine');
-const FollowUpAutomation = require('../services/FollowUpAutomation');
 const clientNoteRoutes = require('./clientNoteRoutes');
 const XLSX = require('xlsx');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
+const EmailJobScheduler = require('../services/EmailJobScheduler');
+
+const DEFAULT_STAGE1_INTERVAL = { value: 7, unit: 'days' };
+const DEFAULT_STAGE2_INTERVAL = { value: 3, unit: 'days' };
+const DEFAULT_STAGE1_MAX = 6;
+const DEFAULT_STAGE2_MAX = 6;
+const DEFAULT_WORKING_HOURS = { start: '09:00', end: '17:00' };
+const DEFAULT_TIMEZONE = 'UTC';
+const VALID_INTERVAL_UNITS = new Set(['minutes', 'hours', 'days']);
+
+const immediateEmailScheduler = new EmailJobScheduler();
+
+const sanitizeNonNegativeInt = (value, defaultValue = 0) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return defaultValue;
+  }
+  return Math.floor(parsed);
+};
+
+const deriveManualCountsForCreate = (payload = {}) => {
+  const hasStage1 = Object.prototype.hasOwnProperty.call(payload, 'manualStage1Count');
+  const hasLegacy = Object.prototype.hasOwnProperty.call(payload, 'manualEmailsCount');
+  const hasStage2 = Object.prototype.hasOwnProperty.call(payload, 'manualStage2Count');
+
+  const stage1Count = hasStage1
+    ? sanitizeNonNegativeInt(payload.manualStage1Count)
+    : sanitizeNonNegativeInt(hasLegacy ? payload.manualEmailsCount : 0);
+
+  const stage2Count = hasStage2
+    ? sanitizeNonNegativeInt(payload.manualStage2Count)
+    : 0;
+
+  return {
+    manualStage1Count: stage1Count,
+    manualStage2Count: stage2Count,
+    manualEmailsCount: stage1Count
+  };
+};
+
+const applyManualCountsToUpdatePayload = (payload = {}) => {
+  const updates = {};
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'manualStage1Count')) {
+    const stage1Count = sanitizeNonNegativeInt(payload.manualStage1Count);
+    updates.manualStage1Count = stage1Count;
+    updates.manualEmailsCount = stage1Count;
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(payload, 'manualEmailsCount') &&
+    !Object.prototype.hasOwnProperty.call(payload, 'manualStage1Count')
+  ) {
+    const stage1FromLegacy = sanitizeNonNegativeInt(payload.manualEmailsCount);
+    updates.manualStage1Count = stage1FromLegacy;
+    updates.manualEmailsCount = stage1FromLegacy;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'manualStage2Count')) {
+    updates.manualStage2Count = sanitizeNonNegativeInt(payload.manualStage2Count);
+  }
+
+  return updates;
+};
+
+const getStage1ManualProgress = (client) => {
+  if (!client) return 0;
+  if (client.manualStage1Count !== undefined && client.manualStage1Count !== null) {
+    return sanitizeNonNegativeInt(client.manualStage1Count);
+  }
+  return sanitizeNonNegativeInt(client.manualEmailsCount);
+};
+
+const getStage2ManualProgress = (client) => {
+  if (!client) return 0;
+  if (client.manualStage2Count !== undefined && client.manualStage2Count !== null) {
+    return sanitizeNonNegativeInt(client.manualStage2Count);
+  }
+  return 0;
+};
+
+const applyBaselineToClientEngagement = async (clientInstance) => {
+  if (!clientInstance) return;
+  const stage1 = getStage1ManualProgress(clientInstance);
+  const stage2 = getStage2ManualProgress(clientInstance);
+  const baseline = sanitizeNonNegativeInt(stage1 + stage2);
+  if (baseline <= 0) {
+    return;
+  }
+
+  const currentEngagement = clientInstance.engagement || {};
+  const currentSent = sanitizeNonNegativeInt(currentEngagement.emailsSent || 0);
+  if (baseline > currentSent) {
+    await clientInstance.update({
+      engagement: {
+        ...currentEngagement,
+        emailsSent: baseline
+      }
+    });
+  }
+};
+
+const normalizeIntervalConfig = (raw, fallback) => {
+  if (raw === null || raw === undefined) {
+    return { ...fallback };
+  }
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return { value: raw, unit: 'days' };
+  }
+
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const parsed = Number(raw.trim());
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return { value: parsed, unit: 'days' };
+    }
+  }
+
+  if (typeof raw === 'object') {
+    const value = Number(raw.value);
+    const unit = typeof raw.unit === 'string' ? raw.unit.toLowerCase() : fallback.unit;
+    if (Number.isFinite(value) && value > 0) {
+      return {
+        value,
+        unit: VALID_INTERVAL_UNITS.has(unit) ? unit : fallback.unit
+      };
+    }
+  }
+
+  return { ...fallback };
+};
+
+const normalizeMaxAttempts = (raw, fallback) => {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(parsed));
+};
+
+const normalizeWorkingHours = (raw) => {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_WORKING_HOURS };
+  }
+  const start = typeof raw.start === 'string' && raw.start.trim() ? raw.start.trim() : DEFAULT_WORKING_HOURS.start;
+  const end = typeof raw.end === 'string' && raw.end.trim() ? raw.end.trim() : DEFAULT_WORKING_HOURS.end;
+  return { start, end };
+};
+
+const resolveFollowUpConfig = (conference) => {
+  const settings = conference?.settings || {};
+  const followupIntervals = settings.followup_intervals || {};
+  const maxAttempts = settings.max_attempts || {};
+
+  const stage1Interval = normalizeIntervalConfig(followupIntervals.Stage1, DEFAULT_STAGE1_INTERVAL);
+  const stage2Interval = normalizeIntervalConfig(followupIntervals.Stage2, DEFAULT_STAGE2_INTERVAL);
+  const stage1MaxAttempts = normalizeMaxAttempts(maxAttempts.Stage1, DEFAULT_STAGE1_MAX);
+  const stage2MaxAttempts = normalizeMaxAttempts(maxAttempts.Stage2, DEFAULT_STAGE2_MAX);
+  const skipWeekends = settings.skip_weekends === undefined ? true : Boolean(settings.skip_weekends);
+  const timezone = typeof settings.timezone === 'string' && settings.timezone.trim()
+    ? settings.timezone.trim()
+    : DEFAULT_TIMEZONE;
+  const workingHours = normalizeWorkingHours(settings.working_hours);
+
+  return {
+    stage1Interval,
+    stage2Interval,
+    stage1MaxAttempts,
+    stage2MaxAttempts,
+    skipWeekends,
+    timezone,
+    workingHours
+  };
+};
 
 // JWT Secret from environment or default
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -282,11 +454,10 @@ router.post('/', authenticateToken, async (req, res) => {
       conferenceId,
       notes,
       emailCount = 0,
-      currentStage = 'initial',
+      currentStage = 'stage1',
       followUpCount = 0,
       lastEmailSent = null,
-      nextEmailDate = null,
-      manualEmailsCount = 0
+      nextEmailDate = null
     } = req.body;
 
     // Construct name from legacy fields if not provided
@@ -304,6 +475,8 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 
     console.log('📝 Creating client in database...');
+
+    const manualCountConfig = deriveManualCountsForCreate(req.body);
     
     // Create client with owner assignment
     const client = await Client.create({
@@ -318,10 +491,14 @@ router.post('/', authenticateToken, async (req, res) => {
       followUpCount,
       lastEmailSent,
       nextEmailDate,
-      manualEmailsCount: parseInt(manualEmailsCount) || 0,
+      manualEmailsCount: manualCountConfig.manualEmailsCount,
+      manualStage1Count: manualCountConfig.manualStage1Count,
+      manualStage2Count: manualCountConfig.manualStage2Count,
       organizationId: req.user.organizationId || null,
       ownerUserId: req.body.ownerUserId || req.user.id
     });
+
+    await applyBaselineToClientEngagement(client);
 
     console.log(`👤 Client assigned to owner: ${client.ownerUserId}`);
 
@@ -365,7 +542,9 @@ router.post('/', authenticateToken, async (req, res) => {
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const updateData = { ...req.body };
+    const manualCountUpdates = applyManualCountsToUpdatePayload(updateData);
+    Object.assign(updateData, manualCountUpdates);
 
     const client = await Client.findByPk(id);
     if (!client) {
@@ -393,10 +572,34 @@ router.put('/:id', authenticateToken, async (req, res) => {
     }
 
     // Capture old status before update
-    const oldStatus = client.status;
+  const oldStatus = client.status;
+    const oldConferenceId = client.conferenceId;
     
     // Update client
     await client.update(updateData);
+    await client.reload();
+    await applyBaselineToClientEngagement(client);
+    const newConferenceId = client.conferenceId;
+    
+    if (Object.prototype.hasOwnProperty.call(updateData, 'conferenceId') && newConferenceId !== oldConferenceId) {
+      console.log(`🔄 Client ${client.id} conference changed: ${oldConferenceId || 'none'} → ${newConferenceId || 'none'}`);
+      if (oldConferenceId) {
+        try {
+          const stoppedJobs = await stopClientFollowUps(client.id);
+          console.log(`🛑 Stopped ${stoppedJobs} follow-up job(s) for client ${client.id} (old conference ${oldConferenceId})`);
+        } catch (stopError) {
+          console.error(`❌ Failed to stop follow-ups for client ${client.id}:`, stopError.message);
+        }
+      }
+      if (newConferenceId) {
+        try {
+          await startAutomaticEmailWorkflow(client.id, newConferenceId);
+          console.log(`🚀 Restarted automatic workflow for client ${client.id} with conference ${newConferenceId}`);
+        } catch (workflowError) {
+          console.error(`❌ Failed to restart workflow for client ${client.id}:`, workflowError.message);
+        }
+      }
+    }
     
     // Check if status changed and handle stage progression
     const newStatus = client.status;
@@ -765,25 +968,43 @@ router.post('/bulk-assign-conference', authenticateToken, async (req, res) => {
     });
 
     // Update each client and potentially start email workflows
+    let stoppedJobTotal = 0;
+    let restartedClients = 0;
+
     for (const client of clients) {
       const oldConferenceId = client.conferenceId;
-      await client.update({ conferenceId });
+      const conferenceChanged = oldConferenceId !== conferenceId;
 
-      // If client didn't have a conference before, start email workflow
-      if (!oldConferenceId && conferenceId) {
+      if (conferenceChanged && oldConferenceId) {
         try {
-          console.log(`🚀 Starting automatic email workflow for client ${client.id}, conference ${conferenceId}`);
+          const stoppedJobs = await stopClientFollowUps(client.id);
+          stoppedJobTotal += stoppedJobs;
+          console.log(`🛑 Stopped ${stoppedJobs} follow-up job(s) for client ${client.id} (old conference ${oldConferenceId})`);
+        } catch (stopError) {
+          console.error(`❌ Failed to stop follow-ups for client ${client.id}:`, stopError.message);
+        }
+      }
+
+      if (conferenceChanged) {
+        await client.update({ conferenceId });
+      }
+
+      if (conferenceChanged && conferenceId) {
+        try {
+          console.log(`🚀 Restarting automatic email workflow for client ${client.id}, conference ${conferenceId}`);
           await startAutomaticEmailWorkflow(client.id, conferenceId);
+          restartedClients += 1;
         } catch (emailError) {
-          console.error(`❌ Failed to start email workflow for client ${client.id}:`, emailError.message);
-          // Don't fail the entire operation if email workflow fails
+          console.error(`❌ Failed to restart email workflow for client ${client.id}:`, emailError.message);
         }
       }
     }
 
     res.json({ 
       message: `Successfully assigned ${clients.length} client(s) to conference ${conference.name}`,
-      updatedCount: clients.length
+      updatedCount: clients.length,
+      followUpsStopped: stoppedJobTotal,
+      followUpsRestarted: restartedClients
     });
   } catch (error) {
     console.error('Error bulk assigning conference:', error);
@@ -875,13 +1096,12 @@ async function createStage2FollowUpJobs(client, conference) {
   try {
     console.log(`📅 Creating Stage 2 (registration) follow-up jobs for ${client.email}`);
 
-    // Get conference settings for Stage 2 intervals
-    const settings = conference.settings || {};
-    const followupIntervals = settings.followup_intervals || { "Stage1": { value: 7, unit: "days" }, "Stage2": { value: 3, unit: "days" } };
-    const maxAttempts = settings.max_attempts || { "Stage1": 6, "Stage2": 6 };
-    const stage2Interval = followupIntervals.Stage2 || { value: 3, unit: "days" };
-    const stage2MaxFollowUps = maxAttempts.Stage2 || 6;
-    const skipWeekends = settings.skip_weekends !== false;
+    const followupConfig = resolveFollowUpConfig(conference);
+    const { stage2Interval, stage2MaxAttempts, skipWeekends, timezone, workingHours } = followupConfig;
+    console.log(
+      `⏱️ Stage 2 schedule for conference ${conference.id}: ${stage2Interval.value} ${stage2Interval.unit}, ` +
+      `max attempts ${stage2MaxAttempts}, skipWeekends=${skipWeekends}`
+    );
 
     // Get Stage 2 (Registration) template - USE CONFERENCE'S ASSIGNED TEMPLATE
     let stage2Template = null;
@@ -925,9 +1145,31 @@ async function createStage2FollowUpJobs(client, conference) {
       order: [['createdAt', 'DESC']]
     });
 
-    // Calculate first follow-up date for Stage 2
-    const firstFollowUpDate = calculateNextSendDate(stage2Interval, skipWeekends);
-    const stage2IntervalMs = intervalToMilliseconds(stage2Interval);
+    const manualStage2Progress = getStage2ManualProgress(client);
+    const startingAttempt = Math.min(Math.max(0, manualStage2Progress), stage2MaxAttempts);
+    const shouldSendImmediately = startingAttempt === 0;
+    const firstFollowUpDate = shouldSendImmediately
+      ? new Date()
+      : calculateNextSendDate(stage2Interval, skipWeekends);
+
+    if (shouldSendImmediately) {
+      console.log(`🚀 Immediate Stage 2 follow-up scheduled for ${client.email} at ${firstFollowUpDate.toISOString()}`);
+    } else {
+      console.log(
+        `⏳ Stage 2 automation resumes at attempt ${startingAttempt + 1} for ${client.email} on ${firstFollowUpDate.toISOString()}`
+      );
+    }
+
+    if (startingAttempt > 0) {
+      console.log(`⏭️  Skipping first ${startingAttempt} Stage 2 emails (already sent manually)`);
+    }
+
+    if (startingAttempt >= stage2MaxAttempts) {
+      console.log(
+        `⏹️  Stage 2 manual count (${startingAttempt}) meets or exceeds max ${stage2MaxAttempts}. No automation needed.`
+      );
+      return;
+    }
 
     // Create FollowUpJob for Stage 2 with threading to continue the conversation
     const followUpJob = await FollowUpJob.create({
@@ -936,21 +1178,25 @@ async function createStage2FollowUpJobs(client, conference) {
       templateId: stage2Template.id,
       stage: 'registration',
       scheduledDate: firstFollowUpDate,
+      nextSendAt: firstFollowUpDate,
       status: 'active',
       paused: false,
       skipWeekends: skipWeekends,
-      customInterval: Math.max(1, Math.round(stage2IntervalMs / (24 * 60 * 60 * 1000))),
-      maxAttempts: stage2MaxFollowUps,
-      currentAttempt: 0,
+      customInterval: stage2Interval.unit === 'days' ? Math.max(1, Math.round(stage2Interval.value)) : null,
+      maxAttempts: stage2MaxAttempts,
+      currentAttempt: startingAttempt,
       settings: {
-        timezone: settings.timezone || 'UTC',
-        workingHours: settings.workingHours || { start: '09:00', end: '17:00' },
+        timezone,
+        workingHours,
         intervalConfig: stage2Interval,
         threadRootMessageId: latestEmail?.messageId // Continue the email thread
       }
     });
 
     console.log(`✅ Created Stage 2 follow-up job ${followUpJob.id} for ${client.email}`);
+    if (shouldSendImmediately) {
+      await triggerImmediateFollowUpSend(followUpJob.id);
+    }
   } catch (error) {
     console.error('❌ Error creating Stage 2 follow-up jobs:', error);
     throw error;
@@ -970,9 +1216,13 @@ async function startAutomaticEmailWorkflow(clientId, conferenceId) {
       throw new Error('Client or conference not found');
     }
 
-    const manualCount = client.manualEmailsCount || 0;
-    console.log(`📊 Client entry point: Status="${client.status}", Stage="${client.currentStage}", ManualEmailsCount=${manualCount}`);
-    console.log(`📋 Conference templates: Initial=${conference.initialTemplateId || 'not set'}, Stage1=${conference.stage1TemplateId || 'not set'}, Stage2=${conference.stage2TemplateId || 'not set'}`);
+    const manualStage1Progress = getStage1ManualProgress(client);
+    const manualStage2Progress = getStage2ManualProgress(client);
+    console.log(
+      `📊 Client entry point: Status="${client.status}", Stage="${client.currentStage}", ` +
+      `Stage1Manual=${manualStage1Progress}, Stage2Manual=${manualStage2Progress}`
+    );
+    console.log(`📋 Conference templates: Stage1=${conference.stage1TemplateId || 'not set'}, Stage2=${conference.stage2TemplateId || 'not set'}`);
 
     // Handle workflow based on status and stage combination
     if (client.status === 'Registered' || client.currentStage === 'completed') {
@@ -981,35 +1231,12 @@ async function startAutomaticEmailWorkflow(clientId, conferenceId) {
       return;
     }
 
-    if (client.status === 'Abstract Submitted' && client.currentStage === 'stage2') {
-      console.log(`📧 Client already submitted abstract - Starting Stage 2 (Registration) emails ONLY`);
+    if (client.status === 'Abstract Submitted' || client.currentStage === 'stage2') {
+      console.log(`📧 Client ready for Stage 2 (Registration) follow-ups`);
       await client.update({ currentStage: 'stage2' });
       await createStage2FollowUpJobs(client, conference);
-    } else if (client.status === 'Lead' && client.currentStage === 'initial') {
-      console.log(`📧 New Lead client - Starting full workflow: Initial → Stage 1 → Stage 2`);
-      
-      // If manualEmailsCount > 0, skip initial email (it was sent manually)
-      if (manualCount === 0) {
-        await sendInitialEmail(client, conference);
-      } else {
-        console.log(`⏭️  Skipping initial email (already sent manually)`);
-      }
-      
-      // Update stage to stage1 after sending/skipping initial email
-      await client.update({ currentStage: 'stage1' });
-      // Schedule Stage 1 and Stage 2 follow-up emails (will skip already-sent ones)
-      await scheduleFollowUpEmails(client, conference);
-    } else if (client.currentStage === 'stage1') {
-      console.log(`📧 Client starting at Stage 1 - Skipping initial email, sending Stage 1 and Stage 2`);
-      await scheduleFollowUpEmails(client, conference);
     } else {
-      console.log(`⚠️ Unexpected status/stage combination: ${client.status}/${client.currentStage} - Using default workflow`);
-      // Default to full workflow
-      if (manualCount === 0) {
-        await sendInitialEmail(client, conference);
-      } else {
-        console.log(`⏭️  Skipping initial email (already sent manually)`);
-      }
+      console.log(`📧 Client entering Stage 1 (Abstract Submission) follow-ups`);
       await client.update({ currentStage: 'stage1' });
       await scheduleFollowUpEmails(client, conference);
     }
@@ -1021,151 +1248,18 @@ async function startAutomaticEmailWorkflow(clientId, conferenceId) {
   }
 }
 
-// Function to send initial email
-async function sendInitialEmail(client, conference) {
-  try {
-    console.log(`📧 Sending initial invitation email to ${client.email}`);
-    
-    // Get SMTP account for the organization
-    const smtpAccount = await EmailAccount.findOne({
-      where: {
-        isActive: true
-      },
-      order: [['createdAt', 'DESC']]
-    });
-
-    if (!smtpAccount) {
-      console.log('⚠️ No SMTP account found, skipping email send');
-      return;
-    }
-    
-    console.log(`📧 Using SMTP account: ${smtpAccount.email} (${smtpAccount.smtpHost})`);
-
-    // Get initial invitation template - USE CONFERENCE'S ASSIGNED TEMPLATE
-    let template = null;
-
-    // Priority 1: Use the template assigned to this conference
-    if (conference.initialTemplateId) {
-      template = await EmailTemplate.findByPk(conference.initialTemplateId);
-      if (template) {
-        console.log(`✅ Using conference's assigned initial template: ${template.name} (ID: ${template.id})`);
-      } else {
-        console.log(`⚠️ Conference has initialTemplateId ${conference.initialTemplateId} but template not found`);
-      }
-    }
-
-    // Priority 2: Fallback - Find any active initial_invitation template
-    if (!template) {
-      template = await EmailTemplate.findOne({
-        where: {
-          stage: 'initial_invitation',
-          isActive: true
-        },
-        order: [['createdAt', 'DESC']]
-      });
-      if (template) {
-        console.log(`⚠️ Using fallback initial invitation template: ${template.name} (ID: ${template.id})`);
-      }
-    }
-
-    // Priority 3: Throw error instead of creating hardcoded template
-    if (!template) {
-      throw new Error('No initial invitation template found. Please create one in Email Templates and assign it to the conference.');
-    }
-
-    // Render template with client data
-    const templateEngine = new TemplateEngine();
-    const renderedTemplate = await templateEngine.renderTemplate(template.id, client.id, conference.id);
-
-    // Validate subject line and fall back to template.subject if empty
-    const emailSubject = renderedTemplate.subject && renderedTemplate.subject.trim() 
-      ? renderedTemplate.subject 
-      : template.subject;
-    
-    if (!emailSubject || !emailSubject.trim()) {
-      throw new Error('Email subject cannot be empty');
-    }
-
-    console.log(`📧 Sending email with subject: "${emailSubject}"`);
-
-    // Send email using nodemailer directly
-    const nodemailer = require('nodemailer');
-    
-    // Create transporter for this SMTP account
-    const transporter = nodemailer.createTransport({
-      host: smtpAccount.smtpHost,
-      port: smtpAccount.smtpPort,
-      secure: smtpAccount.smtpPort === 465,
-      auth: {
-        user: smtpAccount.smtpUsername,
-        pass: smtpAccount.smtpPassword
-      }
-    });
-
-    // Send the email (this is the INITIAL email - no threading headers needed)
-    const mailResult = await transporter.sendMail({
-      from: `${smtpAccount.name || 'Conference CRM'} <${smtpAccount.email}>`,
-      to: client.email,
-      subject: emailSubject,
-      text: renderedTemplate.bodyText,
-      html: renderedTemplate.bodyHtml
-    });
-
-    // Create email record in database (store messageId for threading)
-    const initialEmail = await Email.create({
-      from: smtpAccount.email,
-      to: client.email,
-      subject: emailSubject,
-      bodyHtml: renderedTemplate.bodyHtml,
-      bodyText: renderedTemplate.bodyText,
-      date: new Date(),
-      clientId: client.id,
-      conferenceId: conference.id,
-      templateId: template.id,
-      emailAccountId: smtpAccount.id,
-      isSent: true,
-      status: 'sent',
-      messageId: mailResult.messageId,
-      deliveredAt: new Date()
-    });
-
-    console.log(`✅ Email sent: ${mailResult.messageId}`);
-
-    // Update client engagement and stage
-    const currentEngagement = client.engagement || {};
-    await client.update({
-      engagement: {
-        ...currentEngagement,
-        emailsSent: (currentEngagement.emailsSent || 0) + 1,
-        lastEmailSent: new Date()
-      },
-      currentStage: 'stage1',
-      followUpCount: 0,
-      lastFollowUpDate: new Date()
-    });
-
-    console.log(`✅ Initial invitation email sent to ${client.email}, moved to stage1`);
-  } catch (error) {
-    console.error('❌ Error sending initial email:', error);
-    throw error;
-  }
-}
-
 // Function to schedule follow-up emails
 async function scheduleFollowUpEmails(client, conference) {
   try {
     console.log(`📅 Creating follow-up job for ${client.email}`);
     
-    // Get conference settings for follow-up intervals
-    const settings = conference.settings || {};
-    const followupIntervals = settings.followup_intervals || { "Stage1": { value: 7, unit: "days" }, "Stage2": { value: 3, unit: "days" } };
-    const maxAttempts = settings.max_attempts || { "Stage1": 6, "Stage2": 6 };
-    const stage1Interval = followupIntervals.Stage1 || { value: 7, unit: "days" };
-    const stage1MaxFollowUps = maxAttempts.Stage1 || 6;
-    const skipWeekends = settings.skip_weekends !== false;
-    
-    // Store interval in customInterval as milliseconds for flexibility
-    const stage1IntervalMs = intervalToMilliseconds(stage1Interval);
+    const followupConfig = resolveFollowUpConfig(conference);
+    const { stage1Interval, stage1MaxAttempts, skipWeekends, timezone, workingHours } = followupConfig;
+
+    console.log(
+      `⏱️ Stage 1 schedule for conference ${conference.id}: ${stage1Interval.value} ${stage1Interval.unit}, ` +
+      `max attempts ${stage1MaxAttempts}, skipWeekends=${skipWeekends}`
+    );
 
     // Get Stage 1 (Abstract Submission) template - USE CONFERENCE'S ASSIGNED TEMPLATE
     let stage1Template = null;
@@ -1199,7 +1293,7 @@ async function scheduleFollowUpEmails(client, conference) {
       throw new Error('No abstract submission template found. Please create one in Email Templates and assign it to the conference.');
     }
 
-    // Get the initial email's messageId for threading
+    // Get the most recent sent email's messageId for threading
     const initialEmail = await Email.findOne({
       where: {
         clientId: client.id,
@@ -1209,21 +1303,27 @@ async function scheduleFollowUpEmails(client, conference) {
       limit: 1
     });
 
-    // Calculate first follow-up date
-    const firstFollowUpDate = calculateNextSendDate(stage1Interval, skipWeekends);
+    const manualStage1Progress = getStage1ManualProgress(client);
+    const startingAttempt = Math.min(Math.max(0, manualStage1Progress), stage1MaxAttempts);
+    const shouldSendImmediately = startingAttempt === 0;
+    const firstFollowUpDate = shouldSendImmediately
+      ? new Date()
+      : calculateNextSendDate(stage1Interval, skipWeekends);
 
-    // Calculate starting attempt based on manualEmailsCount
-    // manualEmailsCount includes the initial email + follow-ups
-    // If manualEmailsCount = 3 (initial + 2 follow-ups sent), start at attempt 2
-    const manualCount = client.manualEmailsCount || 0;
-    const startingAttempt = Math.max(0, manualCount - 1); // -1 because initial email is separate
+    if (shouldSendImmediately) {
+      console.log(`🚀 Immediate Stage 1 follow-up scheduled for ${client.email} at ${firstFollowUpDate.toISOString()}`);
+    } else {
+      console.log(
+        `⏳ Stage 1 automation resumes at attempt ${startingAttempt + 1} for ${client.email} on ${firstFollowUpDate.toISOString()}`
+      );
+    }
     
     if (startingAttempt > 0) {
       console.log(`⏭️  Skipping first ${startingAttempt} Stage 1 emails (already sent manually)`);
     }
 
     // Only create job if there are still emails to send
-    if (startingAttempt < stage1MaxFollowUps) {
+    if (startingAttempt < stage1MaxAttempts) {
       // Create FollowUpJob for Stage 1 with initial email's messageId for threading
       const followUpJob = await FollowUpJob.create({
         clientId: client.id,
@@ -1231,21 +1331,26 @@ async function scheduleFollowUpEmails(client, conference) {
         templateId: stage1Template.id,
         stage: 'abstract_submission',
         scheduledDate: firstFollowUpDate,
+        nextSendAt: firstFollowUpDate,
         status: 'active',
         paused: false,
         skipWeekends: skipWeekends,
-        customInterval: Math.max(1, Math.round(stage1IntervalMs / (24 * 60 * 60 * 1000))), // Round to nearest day (min 1)
-        maxAttempts: stage1MaxFollowUps,
+        customInterval: stage1Interval.unit === 'days' ? Math.max(1, Math.round(stage1Interval.value)) : null,
+        maxAttempts: stage1MaxAttempts,
         currentAttempt: startingAttempt, // Start from the correct attempt number
         settings: {
-          timezone: settings.timezone || 'UTC',
-          workingHours: settings.workingHours || { start: '09:00', end: '17:00' },
+          timezone,
+          workingHours,
           intervalConfig: stage1Interval, // Store original interval config (THIS is what we use!)
           threadRootMessageId: initialEmail?.messageId // Store initial email's messageId for threading
         }
       });
 
       console.log(`✅ Created follow-up job ${followUpJob.id} for client ${client.email} (Stage 1, starting at attempt ${startingAttempt + 1})`);
+
+      if (shouldSendImmediately) {
+        await triggerImmediateFollowUpSend(followUpJob.id);
+      }
     } else {
       console.log(`⏭️  All Stage 1 emails already sent manually - no follow-up job created`);
     }
@@ -1262,8 +1367,11 @@ function intervalToMilliseconds(interval) {
     return interval * 24 * 60 * 60 * 1000; // days
   }
   
-  if (typeof interval === 'object' && interval.value && interval.unit) {
-    const value = interval.value;
+  if (typeof interval === 'object' && interval !== null && interval.value !== undefined && interval.unit) {
+    const value = Number(interval.value);
+    if (!Number.isFinite(value) || value <= 0) {
+      return 7 * 24 * 60 * 60 * 1000;
+    }
     const unit = interval.unit.toLowerCase();
     
     switch (unit) {
@@ -1297,20 +1405,148 @@ function calculateNextSendDate(interval, skipWeekends = true) {
   return nextDate;
 }
 
+async function stopClientFollowUps(clientId) {
+  if (!clientId) {
+    return 0;
+  }
+
+  const activeJobs = await FollowUpJob.findAll({
+    where: {
+      clientId,
+      status: 'active'
+    }
+  });
+
+  let stoppedCount = 0;
+
+  for (const job of activeJobs) {
+    await job.update({
+      status: 'stopped',
+      paused: false,
+      completedAt: new Date()
+    });
+    stoppedCount += 1;
+  }
+
+  return stoppedCount;
+}
+
+async function rescheduleConferenceFollowUps(conference) {
+  if (!conference) {
+    return { updatedCount: 0, pausedCount: 0 };
+  }
+
+  const conferenceId = conference.id || conference.conferenceId;
+  if (!conferenceId) {
+    return { updatedCount: 0, pausedCount: 0 };
+  }
+
+  const activeJobs = await FollowUpJob.findAll({
+    where: {
+      conferenceId,
+      status: 'active'
+    }
+  });
+
+  const { stage1Interval, stage2Interval, stage1MaxAttempts, stage2MaxAttempts, skipWeekends, timezone, workingHours } =
+    resolveFollowUpConfig(conference);
+  console.log(
+    `🔁 Rescheduling jobs for conference ${conferenceId}: ` +
+    `Stage1=${stage1Interval.value} ${stage1Interval.unit} (max ${stage1MaxAttempts}), ` +
+    `Stage2=${stage2Interval.value} ${stage2Interval.unit} (max ${stage2MaxAttempts}), skipWeekends=${skipWeekends}`
+  );
+
+  const stageTemplateMap = {
+    abstract_submission: conference.stage1TemplateId,
+    stage1: conference.stage1TemplateId,
+    registration: conference.stage2TemplateId,
+    stage2: conference.stage2TemplateId
+  };
+
+  let updatedCount = 0;
+  let pausedCount = 0;
+
+  for (const job of activeJobs) {
+    const templateId = stageTemplateMap[job.stage] || job.templateId;
+
+    if (!templateId) {
+      await job.update({
+        status: 'paused',
+        paused: true
+      });
+      pausedCount += 1;
+      console.warn(`⚠️ Follow-up job ${job.id} paused because conference ${conferenceId} has no template for stage ${job.stage}`);
+      continue;
+    }
+
+    const updatePayload = {
+      templateId,
+      status: 'active',
+      paused: false
+    };
+
+    let intervalConfig = null;
+    let maxStageAttempts = job.maxAttempts;
+
+    if (job.stage === 'abstract_submission' || job.stage === 'stage1') {
+      intervalConfig = stage1Interval;
+      maxStageAttempts = stage1MaxAttempts;
+    } else if (job.stage === 'registration' || job.stage === 'stage2') {
+      intervalConfig = stage2Interval;
+      maxStageAttempts = stage2MaxAttempts;
+    }
+
+    if (intervalConfig) {
+      const nextSendDate = calculateNextSendDate(intervalConfig, skipWeekends);
+      updatePayload.customInterval = intervalConfig.unit === 'days'
+        ? Math.max(1, Math.round(intervalConfig.value))
+        : null;
+      updatePayload.skipWeekends = skipWeekends;
+      updatePayload.scheduledDate = nextSendDate;
+      updatePayload.nextSendAt = nextSendDate;
+      updatePayload.maxAttempts = maxStageAttempts;
+      updatePayload.settings = {
+        ...(job.settings || {}),
+        intervalConfig,
+        skipWeekends,
+        timezone,
+        workingHours
+      };
+    }
+
+    await job.update(updatePayload);
+    updatedCount += 1;
+  }
+
+  console.log(`🔁 Rescheduled follow-up jobs for conference ${conferenceId}: updated=${updatedCount}, paused=${pausedCount}`);
+  return { updatedCount, pausedCount };
+}
+
+async function triggerImmediateFollowUpSend(jobId) {
+  try {
+    const job = await FollowUpJob.findByPk(jobId, {
+      include: [
+        { model: Client, as: 'client' },
+        { model: Conference, as: 'conference' },
+        { model: EmailTemplate, as: 'template' }
+      ]
+    });
+
+    if (!job) {
+      console.warn(`⚠️ Immediate send skipped: follow-up job ${jobId} not found`);
+      return;
+    }
+
+    await immediateEmailScheduler.sendFollowUpEmail(job);
+  } catch (error) {
+    console.error(`❌ Failed immediate follow-up send for job ${jobId}:`, error.message);
+  }
+}
+
 // Function to create default email templates
 async function createDefaultTemplates(conferenceId) {
   try {
     const defaultTemplates = [
-      {
-        name: 'Initial Invitation',
-        subject: 'Invitation to {{conference.name}}',
-        bodyHtml: '<p>Dear {{client.firstName}} {{client.lastName}},</p>\n<p>You are invited to participate in <strong>{{conference.name}}</strong>.</p>\n<p>Conference Details:\n<ul>\n  <li>Venue: {{conference.venue}}</li>\n  <li>Dates: {{conference.startDate}} to {{conference.endDate}}</li>\n</ul>\n</p>\n<p>Best regards,<br>Conference Team</p>',
-        bodyText: 'Dear {{client.firstName}} {{client.lastName}},\n\nYou are invited to participate in {{conference.name}}.\n\nConference Details:\n- Venue: {{conference.venue}}\n- Dates: {{conference.startDate}} to {{conference.endDate}}\n\nBest regards,\nConference Team',
-        emailType: 'initial_invitation',
-        stage: 'initial_invitation',
-        conferenceId: conferenceId,
-        isActive: true
-      },
       {
         name: 'Abstract Submission Follow-up',
         subject: 'Follow-up: {{conference.name}} - Abstract Submission',
@@ -1361,8 +1597,10 @@ router.get('/template/download', authenticateToken, async (req, res) => {
         'Country': 'USA',
         'Conference': conferences.length > 0 ? conferences[0].name : 'Select Conference',
         'Status': 'Lead',
-        'Stage': 'initial',
+        'Stage': 'stage1',
         'Emails Already Sent': 0,
+        'Stage 1 Emails Already Sent': 0,
+        'Stage 2 Emails Already Sent': 0,
         'Notes': 'Example client'
       }
     ];
@@ -1378,13 +1616,15 @@ router.get('/template/download', authenticateToken, async (req, res) => {
       { wch: 25 }, // Conference
       { wch: 20 }, // Status
       { wch: 15 }, // Stage
-      { wch: 20 }, // Emails Already Sent
+      { wch: 20 }, // Emails Already Sent (legacy stage 1)
+      { wch: 24 }, // Stage 1 Emails Already Sent
+      { wch: 24 }, // Stage 2 Emails Already Sent
       { wch: 30 }  // Notes
     ];
     
     // Add data validation for dropdowns
     const statusOptions = ['Lead', 'Abstract Submitted', 'Registered', 'Unresponsive', 'Registration Unresponsive'];
-    const stageOptions = ['initial', 'stage1', 'stage2', 'completed'];
+    const stageOptions = ['stage1', 'stage2', 'completed'];
     const conferenceNames = conferences.map(c => c.name);
     
     // Create a second sheet with instructions
@@ -1394,7 +1634,7 @@ router.get('/template/download', authenticateToken, async (req, res) => {
       ['Instructions:'],
       ['1. Fill in client details in the "Clients" sheet'],
       ['2. REQUIRED fields: Name, Email'],
-      ['3. OPTIONAL fields: Conference, Status, Stage, Emails Already Sent, Country, Notes'],
+      ['3. OPTIONAL fields: Conference, Status, Stage, Emails Already Sent, Stage 1 Emails Already Sent, Stage 2 Emails Already Sent, Country, Notes'],
       ['4. Use the dropdown values for Status, Stage, and Conference columns if provided'],
       ['5. Delete the example row before uploading'],
       [''],
@@ -1419,7 +1659,7 @@ router.get('/template/download', authenticateToken, async (req, res) => {
       ['- Upload clients with just basic info (name, email) now'],
       ['- Add conference assignment later to trigger email workflows'],
       ['- Perfect for importing existing contacts first, then organizing them'],
-      ['- Use "Emails Already Sent" if you already emailed some clients manually (e.g., 3 = skip first 3 automated emails)'],
+      ['- Use "Emails Already Sent" (Stage 1) or the stage-specific columns to skip already sent follow-ups (e.g., Stage 1 = 3 means automation starts at attempt 4)'],
       [''],
       ['Note: Save this file and upload it with your client data']
     ];
@@ -1523,9 +1763,9 @@ router.post('/bulk-upload', authenticateToken, upload.single('file'), async (req
           continue;
         }
         
-        // Stage is OPTIONAL - default to 'initial'
-        const validStages = ['initial', 'stage1', 'stage2', 'completed'];
-        const stage = row['Stage'] || 'initial';
+        // Stage is OPTIONAL - default to 'stage1'
+        const validStages = ['stage1', 'stage2', 'completed'];
+        const stage = row['Stage'] || 'stage1';
         if (!validStages.includes(stage)) {
           results.failed++;
           results.errors.push(`Row ${rowNum}: Invalid stage "${stage}". Valid options: ${validStages.join(', ')}`);
@@ -1533,7 +1773,15 @@ router.post('/bulk-upload', authenticateToken, upload.single('file'), async (req
         }
         
         // Parse manualEmailsCount (optional, default 0)
-        const manualEmailsCount = parseInt(row['Emails Already Sent']) || 0;
+        const manualEmailsCount = sanitizeNonNegativeInt(row['Emails Already Sent']);
+        const stage1CsvCount = row['Stage 1 Emails Already Sent'];
+        const stage2CsvCount = row['Stage 2 Emails Already Sent'];
+        const manualStage1Count = Object.prototype.hasOwnProperty.call(row, 'Stage 1 Emails Already Sent')
+          ? sanitizeNonNegativeInt(stage1CsvCount)
+          : manualEmailsCount;
+        const manualStage2Count = Object.prototype.hasOwnProperty.call(row, 'Stage 2 Emails Already Sent')
+          ? sanitizeNonNegativeInt(stage2CsvCount)
+          : 0;
         
         // Create client with all optional fields
         const client = await Client.create({
@@ -1543,12 +1791,15 @@ router.post('/bulk-upload', authenticateToken, upload.single('file'), async (req
           status: status,
           conferenceId: conferenceId || null,
           currentStage: stage,
-          manualEmailsCount: manualEmailsCount,
+          manualEmailsCount: manualStage1Count,
+          manualStage1Count,
+          manualStage2Count,
           notes: row['Notes'] || null,
           organizationId: req.user.organizationId || null,
           // Ensure visibility: set owner to uploader by default
           ownerUserId: req.user.id
         });
+        await applyBaselineToClientEngagement(client);
         
         console.log(`✅ Created client: ${client.email} - Conference: ${conferenceId ? 'Yes' : 'None'}`);
         
@@ -1591,3 +1842,5 @@ router.use('/', clientNoteRoutes);
 // Export router and workflow function
 module.exports = router;
 module.exports.startAutomaticEmailWorkflow = startAutomaticEmailWorkflow;
+module.exports.stopClientFollowUps = stopClientFollowUps;
+module.exports.rescheduleConferenceFollowUps = rescheduleConferenceFollowUps;

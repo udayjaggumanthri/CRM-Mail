@@ -20,7 +20,7 @@ const FollowUpJob = sequelize.define('FollowUpJob', {
     allowNull: false
   },
   stage: { 
-    type: DataTypes.ENUM('initial', 'stage1', 'stage2', 'abstract_submission', 'registration'), 
+    type: DataTypes.ENUM('stage1', 'stage2', 'abstract_submission', 'registration'), 
     allowNull: false 
   },
   followUpCount: { 

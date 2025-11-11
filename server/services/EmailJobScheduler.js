@@ -4,6 +4,14 @@ const EmailService = require('./EmailService');
 const TemplateEngine = require('./TemplateEngine');
 const { Op } = require('sequelize');
 
+const toNonNegativeInt = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) {
+    return 0;
+  }
+  return Math.floor(num);
+};
+
 class EmailJobScheduler {
   constructor() {
     this.isRunning = false;
@@ -93,7 +101,15 @@ class EmailJobScheduler {
       
       const { conference, template } = job;
       
-      console.log(`📤 Sending follow-up email to ${freshClient.email} (Stage: ${job.stage}, Attempt: ${job.currentAttempt + 1}/${job.maxAttempts})`);
+      const intervalSummary = job.settings?.intervalConfig
+        ? `${job.settings.intervalConfig.value} ${job.settings.intervalConfig.unit}`
+        : job.customInterval
+          ? `${job.customInterval} day(s) [legacy]`
+          : 'default';
+      console.log(
+        `📤 Sending follow-up email to ${freshClient.email} ` +
+        `(Stage: ${job.stage}, Attempt: ${job.currentAttempt + 1}/${job.maxAttempts}, Interval: ${intervalSummary})`
+      );
 
       // RUNTIME SAFETY CHECKS: Prevent sending wrong-stage emails (handles race conditions)
       
@@ -132,7 +148,10 @@ class EmailJobScheduler {
         where: {
           isActive: true
         },
-        order: [['createdAt', 'DESC']]
+        order: [
+          ['sendPriority', 'ASC'],
+          ['createdAt', 'ASC']
+        ]
       });
 
       if (!smtpAccount) {
@@ -216,15 +235,30 @@ class EmailJobScheduler {
 
       console.log(`✅ Follow-up email sent: ${mailResult.messageId}`);
 
-      // Update client engagement
+      // Update client engagement and manual-follow-up counters
       const currentEngagement = freshClient.engagement || {};
+      const manualUpdates = {};
+
+      if (job.stage === 'abstract_submission') {
+        const stage1Baseline =
+          freshClient.manualStage1Count !== undefined && freshClient.manualStage1Count !== null
+            ? toNonNegativeInt(freshClient.manualStage1Count)
+            : toNonNegativeInt(freshClient.manualEmailsCount);
+        const legacyBaseline = toNonNegativeInt(freshClient.manualEmailsCount);
+        manualUpdates.manualStage1Count = stage1Baseline + 1;
+        manualUpdates.manualEmailsCount = legacyBaseline + 1;
+      } else if (job.stage === 'registration') {
+        manualUpdates.manualStage2Count = toNonNegativeInt(freshClient.manualStage2Count) + 1;
+      }
+
       await freshClient.update({
         engagement: {
           ...currentEngagement,
           emailsSent: (currentEngagement.emailsSent || 0) + 1,
           lastEmailSent: new Date()
         },
-        lastFollowUpDate: new Date()
+        lastFollowUpDate: new Date(),
+        ...manualUpdates
       });
 
       // Update follow-up job

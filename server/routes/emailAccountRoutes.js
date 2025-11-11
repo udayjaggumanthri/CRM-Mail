@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { EmailAccount, EmailFolder, User } = require('../models');
+const { EmailAccount, EmailFolder, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 // Simple authentication middleware
@@ -33,7 +33,10 @@ router.get('/', async (req, res) => {
       include: [
         { model: User, as: 'creator', attributes: ['id', 'name', 'email'] }
       ],
-      order: [['createdAt', 'DESC']]
+      order: [
+        ['sendPriority', 'ASC'],
+        ['createdAt', 'ASC']
+      ]
     });
 
     res.json(accounts);
@@ -203,6 +206,9 @@ router.post('/', async (req, res) => {
       isSystem: isSystem || false,
       allowUsers: allowUsers || false
     };
+
+    const maxPriority = await EmailAccount.max('sendPriority');
+    accountData.sendPriority = Number.isFinite(maxPriority) ? maxPriority + 1 : 1;
     
     // Only add createdBy if we have a valid user ID and it exists in database
     if (creatorId) {
@@ -287,7 +293,8 @@ router.post('/', async (req, res) => {
         smtpPort: account.smtpPort,
         status: 'created',
         syncStatus: (type === 'imap' || type === 'both') ? 'syncing' : 'not_applicable',
-        createdAt: account.createdAt
+        createdAt: account.createdAt,
+        sendPriority: account.sendPriority
       }
     });
   } catch (error) {
@@ -342,6 +349,73 @@ router.put('/:id', async (req, res) => {
     res.json(updatedAccount);
   } catch (error) {
     console.error('Update email account error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update sending priority (reorders all accounts)
+router.post('/:id/set-priority', async (req, res) => {
+  const { priority } = req.body;
+
+  const numericPriority = parseInt(priority, 10);
+  if (!Number.isFinite(numericPriority) || numericPriority < 1) {
+    return res.status(400).json({ error: 'Priority must be a positive integer' });
+  }
+
+  try {
+    const account = await EmailAccount.findByPk(req.params.id);
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    await sequelize.transaction(async (transaction) => {
+      const accounts = await EmailAccount.findAll({
+        order: [
+          ['sendPriority', 'ASC'],
+          ['createdAt', 'ASC']
+        ],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+
+      const currentIndex = accounts.findIndex(acc => acc.id === account.id);
+      if (currentIndex === -1) {
+        throw new Error('Email account not found during reordering');
+      }
+
+      const [targetAccount] = accounts.splice(currentIndex, 1);
+      const insertIndex = Math.min(Math.max(numericPriority - 1, 0), accounts.length);
+      accounts.splice(insertIndex, 0, targetAccount);
+
+      for (let index = 0; index < accounts.length; index++) {
+        const acc = accounts[index];
+        const desiredPriority = index + 1;
+        if (acc.sendPriority !== desiredPriority) {
+          await EmailAccount.update(
+            { sendPriority: desiredPriority },
+            { where: { id: acc.id }, transaction }
+          );
+        }
+      }
+    });
+
+    const updatedAccounts = await EmailAccount.findAll({
+      include: [
+        { model: User, as: 'creator', attributes: ['id', 'name', 'email'] }
+      ],
+      order: [
+        ['sendPriority', 'ASC'],
+        ['createdAt', 'ASC']
+      ]
+    });
+
+    res.json({
+      success: true,
+      message: 'Priority updated successfully',
+      accounts: updatedAccounts
+    });
+  } catch (error) {
+    console.error('Set priority error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

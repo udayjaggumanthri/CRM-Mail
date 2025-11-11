@@ -49,6 +49,9 @@ class SMTPManagementService {
         throw new Error(`SMTP connection failed: ${testResult.error}`);
       }
 
+      const maxPriority = await EmailAccount.max('sendPriority');
+      const nextPriority = Number.isFinite(maxPriority) ? maxPriority + 1 : 1;
+
       // Create account
       const account = await EmailAccount.create({
         organizationId,
@@ -67,6 +70,7 @@ class SMTPManagementService {
         maxEmailsPerHour: maxEmailsPerHour || 100,
         isActive: true,
         isDefault: false,
+        sendPriority: nextPriority,
         reputationScore: 100,
         dailyEmailCount: 0,
         hourlyEmailCount: 0,
@@ -96,7 +100,10 @@ class SMTPManagementService {
           organizationId,
           type: ['smtp', 'both']
         },
-        order: [['createdAt', 'DESC']]
+        order: [
+          ['sendPriority', 'ASC'],
+          ['createdAt', 'ASC']
+        ]
       });
 
       return accounts.map(account => ({
@@ -111,6 +118,7 @@ class SMTPManagementService {
         replyTo: account.replyTo,
         isActive: account.isActive,
         isDefault: account.isDefault,
+        sendPriority: account.sendPriority,
         reputationScore: account.reputationScore,
         dailyEmailCount: account.dailyEmailCount,
         hourlyEmailCount: account.hourlyEmailCount,

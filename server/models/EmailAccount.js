@@ -110,6 +110,12 @@ const EmailAccount = sequelize.define('EmailAccount', {
   },
   signature: {
     type: DataTypes.TEXT
+  },
+  sendPriority: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 100,
+    comment: 'Lower number = higher priority for outbound sending'
   }
 }, { 
   tableName: 'email_accounts',
@@ -119,7 +125,8 @@ const EmailAccount = sequelize.define('EmailAccount', {
     { fields: ['isActive'] },
     { fields: ['isDefault'] },
     { fields: ['createdBy'] },
-    { fields: ['syncStatus'] }
+    { fields: ['syncStatus'] },
+    { fields: ['sendPriority'] }
   ]
 });
 

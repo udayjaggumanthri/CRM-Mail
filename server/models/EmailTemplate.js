@@ -12,7 +12,7 @@ const EmailTemplate = sequelize.define('EmailTemplate', {
     allowNull: false 
   },
   stage: { 
-    type: DataTypes.ENUM('initial_invitation', 'abstract_submission', 'registration'), 
+    type: DataTypes.ENUM('abstract_submission', 'registration'), 
     allowNull: false 
   },
   followUpNumber: { 

@@ -109,7 +109,7 @@ router.post('/', authenticateToken, async (req, res) => {
     if (req.user.role !== 'CEO' && req.user.role !== 'TeamLead') {
       return res.status(403).json({ error: 'Only CEO and Team Leads can create users' });
     }
-
+    
     const { name, email, password, role, phone, department, jobTitle, position, managerId } = req.body;
 
     // TeamLead can only create Member users (hard enforcement)

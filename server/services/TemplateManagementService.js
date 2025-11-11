@@ -146,6 +146,7 @@ class TemplateManagementService {
         },
         conference: {
           name: 'Sample Conference 2024',
+          shortName: 'SC24',
           venue: 'Convention Center',
           startDate: '2024-06-15',
           endDate: '2024-06-17',
@@ -221,6 +222,7 @@ class TemplateManagementService {
       ],
       conference: [
         'conference.name',
+        'conference.shortName',
         'conference.venue',
         'conference.startDate',
         'conference.endDate',

@@ -211,10 +211,10 @@ router.get('/', async (req, res) => {
     if (search) {
       conditions.push({
         [Op.or]: [
-          { subject: { [Op.iLike]: `%${search}%` } },
-          { from: { [Op.iLike]: `%${search}%` } },
-          { to: { [Op.iLike]: `%${search}%` } },
-          { body: { [Op.iLike]: `%${search}%` } }
+        { subject: { [Op.iLike]: `%${search}%` } },
+        { from: { [Op.iLike]: `%${search}%` } },
+        { to: { [Op.iLike]: `%${search}%` } },
+        { body: { [Op.iLike]: `%${search}%` } }
         ]
       });
     }
@@ -565,6 +565,196 @@ router.post('/send', upload.any(), async (req, res) => {
   } catch (error) {
     console.error('Send email error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Save email as draft (without sending)
+router.post('/draft', upload.any(), async (req, res) => {
+  try {
+    const emailAccountId = req.body.emailAccountId;
+    const to = req.body.to || '';
+    const cc = req.body.cc || '';
+    const bcc = req.body.bcc || '';
+    const subject = req.body.subject || '';
+    const bodyHtml = req.body.bodyHtml || req.body.body || '';
+    const bodyText = req.body.bodyText || (bodyHtml ? bodyHtml.replace(/<[^>]*>/g, '') : '');
+    const parentId = req.body.parentId || null;
+    const parentType = req.body.parentType || null;
+    const isTracked = req.body.isTracked === 'true' || req.body.isTracked === true;
+
+    // Validate emailAccountId
+    if (!emailAccountId || emailAccountId === 'undefined' || emailAccountId === 'null' || emailAccountId === '') {
+      return res.status(400).json({ error: 'emailAccountId is required' });
+    }
+
+    // Resolve email account agnostically (UUID or numeric)
+    let account;
+    let accountId;
+    const cleanedEmailAccountId = String(emailAccountId || '').trim();
+
+    // Try primary key lookup directly (works for UUID string IDs)
+    account = await EmailAccount.findByPk(cleanedEmailAccountId);
+
+    // If not found and id looks numeric, try numeric PK just in case
+    if (!account) {
+      const asNumber = parseInt(cleanedEmailAccountId, 10);
+      if (!Number.isNaN(asNumber)) {
+        account = await EmailAccount.findByPk(asNumber);
+      }
+    }
+
+    // As a fallback, try findOne by id equality (string)
+    if (!account) {
+      account = await EmailAccount.findOne({ where: { id: cleanedEmailAccountId } });
+    }
+
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    accountId = account.id; // ensure we use the exact id from DB
+
+    // Get uploaded files - filter by fieldname 'attachments'
+    const uploadedFiles = (req.files || []).filter(file => file.fieldname === 'attachments');
+
+    // Prepare attachments array for database storage
+    const attachments = uploadedFiles.map(file => ({
+      filename: file.originalname,
+      content: file.buffer.toString('base64'),
+      contentType: file.mimetype,
+      size: file.size
+    }));
+
+    // Create draft email record
+    const email = await Email.create({
+      emailAccountId: accountId,
+      from: account.email,
+      fromName: account.name,
+      to: to || account.email, // Default to account email if no recipient
+      cc: cc || null,
+      bcc: bcc || null,
+      subject: subject || '(No Subject)',
+      body: bodyHtml || bodyText || '',
+      bodyHtml: bodyHtml || '',
+      bodyText: bodyText || '',
+      attachments: attachments.length > 0 ? attachments : null,
+      parentId,
+      parentType,
+      isTracked,
+      isSent: false,
+      isDraft: true,
+      status: 'draft',
+      folder: 'drafts',
+      date: new Date()
+    });
+
+    res.status(201).json({
+      ...email.toJSON(),
+      message: 'Draft saved successfully'
+    });
+  } catch (error) {
+    console.error('Save draft error:', error);
+    res.status(500).json({ error: 'Failed to save draft', details: error.message });
+  }
+});
+
+// Update existing draft
+router.put('/draft/:id', upload.any(), async (req, res) => {
+  try {
+    const draftId = req.params.id;
+    const emailAccountId = req.body.emailAccountId;
+    const to = req.body.to || '';
+    const cc = req.body.cc || '';
+    const bcc = req.body.bcc || '';
+    const subject = req.body.subject || '';
+    const bodyHtml = req.body.bodyHtml || req.body.body || '';
+    const bodyText = req.body.bodyText || (bodyHtml ? bodyHtml.replace(/<[^>]*>/g, '') : '');
+    const parentId = req.body.parentId || null;
+    const parentType = req.body.parentType || null;
+    const isTracked = req.body.isTracked === 'true' || req.body.isTracked === true;
+
+    // Validate emailAccountId
+    if (!emailAccountId || emailAccountId === 'undefined' || emailAccountId === 'null' || emailAccountId === '') {
+      return res.status(400).json({ error: 'emailAccountId is required' });
+    }
+
+    // Find the draft
+    const draft = await Email.findByPk(draftId);
+    if (!draft) {
+      return res.status(404).json({ error: 'Draft not found' });
+    }
+
+    if (!draft.isDraft) {
+      return res.status(400).json({ error: 'Email is not a draft' });
+    }
+
+    // Resolve email account agnostically (UUID or numeric)
+    let account;
+    let accountId;
+    const cleanedEmailAccountId = String(emailAccountId || '').trim();
+
+    // Try primary key lookup directly (works for UUID string IDs)
+    account = await EmailAccount.findByPk(cleanedEmailAccountId);
+
+    // If not found and id looks numeric, try numeric PK just in case
+    if (!account) {
+      const asNumber = parseInt(cleanedEmailAccountId, 10);
+      if (!Number.isNaN(asNumber)) {
+        account = await EmailAccount.findByPk(asNumber);
+      }
+    }
+
+    // As a fallback, try findOne by id equality (string)
+    if (!account) {
+      account = await EmailAccount.findOne({ where: { id: cleanedEmailAccountId } });
+    }
+
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    accountId = account.id; // ensure we use the exact id from DB
+
+    // Get uploaded files - filter by fieldname 'attachments'
+    const uploadedFiles = (req.files || []).filter(file => file.fieldname === 'attachments');
+
+    // Prepare attachments array for database storage
+    const attachments = uploadedFiles.map(file => ({
+      filename: file.originalname,
+      content: file.buffer.toString('base64'),
+      contentType: file.mimetype,
+      size: file.size
+    }));
+
+    // Update draft email record
+    await draft.update({
+      emailAccountId: accountId,
+      from: account.email,
+      fromName: account.name,
+      to: to || account.email, // Default to account email if no recipient
+      cc: cc || null,
+      bcc: bcc || null,
+      subject: subject || '(No Subject)',
+      body: bodyHtml || bodyText || '',
+      bodyHtml: bodyHtml || '',
+      bodyText: bodyText || '',
+      attachments: attachments.length > 0 ? attachments : (draft.attachments || null), // Keep existing if no new attachments
+      parentId,
+      parentType,
+      isTracked,
+      date: new Date() // Update timestamp
+    });
+
+    // Reload to get updated data
+    await draft.reload();
+
+    res.status(200).json({
+      ...draft.toJSON(),
+      message: 'Draft updated successfully'
+    });
+  } catch (error) {
+    console.error('Update draft error:', error);
+    res.status(500).json({ error: 'Failed to update draft', details: error.message });
   }
 });
 

@@ -18,7 +18,11 @@ class EmailService {
       
       // Load active email accounts
       const accounts = await EmailAccount.findAll({
-        where: { isActive: true, syncStatus: 'active' }
+        where: { isActive: true, syncStatus: 'active' },
+        order: [
+          ['sendPriority', 'ASC'],
+          ['createdAt', 'ASC']
+        ]
       });
 
       for (const account of accounts) {

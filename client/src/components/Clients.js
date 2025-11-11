@@ -85,9 +85,11 @@ const Clients = () => {
     email: '',
     country: '',
     status: 'Lead',
-    currentStage: 'initial',
+    currentStage: 'stage1',
     conferenceId: '',
-    notes: ''
+    notes: '',
+    manualStage1Count: 0,
+    manualStage2Count: 0
   });
 
   // Country combobox state (Add/Edit modal only) - placed after formData so it can read formData.country safely
@@ -329,8 +331,11 @@ const Clients = () => {
       email: '',
       country: '',
       status: 'Lead',
+      currentStage: 'stage1',
       conferenceId: '',
-      notes: ''
+      notes: '',
+      manualStage1Count: 0,
+      manualStage2Count: 0
     });
   };
 
@@ -339,13 +344,34 @@ const Clients = () => {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const handleManualCountChange = (field) => (e) => {
+    const rawValue = e.target.value;
+    const parsed = parseInt(rawValue, 10);
+    const sanitized = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    setFormData(prev => ({ ...prev, [field]: sanitized }));
+  };
+
+  const normalizeManualCount = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return 0;
+    }
+    return Math.floor(parsed);
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     console.log('Form data being submitted:', formData);
     
     // Prepare data for submission
+    const stage1Count = normalizeManualCount(formData.manualStage1Count);
+    const stage2Count = normalizeManualCount(formData.manualStage2Count);
+
     const submitData = {
       ...formData,
+      manualStage1Count: stage1Count,
+      manualStage2Count: stage2Count,
+      manualEmailsCount: stage1Count,
       conferenceId: formData.conferenceId || null // Convert empty string to null
     };
     
@@ -358,13 +384,20 @@ const Clients = () => {
 
   const handleEdit = (client) => {
     setSelectedClient(client);
+    const stage1Manual = client.manualStage1Count !== undefined && client.manualStage1Count !== null
+      ? normalizeManualCount(client.manualStage1Count)
+      : normalizeManualCount(client.manualEmailsCount);
+    const stage2Manual = normalizeManualCount(client.manualStage2Count);
     setFormData({
       name: client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim(),
       email: client.email || '',
       country: client.country || '',
       status: client.status || 'Lead',
+      currentStage: client.currentStage || 'stage1',
       conferenceId: client.conferenceId || '',
-      notes: client.notes || ''
+      notes: client.notes || '',
+      manualStage1Count: stage1Manual,
+      manualStage2Count: stage2Manual
     });
     setShowEditForm(true);
   };
@@ -1172,12 +1205,43 @@ const getInitialsFromName = (name) => {
               required
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
             >
-              <option value="initial">Initial - Send invitation email</option>
               <option value="stage1">Stage 1 - Abstract submission emails</option>
               <option value="stage2">Stage 2 - Registration emails</option>
               <option value="completed">Completed - No emails</option>
             </select>
             <p className="mt-1 text-sm text-gray-500">Which emails should we send?</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Stage 1 follow-ups already sent
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={formData.manualStage1Count}
+              onChange={handleManualCountChange('manualStage1Count')}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              Automation starts at attempt {formData.manualStage1Count + 1}. Leave 0 if none were sent yet.
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Stage 2 follow-ups already sent
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={formData.manualStage2Count}
+              onChange={handleManualCountChange('manualStage2Count')}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
+            />
+            <p className="mt-1 text-sm text-gray-500">
+              Automation starts at attempt {formData.manualStage2Count + 1} once Stage 2 begins.
+            </p>
           </div>
         </div>
       </div>
@@ -1216,13 +1280,13 @@ const getInitialsFromName = (name) => {
               </p>
               <ul className="list-disc ml-5 mt-2 space-y-2">
                 <li>
-                  <strong>Lead + Initial Stage:</strong> New client → Sends invitation email, then Stage 1 (abstract submission) emails, then Stage 2 (registration) emails until they change to "Registered" or max follow-ups reached
+                  <strong>Lead + Stage 1:</strong> New client → Stage 1 (abstract submission) follow-ups start immediately. When status moves to "Abstract Submitted", Stage 2 takes over automatically.
                 </li>
                 <li>
-                  <strong>Abstract Submitted + Stage 2:</strong> Client already submitted abstract → Sends ONLY Stage 2 (registration) emails until they change to "Registered" or max follow-ups reached
+                  <strong>Abstract Submitted + Stage 2:</strong> Client already submitted an abstract → Sends only Stage 2 (registration) emails until they register or the follow-up cap is reached.
                 </li>
                 <li>
-                  <strong>Registered + Completed:</strong> Client already registered → No emails sent
+                  <strong>Registered + Completed:</strong> Client already registered → No automated emails are sent.
                 </li>
                 <li className="text-orange-700">
                   <strong>Auto-Unresponsive Marking:</strong> If Stage 1 max reached and status still "Lead" → marked "Unresponsive". If Stage 2 max reached and status still "Abstract Submitted" → marked "Registration Unresponsive"
@@ -1666,7 +1730,6 @@ const getStatusColor = (status) => {
 const getStageColor = (stage) => {
   switch (stage) {
     case 'initial':
-      return 'bg-blue-100 text-blue-800';
     case 'stage1':
       return 'bg-yellow-100 text-yellow-800';
     case 'stage2':
@@ -1681,7 +1744,6 @@ const getStageColor = (stage) => {
 const getStageName = (stage) => {
   switch (stage) {
     case 'initial':
-      return 'Initial';
     case 'stage1':
       return 'Stage 1 - Abstract Submission';
     case 'stage2':
@@ -1689,7 +1751,7 @@ const getStageName = (stage) => {
     case 'completed':
       return 'Completed';
     default:
-      return stage || 'Initial';
+      return 'Stage 1 - Abstract Submission';
   }
 };
 

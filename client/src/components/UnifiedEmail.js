@@ -4,7 +4,7 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import useRealtimeEmail from '../hooks/useRealtimeEmail';
 import { useAuth } from '../contexts/AuthContext';
-import ReactQuill from 'react-quill';
+import ReactQuill, { Quill } from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import {
   Mail,
@@ -37,6 +37,22 @@ import {
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 
+// Register custom font whitelist for Quill so selected fonts actually apply
+const Font = Quill.import('formats/font');
+Font.whitelist = [
+  'arial',
+  'timesnewroman',
+  'helvetica',
+  'georgia',
+  'verdana',
+  'trebuchetms',
+  'tahoma',
+  'couriernew',
+  'lucidasansunicode',
+  'palatinolinotype'
+];
+Quill.register(Font, true);
+
 const UnifiedEmail = () => {
   const { user } = useAuth();
   const [activeFolder, setActiveFolder] = useState('inbox');
@@ -46,6 +62,8 @@ const UnifiedEmail = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [showFilters, setShowFilters] = useState(false);
+  const [activeEmailAccountId, setActiveEmailAccountId] = useState('all');
+  const [selectedEmailAccountId, setSelectedEmailAccountId] = useState(null);
   const [filters, setFilters] = useState({
     fromEmail: '',
     toEmail: '',
@@ -68,6 +86,7 @@ const UnifiedEmail = () => {
     body: '',
     attachments: []
   });
+  const [editingDraftId, setEditingDraftId] = useState(null); // Track which draft is being edited
 
   const [emailSuggestions, setEmailSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -77,9 +96,11 @@ const UnifiedEmail = () => {
   const [showCC, setShowCC] = useState(false);
   const [showBCC, setShowBCC] = useState(false);
   const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [showDraftConfirm, setShowDraftConfirm] = useState(false);
+  const [pendingCloseAction, setPendingCloseAction] = useState(null); // 'close' or 'discard'
 
   const { data: emailsData, isLoading, refetch } = useQuery(
-    ['emails', activeFolder, searchTerm, currentPage, filters], 
+    ['emails', activeFolder, searchTerm, currentPage, filters, activeEmailAccountId], 
     async () => {
       const params = new URLSearchParams();
       if (activeFolder) {
@@ -102,6 +123,9 @@ const UnifiedEmail = () => {
       }
       if (filters.endDate) {
         params.append('endDate', filters.endDate);
+      }
+      if (activeEmailAccountId && activeEmailAccountId !== 'all') {
+        params.append('accountId', activeEmailAccountId);
       }
       
       const response = await axios.get(`/api/emails?${params.toString()}`);
@@ -130,6 +154,45 @@ const UnifiedEmail = () => {
     const response = await axios.get('/api/email-accounts');
     return response.data;
   });
+
+  const sortedEmailAccounts = React.useMemo(() => {
+    const accountsArray = Array.isArray(emailAccounts) ? emailAccounts : [];
+    return [...accountsArray].sort((a, b) => {
+      const priorityA = a.sendPriority ?? 1000;
+      const priorityB = b.sendPriority ?? 1000;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      const createdAtA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const createdAtB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return createdAtA - createdAtB;
+    });
+  }, [emailAccounts]);
+
+  React.useEffect(() => {
+    if (!sortedEmailAccounts.length) {
+      setSelectedEmailAccountId(null);
+      return;
+    }
+    setSelectedEmailAccountId((prev) => {
+      if (prev && sortedEmailAccounts.some(acc => acc.id === prev)) {
+        return prev;
+      }
+      return sortedEmailAccounts[0].id;
+    });
+    setActiveEmailAccountId((prev) => {
+      if (prev === 'all') return prev;
+      if (sortedEmailAccounts.some(acc => acc.id === prev)) {
+        return prev;
+      }
+      return sortedEmailAccounts[0].id;
+    });
+  }, [sortedEmailAccounts]);
+
+  React.useEffect(() => {
+    if (showCompose) return;
+    if (activeEmailAccountId !== 'all' && sortedEmailAccounts.some(acc => acc.id === activeEmailAccountId)) {
+      setSelectedEmailAccountId(activeEmailAccountId);
+    }
+  }, [activeEmailAccountId, showCompose, sortedEmailAccounts]);
 
   // Fetch email suggestions for autocomplete
   const { data: suggestionsData, isLoading: suggestionsLoading } = useQuery(
@@ -234,6 +297,31 @@ const UnifiedEmail = () => {
     }
   );
 
+  // Permanent delete mutation for drafts
+  const deleteDraftMutation = useMutation(
+    async (emailId) => {
+      const response = await axios.delete('/api/emails/permanent', { 
+        data: { emailIds: [emailId] } 
+      });
+      return response.data;
+    },
+    {
+      onSuccess: (data, emailId) => {
+        queryClient.invalidateQueries(['emails', activeFolder]);
+        toast.success('Draft deleted permanently');
+        setSelectedEmail(null); // Close email view
+        // If we were editing this draft, close compose modal
+        if (editingDraftId === emailId) {
+          setShowCompose(false);
+          resetComposeData();
+        }
+      },
+      onError: () => {
+        toast.error('Failed to delete draft');
+      }
+    }
+  );
+
   const sendEmailMutation = useMutation(async (emailData) => {
     const response = await axios.post('/api/emails/send', emailData);
     return response.data;
@@ -249,6 +337,77 @@ const UnifiedEmail = () => {
       toast.error(errorMessage);
     }
   });
+
+  const saveDraftMutation = useMutation(
+    async () => {
+      // Get email account (same logic as handleSendEmail)
+      if (emailAccountsLoading || !emailAccounts || (Array.isArray(emailAccounts) && emailAccounts.length === 0)) {
+        throw new Error('No email account configured');
+      }
+
+      const accountsArray = sortedEmailAccounts;
+      if (accountsArray.length === 0) {
+        throw new Error('No email account configured');
+      }
+
+      const preferredAccount = accountsArray.find(acc => acc.id === selectedEmailAccountId) || accountsArray[0];
+      const accountId = preferredAccount?.id || preferredAccount?.emailAccountId;
+
+      if (!accountId) {
+        throw new Error('Invalid email account configuration');
+      }
+
+      if (preferredAccount && preferredAccount.isActive === false) {
+        throw new Error('Selected SMTP account is paused. Please activate it or choose another.');
+      }
+
+      // Prepare FormData
+      const formData = new FormData();
+      formData.append('emailAccountId', String(accountId));
+      formData.append('to', (composeData.to || '').trim());
+      formData.append('cc', (composeData.cc || '').trim());
+      formData.append('bcc', (composeData.bcc || '').trim());
+      formData.append('subject', (composeData.subject || '').trim());
+
+      let bodyHtml = composeData.body || '';
+      if (!bodyHtml || bodyHtml.trim() === '<p><br></p>' || bodyHtml.trim() === '<p></p>') {
+        bodyHtml = '';
+      }
+      formData.append('bodyHtml', bodyHtml);
+      formData.append('bodyText', bodyHtml.replace(/<[^>]*>/g, '').trim() || '');
+
+      // Append attachments
+      attachmentFiles.forEach((file) => {
+        formData.append('attachments', file);
+      });
+
+      // If editing existing draft, update it instead of creating new one
+      if (editingDraftId) {
+        // Update existing draft
+        formData.append('draftId', editingDraftId);
+        const response = await axios.put(`/api/emails/draft/${editingDraftId}`, formData);
+        return response.data;
+      } else {
+        // Create new draft
+        const response = await axios.post('/api/emails/draft', formData);
+        return response.data;
+      }
+    },
+    {
+      onSuccess: () => {
+        toast.success(editingDraftId ? 'Draft updated successfully' : 'Draft saved successfully');
+        setShowCompose(false);
+        resetComposeData();
+        setShowDraftConfirm(false);
+        setPendingCloseAction(null);
+        refetch();
+      },
+      onError: (error) => {
+        const errorMessage = error.response?.data?.error || error.message || 'Failed to save draft';
+        toast.error(errorMessage);
+      }
+    }
+  );
 
   const syncEmailMutation = useMutation(async () => {
     const response = await axios.post('/api/emails/sync', { daysBack: 365 });
@@ -344,6 +503,17 @@ const UnifiedEmail = () => {
     }));
   };
 
+  const hasComposeContent = () => {
+    const hasTo = composeData.to && composeData.to.trim().length > 0;
+    const hasSubject = composeData.subject && composeData.subject.trim().length > 0;
+    const hasBody = composeData.body && 
+      composeData.body.trim().length > 0 && 
+      composeData.body.trim() !== '<p><br></p>' && 
+      composeData.body.trim() !== '<p></p>';
+    const hasAttachments = attachmentFiles && attachmentFiles.length > 0;
+    return hasTo || hasSubject || hasBody || hasAttachments;
+  };
+
   const resetComposeData = () => {
     setComposeData({
       to: '',
@@ -361,6 +531,7 @@ const UnifiedEmail = () => {
     setShowCC(false);
     setShowBCC(false);
     setIsComposeMinimized(false);
+    setEditingDraftId(null); // Clear draft editing state
   };
 
   const handleSync = async () => {
@@ -392,22 +563,24 @@ const UnifiedEmail = () => {
       return;
     }
     
-    // Handle different response structures - emailAccounts should be an array directly
-    let accountsArray = Array.isArray(emailAccounts) ? emailAccounts : [];
-    
+    let accountsArray = sortedEmailAccounts;
+
     if (accountsArray.length === 0) {
       toast.error('No email account configured. Please add an email account first.');
       return;
     }
     
-    const defaultAccount = accountsArray[0];
-    
-    // Ensure we have a valid account ID
-    const accountId = defaultAccount?.id || defaultAccount?.emailAccountId;
+    const preferredAccount = accountsArray.find(acc => acc.id === selectedEmailAccountId) || accountsArray[0];
+    const accountId = preferredAccount?.id || preferredAccount?.emailAccountId;
     if (!accountId) {
-      console.error('Email account structure:', defaultAccount);
+      console.error('Email account structure:', preferredAccount);
       console.error('Available email accounts:', accountsArray);
       toast.error('Invalid email account configuration. Please check your email account settings.');
+      return;
+    }
+
+    if (preferredAccount && preferredAccount.isActive === false) {
+      toast.error('Selected SMTP account is paused. Please activate it or choose another account.');
       return;
     }
     
@@ -474,6 +647,17 @@ const UnifiedEmail = () => {
       // Don't set Content-Type header - let axios set it automatically with boundary
       const response = await axios.post('/api/emails/send', formData);
       
+      // If we were editing a draft, delete it after successful send
+      if (editingDraftId) {
+        try {
+          await axios.delete(`/api/emails/${editingDraftId}`);
+          console.log('Draft deleted after sending');
+        } catch (deleteError) {
+          console.error('Failed to delete draft after sending:', deleteError);
+          // Don't show error to user - email was sent successfully
+        }
+      }
+      
       toast.success('Email sent successfully');
       setShowCompose(false);
       resetComposeData();
@@ -488,10 +672,38 @@ const UnifiedEmail = () => {
     }
   };
 
+  const handleCloseCompose = (closeType) => {
+    if (hasComposeContent()) {
+      setPendingCloseAction(closeType);
+      setShowDraftConfirm(true);
+    } else {
+      // No content, close immediately
+      setShowCompose(false);
+      resetComposeData();
+    }
+  };
+
+  const handleConfirmDiscard = () => {
+    setShowCompose(false);
+    resetComposeData();
+    setShowDraftConfirm(false);
+    setPendingCloseAction(null);
+  };
+
+  const handleConfirmSaveDraft = () => {
+    saveDraftMutation.mutate();
+  };
+
+  const handleCancelDraftConfirm = () => {
+    setShowDraftConfirm(false);
+    setPendingCloseAction(null);
+  };
+
   // Quill editor modules configuration
   const quillModules = {
     toolbar: [
       [{ 'header': [1, 2, 3, false] }],
+      [{ 'font': ['arial', 'timesnewroman', 'helvetica', 'georgia', 'verdana', 'trebuchetms', 'tahoma', 'couriernew', 'lucidasansunicode', 'palatinolinotype'] }],
       ['bold', 'italic', 'underline', 'strike'],
       [{ 'color': [] }, { 'background': [] }],
       [{ 'list': 'ordered'}, { 'list': 'bullet' }],
@@ -502,7 +714,7 @@ const UnifiedEmail = () => {
   };
 
   const quillFormats = [
-    'header', 'bold', 'italic', 'underline', 'strike',
+    'header', 'font', 'bold', 'italic', 'underline', 'strike',
     'color', 'background', 'list', 'bullet', 'align',
     'link', 'image'
   ];
@@ -563,6 +775,23 @@ const UnifiedEmail = () => {
     { id: 'trash', icon: Trash2, label: 'Trash', count: 0 }
   ];
 
+  const openComposeWindow = (preferredAccountId = null) => {
+    if (preferredAccountId && preferredAccountId !== 'all' && sortedEmailAccounts.some(acc => acc.id === preferredAccountId)) {
+      setSelectedEmailAccountId(preferredAccountId);
+    } else if (!selectedEmailAccountId && sortedEmailAccounts.length) {
+      setSelectedEmailAccountId(sortedEmailAccounts[0].id);
+    }
+    setShowCompose(true);
+    setIsComposeMinimized(false);
+  };
+
+  const startNewCompose = () => {
+    resetComposeData();
+    const preferredAccount = activeEmailAccountId !== 'all' ? activeEmailAccountId : null;
+    openComposeWindow(preferredAccount);
+    setSelectedEmail(null);
+  };
+
   const pagination = emailsData?.pagination || { total: 0, page: 1, pages: 0, hasMore: false };
 
   const handleReply = () => {
@@ -575,7 +804,7 @@ const UnifiedEmail = () => {
       body: `\n\n--- Original Message ---\nFrom: ${selectedEmail.from}\nTo: ${selectedEmail.to}\nDate: ${selectedEmail.date ? new Date(selectedEmail.date).toLocaleString() : ''}\nSubject: ${selectedEmail.subject || ''}\n\n${selectedEmail.bodyText || selectedEmail.body || ''}`,
       attachments: []
     });
-    setShowCompose(true);
+    openComposeWindow(selectedEmail.emailAccountId || activeEmailAccountId);
   };
 
   const handleForward = () => {
@@ -588,7 +817,48 @@ const UnifiedEmail = () => {
       body: `\n\n--- Forwarded Message ---\nFrom: ${selectedEmail.from}\nTo: ${selectedEmail.to}\nDate: ${selectedEmail.date ? new Date(selectedEmail.date).toLocaleString() : ''}\nSubject: ${selectedEmail.subject || ''}\n\n${selectedEmail.bodyText || selectedEmail.body || ''}`,
       attachments: []
     });
-    setShowCompose(true);
+    openComposeWindow(selectedEmail.emailAccountId || activeEmailAccountId);
+  };
+
+  const handleEditDraft = (draftEmail) => {
+    if (!draftEmail) return;
+    
+    // Parse attachments if they exist
+    let draftAttachments = [];
+    if (draftEmail.attachments) {
+      try {
+        if (Array.isArray(draftEmail.attachments)) {
+          draftAttachments = draftEmail.attachments;
+        } else if (typeof draftEmail.attachments === 'string') {
+          draftAttachments = JSON.parse(draftEmail.attachments);
+        }
+      } catch (e) {
+        console.error('Error parsing draft attachments:', e);
+        draftAttachments = [];
+      }
+    }
+
+    // Pre-populate compose data with draft content
+    setComposeData({
+      to: draftEmail.to || '',
+      cc: draftEmail.cc || '',
+      bcc: draftEmail.bcc || '',
+      subject: draftEmail.subject || '',
+      body: draftEmail.bodyHtml || draftEmail.body || '',
+      attachments: []
+    });
+    
+    // Note: We can't restore File objects from saved attachments (they're base64 in DB)
+    // So we only restore the metadata. Users would need to re-attach files if needed.
+    // For now, we'll just set the attachmentFiles to empty array
+    setAttachmentFiles([]);
+    
+    // Track which draft we're editing
+    setEditingDraftId(draftEmail.id);
+    
+    // Open compose modal
+    openComposeWindow(draftEmail.emailAccountId || activeEmailAccountId);
+    setSelectedEmail(null); // Close email view
   };
 
   const handleStar = () => {
@@ -607,6 +877,17 @@ const UnifiedEmail = () => {
     if (!selectedEmail) return;
     if (window.confirm('Move this email to trash?')) {
       deleteEmailMutation.mutate(selectedEmail.id);
+    }
+  };
+
+  const handleDeleteDraft = (draftId) => {
+    if (!draftId) {
+      draftId = selectedEmail?.id || editingDraftId;
+    }
+    if (!draftId) return;
+    
+    if (window.confirm('Are you sure you want to permanently delete this draft? This action cannot be undone.')) {
+      deleteDraftMutation.mutate(draftId);
     }
   };
 
@@ -682,12 +963,53 @@ const UnifiedEmail = () => {
         <div className="w-56 flex-none border-r border-gray-200 bg-white overflow-y-auto">
           <div className="p-4">
             <button
-              onClick={() => setShowCompose(true)}
+              onClick={startNewCompose}
               className="w-full flex items-center justify-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-md"
             >
               <Pencil className="h-5 w-5" />
               <span className="font-medium">Compose</span>
             </button>
+          </div>
+
+          <div className="px-4 pb-4">
+            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              SMTP Accounts
+            </h4>
+            <div className="space-y-1">
+              <button
+                onClick={() => setActiveEmailAccountId('all')}
+                className={`w-full text-left px-3 py-2 text-sm rounded-md transition-colors ${
+                  activeEmailAccountId === 'all'
+                    ? 'bg-blue-100 text-blue-800 font-medium'
+                    : 'text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                All Accounts
+              </button>
+              {sortedEmailAccounts.map((account) => {
+                const isSelected = activeEmailAccountId === account.id;
+                const badge =
+                  account.sendPriority === 1
+                    ? 'Primary'
+                    : account.sendPriority === 2
+                      ? 'Secondary'
+                      : `#${account.sendPriority}`;
+                return (
+                  <button
+                    key={account.id}
+                    onClick={() => setActiveEmailAccountId(account.id)}
+                    className={`w-full px-3 py-2 text-sm rounded-md transition-colors flex items-center justify-between ${
+                      isSelected
+                        ? 'bg-blue-100 text-blue-800 font-medium'
+                        : 'text-gray-700 hover:bg-gray-100'
+                    } ${account.isActive ? '' : 'opacity-60'}`}
+                  >
+                    <span className="truncate">{account.name || account.email}</span>
+                    <span className="ml-2 text-xs text-gray-500">{badge}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <nav className="px-2 space-y-1">
@@ -811,12 +1133,17 @@ const UnifiedEmail = () => {
                   <div
                     key={email.id}
                     onClick={() => {
+                      // If it's a draft, open it in compose mode for editing
+                      if (email.isDraft || email.status === 'draft') {
+                        handleEditDraft(email);
+                      } else {
                       console.log('Selected email:', email);
                       console.log('Email body:', email.body);
                       console.log('Email bodyText:', email.bodyText);
                       setSelectedEmail(email);
+                      }
                     }}
-                    className={`flex items-start space-x-3 px-4 py-3 cursor-pointer hover:shadow-sm transition-all ${
+                    className={`flex items-start space-x-3 px-4 py-3 cursor-pointer hover:shadow-sm transition-all group ${
                       selectedEmail?.id === email.id 
                         ? 'bg-blue-50 border-l-4 border-blue-600' 
                         : !email.isRead 
@@ -842,20 +1169,34 @@ const UnifiedEmail = () => {
                         </span>
                       </div>
                       
-                    <div className={`text-sm mb-1 truncate ${!email.isRead ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
+                      <div className={`text-sm mb-1 truncate ${!email.isRead ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
                       <div className="flex items-center space-x-2">
                         <span>{email.subject || '(no subject)'}</span>
                         {hasAttachments(email) && (
                           <Paperclip className="h-3.5 w-3.5 text-gray-500 flex-none" title="Has attachments" />
                         )}
                       </div>
-                    </div>
+                      </div>
                       
-                    <div className="text-xs text-gray-500 truncate">
-                      {email.bodyText?.substring(0, 100) || 'No preview available'}
+                      <div className="text-xs text-gray-500 truncate">
+                        {email.bodyText?.substring(0, 100) || 'No preview available'}
+                      </div>
                     </div>
+
+                  {/* Quick delete button for drafts - appears on hover */}
+                  {(email.isDraft || email.status === 'draft') && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation(); // Prevent opening the draft
+                        handleDeleteDraft(email.id);
+                      }}
+                      className="flex-none opacity-0 group-hover:opacity-100 transition-opacity p-1.5 text-red-600 hover:bg-red-50 rounded transition-colors"
+                      title="Delete draft permanently"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                    )}
                   </div>
-                </div>
                 ))}
               </div>
             )}
@@ -928,20 +1269,33 @@ const UnifiedEmail = () => {
                 </div>
 
                 <div className="flex items-center space-x-2">
-                  <button 
-                    onClick={handleReply}
-                    className="flex items-center space-x-1 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
-                  >
+                  {/* Show Edit button for drafts */}
+                  {(selectedEmail?.isDraft || selectedEmail?.status === 'draft') ? (
+                    <button 
+                      onClick={() => handleEditDraft(selectedEmail)}
+                      className="flex items-center space-x-1 px-3 py-1.5 text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
+                    >
+                      <Pencil className="h-4 w-4" />
+                      <span>Edit Draft</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button 
+                        onClick={handleReply}
+                        className="flex items-center space-x-1 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+                      >
                     <Reply className="h-4 w-4" />
                     <span>Reply</span>
                   </button>
-                  <button 
-                    onClick={handleForward}
-                    className="flex items-center space-x-1 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
-                  >
+                      <button 
+                        onClick={handleForward}
+                        className="flex items-center space-x-1 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+                      >
                     <Forward className="h-4 w-4" />
                     <span>Forward</span>
                   </button>
+                    </>
+                  )}
                   <button 
                     onClick={handleStar}
                     className={`flex items-center space-x-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
@@ -960,13 +1314,25 @@ const UnifiedEmail = () => {
                     <Archive className="h-4 w-4" />
                     <span>Archive</span>
                   </button>
-                  <button 
-                    onClick={handleDelete}
-                    className="flex items-center space-x-1 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    <span>Delete</span>
-                  </button>
+                  {/* Show Delete Draft for drafts, regular Delete for other emails */}
+                  {(selectedEmail?.isDraft || selectedEmail?.status === 'draft') ? (
+                    <button 
+                      onClick={() => handleDeleteDraft(selectedEmail.id)}
+                      disabled={deleteDraftMutation.isLoading}
+                      className="flex items-center space-x-1 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      <span>{deleteDraftMutation.isLoading ? 'Deleting...' : 'Delete Draft'}</span>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={handleDelete}
+                      className="flex items-center space-x-1 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      <span>Delete</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1043,7 +1409,14 @@ const UnifiedEmail = () => {
           {/* Header */}
           <div className="bg-gray-50 px-4 py-3 flex items-center justify-between border-b border-gray-200 rounded-t-lg">
             <div className="flex items-center space-x-2">
-              <span className="text-sm font-medium text-gray-700">New Message</span>
+              <span className="text-sm font-medium text-gray-700">
+                {editingDraftId ? 'Edit Draft' : 'New Message'}
+              </span>
+              {editingDraftId && (
+                <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">
+                  Draft
+                </span>
+              )}
             </div>
             <div className="flex items-center space-x-1">
               <button
@@ -1053,23 +1426,40 @@ const UnifiedEmail = () => {
               >
                 {isComposeMinimized ? <Maximize2 className="h-4 w-4 text-gray-600" /> : <Minimize2 className="h-4 w-4 text-gray-600" />}
               </button>
-              <button
-                onClick={() => {
-                  setShowCompose(false);
-                  resetComposeData();
-                }}
+                    <button
+                onClick={() => handleCloseCompose('close')}
                 className="p-1.5 hover:bg-gray-200 rounded transition-colors"
                 title="Close"
-              >
+                    >
                 <X className="h-4 w-4 text-gray-600" />
-              </button>
+                    </button>
             </div>
-          </div>
+                  </div>
 
           {!isComposeMinimized && (
             <>
               {/* To, CC, BCC Fields */}
-              <div className="px-4 py-2 border-b border-gray-200 space-y-2">
+              <div className="px-4 py-2 border-b border-gray-200 space-y-2 flex-shrink-0">
+                <div className="flex items-center">
+                  <span className="text-xs text-gray-500 w-12 flex-shrink-0">From</span>
+                  {emailAccountsLoading ? (
+                    <span className="text-xs text-gray-500 ml-2">Loading accounts...</span>
+                  ) : !sortedEmailAccounts.length ? (
+                    <span className="text-xs text-red-500 ml-2">No SMTP accounts</span>
+                  ) : (
+                    <select
+                      value={selectedEmailAccountId || ''}
+                      onChange={(e) => setSelectedEmailAccountId(e.target.value)}
+                      className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+                    >
+                      {sortedEmailAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name || account.email}{account.isActive === false ? ' (Paused)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
                 <div className="relative">
                   <div className="flex items-center">
                     <span className="text-xs text-gray-500 w-12 flex-shrink-0">To</span>
@@ -1158,7 +1548,7 @@ const UnifiedEmail = () => {
                       onChange={(e) => setComposeData({ ...composeData, bcc: e.target.value })}
                       className="flex-1 px-2 py-1 text-sm border-0 focus:ring-0 placeholder-gray-400"
                       autoComplete="off"
-                    />
+                      />
                   </div>
                 )}
 
@@ -1180,49 +1570,370 @@ const UnifiedEmail = () => {
 
                 {/* Subject */}
                 <div className="flex items-center pt-2 border-t border-gray-100">
-                  <input
-                    type="text"
-                    placeholder="Subject"
-                    value={composeData.subject}
-                    onChange={(e) => setComposeData({ ...composeData, subject: e.target.value })}
+                      <input
+                        type="text"
+                        placeholder="Subject"
+                        value={composeData.subject}
+                        onChange={(e) => setComposeData({ ...composeData, subject: e.target.value })}
                     className="flex-1 px-2 py-1 text-sm border-0 focus:ring-0 placeholder-gray-400"
-                  />
+                      />
                 </div>
-              </div>
+                    </div>
 
               {/* Rich Text Editor */}
-              <div className="flex-1" style={{ minHeight: '300px', maxHeight: '500px', display: 'flex', flexDirection: 'column' }}>
+              <div className="flex-1 flex-shrink-0 overflow-hidden" style={{ minHeight: '300px', maxHeight: '500px', display: 'flex', flexDirection: 'column' }}>
                 <ReactQuill
                   theme="snow"
-                  value={composeData.body}
+                      value={composeData.body}
                   onChange={(value) => setComposeData({ ...composeData, body: value })}
                   modules={quillModules}
                   formats={quillFormats}
                   placeholder="Compose your message..."
-                  style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+                  style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
+                  className="compose-editor"
                 />
                 <style>{`
-                  .ql-container {
+                  .compose-editor .ql-container {
                     flex: 1;
+                    display: flex;
+                    flex-direction: column;
                     overflow-y: auto;
                     font-size: 14px;
+                    min-height: 0;
                   }
-                  .ql-editor {
+                  .compose-editor .ql-editor {
+                    flex: 1;
                     min-height: 250px;
+                    padding: 12px;
+                    text-align: left;
+                    line-height: 1.6;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
                   }
-                  .ql-toolbar {
+                  .compose-editor .ql-editor.ql-blank::before {
+                    left: 12px;
+                    right: 12px;
+                    text-align: left;
+                    font-style: normal;
+                    color: #9ca3af;
+                  }
+                  .compose-editor .ql-toolbar {
                     border-top: 1px solid #e5e7eb;
                     border-left: none;
                     border-right: none;
+                    border-bottom: none;
                     padding: 8px;
+                    flex-shrink: 0;
+                  }
+                  .compose-editor .ql-toolbar .ql-formats {
+                    margin-right: 8px;
+                  }
+                  /* Keep font picker compact and avoid overflow */
+                  .compose-editor .ql-toolbar .ql-picker.ql-font {
+                    max-width: 160px;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label,
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label::before,
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label::after {
+                    white-space: nowrap;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-label {
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    display: inline-block;
+                    max-width: 160px;
+                    vertical-align: middle;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-options {
+                    min-width: 180px;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item,
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item::before,
+                  .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item::after {
+                    white-space: nowrap;
+                  }
+                  
+                  /* Font Family Styles - ReactQuill applies fonts via classes */
+                  /* Critical: ReactQuill uses lowercase class names without spaces */
+                  
+                  /* Global font classes - ReactQuill requires these to work */
+                  /* These must be global (not scoped) for ReactQuill to recognize them */
+                  .ql-font-arial,
+                  *[class*="ql-font-arial"] {
+                    font-family: Arial, sans-serif !important;
+                  }
+                  .ql-font-timesnewroman,
+                  *[class*="ql-font-timesnewroman"] {
+                    font-family: 'Times New Roman', Times, serif !important;
+                  }
+                  .ql-font-helvetica,
+                  *[class*="ql-font-helvetica"] {
+                    font-family: Helvetica, Arial, sans-serif !important;
+                  }
+                  .ql-font-georgia,
+                  *[class*="ql-font-georgia"] {
+                    font-family: Georgia, serif !important;
+                  }
+                  .ql-font-verdana,
+                  *[class*="ql-font-verdana"] {
+                    font-family: Verdana, Geneva, sans-serif !important;
+                  }
+                  .ql-font-trebuchetms,
+                  *[class*="ql-font-trebuchetms"] {
+                    font-family: 'Trebuchet MS', Helvetica, sans-serif !important;
+                  }
+                  .ql-font-tahoma,
+                  *[class*="ql-font-tahoma"] {
+                    font-family: Tahoma, Geneva, sans-serif !important;
+                  }
+                  .ql-font-couriernew,
+                  *[class*="ql-font-couriernew"] {
+                    font-family: 'Courier New', Courier, monospace !important;
+                  }
+                  .ql-font-lucidasansunicode,
+                  *[class*="ql-font-lucidasansunicode"] {
+                    font-family: 'Lucida Sans Unicode', 'Lucida Grande', sans-serif !important;
+                  }
+                  .ql-font-palatinolinotype,
+                  *[class*="ql-font-palatinolinotype"] {
+                    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
+                  }
+                  
+                  /* Apply fonts within compose editor - scoped rules with maximum specificity */
+                  .compose-editor .ql-editor .ql-font-arial,
+                  .compose-editor .ql-editor span.ql-font-arial,
+                  .compose-editor .ql-editor p.ql-font-arial,
+                  .compose-editor .ql-editor div.ql-font-arial,
+                  .compose-editor .ql-editor strong.ql-font-arial,
+                  .compose-editor .ql-editor em.ql-font-arial,
+                  .compose-editor .ql-editor *[class*="ql-font-arial"] {
+                    font-family: Arial, sans-serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-timesnewroman,
+                  .compose-editor .ql-editor span.ql-font-timesnewroman,
+                  .compose-editor .ql-editor p.ql-font-timesnewroman,
+                  .compose-editor .ql-editor div.ql-font-timesnewroman,
+                  .compose-editor .ql-editor strong.ql-font-timesnewroman,
+                  .compose-editor .ql-editor em.ql-font-timesnewroman,
+                  .compose-editor .ql-editor *[class*="ql-font-timesnewroman"] {
+                    font-family: 'Times New Roman', Times, serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-helvetica,
+                  .compose-editor .ql-editor span.ql-font-helvetica,
+                  .compose-editor .ql-editor p.ql-font-helvetica,
+                  .compose-editor .ql-editor div.ql-font-helvetica,
+                  .compose-editor .ql-editor strong.ql-font-helvetica,
+                  .compose-editor .ql-editor em.ql-font-helvetica,
+                  .compose-editor .ql-editor *[class*="ql-font-helvetica"] {
+                    font-family: Helvetica, Arial, sans-serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-georgia,
+                  .compose-editor .ql-editor span.ql-font-georgia,
+                  .compose-editor .ql-editor p.ql-font-georgia,
+                  .compose-editor .ql-editor div.ql-font-georgia,
+                  .compose-editor .ql-editor strong.ql-font-georgia,
+                  .compose-editor .ql-editor em.ql-font-georgia,
+                  .compose-editor .ql-editor *[class*="ql-font-georgia"] {
+                    font-family: Georgia, serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-verdana,
+                  .compose-editor .ql-editor span.ql-font-verdana,
+                  .compose-editor .ql-editor p.ql-font-verdana,
+                  .compose-editor .ql-editor div.ql-font-verdana,
+                  .compose-editor .ql-editor strong.ql-font-verdana,
+                  .compose-editor .ql-editor em.ql-font-verdana,
+                  .compose-editor .ql-editor *[class*="ql-font-verdana"] {
+                    font-family: Verdana, Geneva, sans-serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-trebuchetms,
+                  .compose-editor .ql-editor span.ql-font-trebuchetms,
+                  .compose-editor .ql-editor p.ql-font-trebuchetms,
+                  .compose-editor .ql-editor div.ql-font-trebuchetms,
+                  .compose-editor .ql-editor strong.ql-font-trebuchetms,
+                  .compose-editor .ql-editor em.ql-font-trebuchetms,
+                  .compose-editor .ql-editor *[class*="ql-font-trebuchetms"] {
+                    font-family: 'Trebuchet MS', Helvetica, sans-serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-tahoma,
+                  .compose-editor .ql-editor span.ql-font-tahoma,
+                  .compose-editor .ql-editor p.ql-font-tahoma,
+                  .compose-editor .ql-editor div.ql-font-tahoma,
+                  .compose-editor .ql-editor strong.ql-font-tahoma,
+                  .compose-editor .ql-editor em.ql-font-tahoma,
+                  .compose-editor .ql-editor *[class*="ql-font-tahoma"] {
+                    font-family: Tahoma, Geneva, sans-serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-couriernew,
+                  .compose-editor .ql-editor span.ql-font-couriernew,
+                  .compose-editor .ql-editor p.ql-font-couriernew,
+                  .compose-editor .ql-editor div.ql-font-couriernew,
+                  .compose-editor .ql-editor strong.ql-font-couriernew,
+                  .compose-editor .ql-editor em.ql-font-couriernew,
+                  .compose-editor .ql-editor *[class*="ql-font-couriernew"] {
+                    font-family: 'Courier New', Courier, monospace !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-lucidasansunicode,
+                  .compose-editor .ql-editor span.ql-font-lucidasansunicode,
+                  .compose-editor .ql-editor p.ql-font-lucidasansunicode,
+                  .compose-editor .ql-editor div.ql-font-lucidasansunicode,
+                  .compose-editor .ql-editor strong.ql-font-lucidasansunicode,
+                  .compose-editor .ql-editor em.ql-font-lucidasansunicode,
+                  .compose-editor .ql-editor *[class*="ql-font-lucidasansunicode"] {
+                    font-family: 'Lucida Sans Unicode', 'Lucida Grande', sans-serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-palatinolinotype,
+                  .compose-editor .ql-editor span.ql-font-palatinolinotype,
+                  .compose-editor .ql-editor p.ql-font-palatinolinotype,
+                  .compose-editor .ql-editor div.ql-font-palatinolinotype,
+                  .compose-editor .ql-editor strong.ql-font-palatinolinotype,
+                  .compose-editor .ql-editor em.ql-font-palatinolinotype,
+                  .compose-editor .ql-editor *[class*="ql-font-palatinolinotype"] {
+                    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
+                  }
+                  
+                  /* Force font application via inline styles - ReactQuill may use inline styles */
+                  .compose-editor .ql-editor [style*="font-family: Arial"],
+                  .compose-editor .ql-editor [style*="font-family:Arial"],
+                  .compose-editor .ql-editor [style*="font-family: 'Arial'"],
+                  .compose-editor .ql-editor [style*="font-family:'Arial'"] {
+                    font-family: Arial, sans-serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: 'Times New Roman'"],
+                  .compose-editor .ql-editor [style*="font-family:'Times New Roman'"],
+                  .compose-editor .ql-editor [style*="font-family: Times New Roman"],
+                  .compose-editor .ql-editor [style*="font-family:TimesNewRoman"] {
+                    font-family: 'Times New Roman', Times, serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: Helvetica"],
+                  .compose-editor .ql-editor [style*="font-family:Helvetica"],
+                  .compose-editor .ql-editor [style*="font-family: 'Helvetica'"],
+                  .compose-editor .ql-editor [style*="font-family:'Helvetica'"] {
+                    font-family: Helvetica, Arial, sans-serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: Georgia"],
+                  .compose-editor .ql-editor [style*="font-family:Georgia"],
+                  .compose-editor .ql-editor [style*="font-family: 'Georgia'"],
+                  .compose-editor .ql-editor [style*="font-family:'Georgia'"] {
+                    font-family: Georgia, serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: Verdana"],
+                  .compose-editor .ql-editor [style*="font-family:Verdana"],
+                  .compose-editor .ql-editor [style*="font-family: 'Verdana'"],
+                  .compose-editor .ql-editor [style*="font-family:'Verdana'"] {
+                    font-family: Verdana, Geneva, sans-serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: 'Trebuchet MS'"],
+                  .compose-editor .ql-editor [style*="font-family:'Trebuchet MS'"],
+                  .compose-editor .ql-editor [style*="font-family: Trebuchet MS"],
+                  .compose-editor .ql-editor [style*="font-family:TrebuchetMS"] {
+                    font-family: 'Trebuchet MS', Helvetica, sans-serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: Tahoma"],
+                  .compose-editor .ql-editor [style*="font-family:Tahoma"],
+                  .compose-editor .ql-editor [style*="font-family: 'Tahoma'"],
+                  .compose-editor .ql-editor [style*="font-family:'Tahoma'"] {
+                    font-family: Tahoma, Geneva, sans-serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: 'Courier New'"],
+                  .compose-editor .ql-editor [style*="font-family:'Courier New'"],
+                  .compose-editor .ql-editor [style*="font-family: Courier New"],
+                  .compose-editor .ql-editor [style*="font-family:CourierNew"] {
+                    font-family: 'Courier New', Courier, monospace !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: 'Lucida Sans Unicode'"],
+                  .compose-editor .ql-editor [style*="font-family:'Lucida Sans Unicode'"],
+                  .compose-editor .ql-editor [style*="font-family: Lucida Sans Unicode"],
+                  .compose-editor .ql-editor [style*="font-family:LucidaSansUnicode"] {
+                    font-family: 'Lucida Sans Unicode', 'Lucida Grande', sans-serif !important;
+                  }
+                  .compose-editor .ql-editor [style*="font-family: 'Palatino Linotype'"],
+                  .compose-editor .ql-editor [style*="font-family:'Palatino Linotype'"],
+                  .compose-editor .ql-editor [style*="font-family: Palatino Linotype"],
+                  .compose-editor .ql-editor [style*="font-family:PalatinoLinotype"] {
+                    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
+                  }
+                  
+                  /* Ensure font inheritance for elements WITHOUT font classes or inline styles */
+                  .compose-editor .ql-editor p:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]),
+                  .compose-editor .ql-editor h1:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]),
+                  .compose-editor .ql-editor h2:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]),
+                  .compose-editor .ql-editor h3:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]) {
+                    font-family: inherit;
+                  }
+                  
+                  /* Fix font picker dropdown labels - map tokens to friendly names */
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="arial"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="arial"]::before {
+                    content: 'Arial' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="timesnewroman"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="timesnewroman"]::before {
+                    content: 'Times New Roman' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="helvetica"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="helvetica"]::before {
+                    content: 'Helvetica' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="georgia"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="georgia"]::before {
+                    content: 'Georgia' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="verdana"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="verdana"]::before {
+                    content: 'Verdana' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="trebuchetms"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="trebuchetms"]::before {
+                    content: 'Trebuchet MS' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="tahoma"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="tahoma"]::before {
+                    content: 'Tahoma' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="couriernew"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="couriernew"]::before {
+                    content: 'Courier New' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="lucidasansunicode"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="lucidasansunicode"]::before {
+                    content: 'Lucida Sans Unicode' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="palatinolinotype"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="palatinolinotype"]::before {
+                    content: 'Palatino Linotype' !important;
+                  }
+                  
+                  /* Hide default text and show our custom content */
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value] span,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value] span {
+                    display: none !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value]::after,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value]::after {
+                    content: attr(data-value) !important;
+                    display: inline-block !important;
+                  }
+                  
+                  /* Override default "Sans Serif" label when no font is selected */
+                  .compose-editor .ql-picker.ql-font .ql-picker-label:not([data-value])::before {
+                    content: 'Sans Serif' !important;
                   }
                 `}</style>
               </div>
 
               {/* Attachments */}
               {attachmentFiles.length > 0 && (
-                <div className="px-4 py-2 border-t border-gray-200">
-                  <div className="flex flex-wrap gap-2">
+                <div className="px-4 py-2 border-t border-gray-200 flex-shrink-0 bg-white">
+                  <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
                     {attachmentFiles.map((file, index) => (
                       <div key={index} className="flex items-center space-x-2 px-2 py-1 bg-gray-100 rounded text-sm">
                         <Paperclip className="h-3 w-3 text-gray-600" />
@@ -1240,7 +1951,7 @@ const UnifiedEmail = () => {
               )}
 
               {/* Footer */}
-              <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between">
+              <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between flex-shrink-0 bg-white z-10">
                 <div className="flex items-center space-x-2">
                   <label className="cursor-pointer">
                     <input
@@ -1251,27 +1962,71 @@ const UnifiedEmail = () => {
                     />
                     <Paperclip className="h-5 w-5 text-gray-600 hover:text-gray-800 cursor-pointer" />
                   </label>
+                  {/* Delete Draft button - only show when editing a draft */}
+                  {editingDraftId && (
+                    <button
+                      onClick={() => handleDeleteDraft(editingDraftId)}
+                      disabled={deleteDraftMutation.isLoading}
+                      className="flex items-center space-x-1 px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Delete this draft permanently"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      <span>{deleteDraftMutation.isLoading ? 'Deleting...' : 'Delete Draft'}</span>
+                    </button>
+                  )}
                 </div>
                 <div className="flex items-center space-x-2">
                   <button
-                    onClick={() => {
-                      setShowCompose(false);
-                      resetComposeData();
-                    }}
+                    onClick={() => handleCloseCompose('discard')}
                     className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors"
                   >
                     Discard
                   </button>
-                  <button
-                    onClick={handleSendEmail}
+                      <button
+                        onClick={handleSendEmail}
                     className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                  >
-                    <Send className="h-4 w-4" />
+                      >
+                        <Send className="h-4 w-4" />
                     <span>Send</span>
-                  </button>
-                </div>
-              </div>
+                      </button>
+                    </div>
+                  </div>
             </>
+          )}
+
+          {/* Draft Save Confirmation Dialog */}
+          {showDraftConfirm && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+              <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                  Save as Draft?
+                </h3>
+                <p className="text-sm text-gray-600 mb-6">
+                  You have unsaved changes. Would you like to save this as a draft before closing?
+                </p>
+                <div className="flex items-center justify-end space-x-3">
+                  <button
+                    onClick={handleConfirmDiscard}
+                    className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    Discard
+                  </button>
+                  <button
+                    onClick={handleCancelDraftConfirm}
+                    className="px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmSaveDraft}
+                    disabled={saveDraftMutation.isLoading}
+                    className="px-4 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {saveDraftMutation.isLoading ? 'Saving...' : 'Save as Draft'}
+                  </button>
+            </div>
+          </div>
+            </div>
           )}
 
           {isComposeMinimized && (

@@ -8,8 +8,8 @@ const Client = sequelize.define('Client', {
     defaultValue: () => require('uuid').v4()
   },
   name: {
-    type: DataTypes.STRING,
-    allowNull: false
+    type: DataTypes.STRING, 
+    allowNull: false 
   },
   email: { 
     type: DataTypes.STRING, 
@@ -19,7 +19,7 @@ const Client = sequelize.define('Client', {
     }
   },
   country: { 
-    type: DataTypes.STRING 
+    type: DataTypes.STRING
   },
   status: { 
     type: DataTypes.ENUM('Lead', 'Abstract Submitted', 'Registered', 'Unresponsive', 'Registration Unresponsive', 'Rejected', 'Completed'), 
@@ -127,8 +127,8 @@ const Client = sequelize.define('Client', {
   },
   // Follow-up Information
   currentStage: {
-    type: DataTypes.ENUM('initial', 'stage1', 'stage2', 'completed'),
-    defaultValue: 'initial'
+    type: DataTypes.ENUM('stage1', 'stage2', 'completed'),
+    defaultValue: 'stage1'
   },
   followUpCount: {
     type: DataTypes.INTEGER,
@@ -152,6 +152,16 @@ const Client = sequelize.define('Client', {
     type: DataTypes.INTEGER,
     defaultValue: 0,
     comment: 'Number of emails sent manually before automation started - automation will skip this many emails'
+  },
+  manualStage1Count: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    comment: 'Stage 1 follow-ups already sent manually'
+  },
+  manualStage2Count: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    comment: 'Stage 2 follow-ups already sent manually'
   },
   // Engagement Metrics
   engagement: {

@@ -116,6 +116,7 @@ class TemplateEngine {
           variables.conference = {
             id: conference.id,
             name: conference.name || '',
+            shortName: conference.shortName || '',
             venue: conference.venue || '',
             startDate: formattedStartDate,
             endDate: formattedEndDate,
@@ -135,6 +136,7 @@ class TemplateEngine {
 
           // Simple format (UI uses this): conferenceName, conferenceVenue, etc.
           variables.conferenceName = conference.name || '';
+          variables.conferenceShortName = conference.shortName || '';
           variables.conferenceVenue = conference.venue || '';
           variables.conferenceDate = dateRange;
           variables.conferenceStartDate = formattedStartDate;
@@ -146,6 +148,7 @@ class TemplateEngine {
 
           // Underscore format (migrations use this): conference_name, conference_venue, etc.
           variables.conference_name = conference.name || '';
+          variables.conference_short_name = conference.shortName || '';
           variables.conference_venue = conference.venue || '';
           variables.conference_date = dateRange;
           variables.conference_start_date = formattedStartDate;
@@ -368,6 +371,7 @@ class TemplateEngine {
         },
         conference: {
           name: 'Sample Conference 2024',
+          shortName: 'SC24',
           venue: 'Convention Center',
           startDate: '2024-06-15',
           endDate: '2024-06-17',
