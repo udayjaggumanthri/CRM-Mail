@@ -17,6 +17,80 @@ import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import ImapSettings from './ImapSettings';
 
+const deriveSecurityOption = (securityValue, secureFlag, fallback = 'tls') => {
+  if (typeof securityValue === 'string' && securityValue.length > 0) {
+    return securityValue;
+  }
+  if (secureFlag === false) {
+    return 'none';
+  }
+  return fallback;
+};
+
+const boolFromSecurityOption = (option) => option !== 'none';
+
+const mapAccountToFormData = (account = {}) => ({
+  id: account.id,
+  name: account.name || '',
+  host: account.host || account.smtpHost || '',
+  port: account.port || account.smtpPort || 587,
+  security: deriveSecurityOption(account.security, account.smtpSecure),
+  username: account.username || account.smtpUsername || '',
+  password: account.password || account.smtpPassword || '',
+  fromEmail: account.fromEmail || account.email || '',
+  isSystem: Boolean(account.isSystem),
+  allowUsers: account.allowUsers !== undefined ? Boolean(account.allowUsers) : true,
+  type: account.type || 'both',
+  imapHost: account.imapHost || '',
+  imapPort: account.imapPort || 993,
+  imapSecurity: deriveSecurityOption(account.imapSecurity, account.imapSecure, 'ssl'),
+  imapUsername: account.imapUsername || account.smtpUsername || '',
+  imapPassword: account.imapPassword || '',
+  imapFolder: account.imapFolder || 'INBOX'
+});
+
+const mapFormDataToPayload = (formData) => {
+  const port = Number(formData.port) || 587;
+  const imapPort = Number(formData.imapPort) || 993;
+  const smtpSecure = boolFromSecurityOption(formData.security);
+  const imapSecure = boolFromSecurityOption(formData.imapSecurity);
+
+  const payload = {
+    name: formData.name,
+    email: formData.fromEmail,
+    fromEmail: formData.fromEmail,
+    type: formData.type || 'both',
+    host: formData.host,
+    smtpHost: formData.host,
+    port,
+    smtpPort: port,
+    security: formData.security,
+    smtpSecure,
+    smtpAuth: true,
+    username: formData.username,
+    smtpUsername: formData.username,
+    isSystem: Boolean(formData.isSystem),
+    allowUsers: Boolean(formData.allowUsers),
+    imapHost: formData.imapHost,
+    imapPort,
+    imapSecurity: formData.imapSecurity,
+    imapSecure,
+    imapUsername: formData.imapUsername,
+    imapFolder: formData.imapFolder
+  };
+
+  if (typeof formData.password === 'string' && formData.password.length > 0) {
+    payload.password = formData.password;
+    payload.smtpPassword = formData.password;
+  }
+
+  if (typeof formData.imapPassword === 'string' && formData.imapPassword.length > 0) {
+    payload.imapPassword = formData.imapPassword;
+  }
+
+  return payload;
+};
+
 const Settings = () => {
   const [activeTab, setActiveTab] = useState('smtp');
   const [showAddSmtpModal, setShowAddSmtpModal] = useState(false);
@@ -478,39 +552,23 @@ const Settings = () => {
 };
 
   const SmtpForm = ({ onSubmit, onCancel, loading, initialData }) => {
-  const [formData, setFormData] = useState({
-    name: '',
-    host: '',
-    port: 587,
-    security: 'tls',
-    username: '',
-    password: '',
-    fromEmail: '',
-    isSystem: false,
-      allowUsers: true,
-      // IMAP (inbound) settings
-      imapHost: '',
-      imapPort: 993,
-      imapSecurity: 'ssl',
-      imapUsername: '',
-      imapPassword: '',
-      imapFolder: 'INBOX'
-  });
+  const [formData, setFormData] = useState(mapAccountToFormData());
+  const [showSmtpPassword, setShowSmtpPassword] = useState(false);
+  const [showImapPassword, setShowImapPassword] = useState(false);
 
   useEffect(() => {
     if (initialData) {
-      setFormData(prev => ({
-        ...prev,
-        ...initialData,
-        password: '',
-        imapPassword: ''
-      }));
+      setFormData(mapAccountToFormData(initialData));
+    } else {
+      setFormData(mapAccountToFormData());
     }
+    setShowSmtpPassword(false);
+    setShowImapPassword(false);
   }, [initialData]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSubmit(formData);
+    onSubmit(mapFormDataToPayload(formData));
   };
 
   const handleChange = (e) => {
@@ -603,15 +661,24 @@ const Settings = () => {
         <label className="block text-sm font-medium text-gray-700 mb-1">
           Password
         </label>
-        <input
-          type="password"
-          name="password"
-          required
-          value={formData.password}
-          onChange={handleChange}
-          className="input-field"
-          placeholder="App password or account password"
-        />
+        <div className="relative">
+          <input
+            type={showSmtpPassword ? 'text' : 'password'}
+            name="password"
+            required={!initialData}
+            value={formData.password ?? ''}
+            onChange={handleChange}
+            className="input-field pr-24"
+            placeholder="App password or account password"
+          />
+          <button
+            type="button"
+            onClick={() => setShowSmtpPassword((prev) => !prev)}
+            className="absolute inset-y-0 right-0 px-3 text-sm font-medium text-primary-600 hover:text-primary-800 focus:outline-none"
+          >
+            {showSmtpPassword ? 'Hide' : 'Show'}
+          </button>
+        </div>
       </div>
       
       <div>
@@ -634,7 +701,7 @@ const Settings = () => {
           <input
             type="checkbox"
             name="isSystem"
-            checked={formData.isSystem}
+            checked={Boolean(formData.isSystem)}
             onChange={handleChange}
             className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
           />
@@ -647,7 +714,7 @@ const Settings = () => {
           <input
             type="checkbox"
             name="allowUsers"
-            checked={formData.allowUsers}
+            checked={Boolean(formData.allowUsers)}
             onChange={handleChange}
             className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
           />
@@ -723,14 +790,23 @@ const Settings = () => {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">IMAP Password</label>
-            <input
-              type="password"
-              name="imapPassword"
-              value={formData.imapPassword}
-              onChange={handleChange}
-              className="input-field"
-              placeholder="App password or password"
-            />
+            <div className="relative">
+              <input
+                type={showImapPassword ? 'text' : 'password'}
+                name="imapPassword"
+                value={formData.imapPassword}
+                onChange={handleChange}
+                className="input-field pr-24"
+                placeholder="App password or password"
+              />
+              <button
+                type="button"
+                onClick={() => setShowImapPassword((prev) => !prev)}
+                className="absolute inset-y-0 right-0 px-3 text-sm font-medium text-primary-600 hover:text-primary-800 focus:outline-none"
+              >
+                {showImapPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
           </div>
         </div>
       </div>

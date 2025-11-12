@@ -279,6 +279,35 @@ module.exports = {
         transaction
       );
 
+      await addColumnIfMissing(
+        queryInterface,
+        'email_accounts',
+        'sendPriority',
+        {
+          type: DataTypes.INTEGER,
+          allowNull: false,
+          defaultValue: 100,
+          comment: 'Lower number = higher priority for outbound sending'
+        },
+        transaction
+      );
+
+      await queryInterface.sequelize.query(
+        `
+        WITH ranked AS (
+          SELECT "id",
+                 ROW_NUMBER() OVER (ORDER BY "createdAt") AS priority
+          FROM "email_accounts"
+        )
+        UPDATE "email_accounts" ea
+        SET "sendPriority" = ranked.priority
+        FROM ranked
+        WHERE ranked.id = ea.id
+          AND (ea."sendPriority" IS NULL OR ea."sendPriority" = 100)
+        `,
+        { transaction }
+      );
+
       // Create notifications table
       await createTableIfMissing(
         queryInterface,
