@@ -2,6 +2,7 @@ const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
+const { decryptEmailPassword } = require('../utils/passwordUtils');
 // Import models dynamically to avoid circular dependencies
 let Email, EmailAccount, EmailThread, EmailLog, Client;
 
@@ -50,13 +51,14 @@ class RealTimeImapService {
 
     try {
       // Get all IMAP-enabled accounts
+      // Include accounts with IMAP configuration, regardless of type (some accounts might be 'smtp' but have IMAP config)
       const accounts = await EmailAccount.findAll({
         where: { 
-          type: ['imap', 'both'],
           imapHost: { [Op.ne]: null },
           imapUsername: { [Op.ne]: null },
           isActive: true
-        }
+        },
+        order: [['createdAt', 'ASC']]
       });
 
       if (accounts.length === 0) {
@@ -83,7 +85,9 @@ class RealTimeImapService {
    */
   async startAccountMonitoring(account) {
     try {
-      console.log(`🔄 Setting up real-time monitoring for ${account.name}...`);
+      // Determine account name for logging
+      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+      console.log(`🔄 Setting up real-time monitoring for ${accountName}...`);
 
       // Create IMAP connection with IDLE support
       const client = new ImapFlow({
@@ -92,23 +96,38 @@ class RealTimeImapService {
         secure: account.imapSecure !== false,
         auth: {
           user: account.imapUsername,
-          pass: account.imapPassword
+          pass: decryptEmailPassword(account.imapPassword)
         },
         logger: false,
         idling: true // Enable IDLE support
       });
 
       await client.connect();
-      console.log(`✅ Connected to ${account.name} (${account.imapHost})`);
+      console.log(`✅ Connected to ${accountName} (${account.imapHost})`);
 
       // Store connection
       this.connections.set(account.id, client);
+      
+      // Update database sync status
+      try {
+        await EmailAccount.update(
+          { 
+            syncStatus: 'active',
+            lastSyncAt: new Date(),
+            errorMessage: null
+          },
+          { where: { id: account.id } }
+        );
+      } catch (error) {
+        console.error(`⚠️ Failed to update database status for ${accountName}:`, error.message);
+      }
 
       // Start IDLE monitoring
       await this.startIdleMonitoring(account, client);
 
     } catch (error) {
-      console.error(`❌ Failed to setup monitoring for ${account.name}:`, error.message);
+      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+      console.error(`❌ Failed to setup monitoring for ${accountName}:`, error.message);
       await this.handleConnectionError(account, error);
     }
   }
@@ -118,9 +137,12 @@ class RealTimeImapService {
    */
   async startIdleMonitoring(account, client) {
     try {
+      // Determine account name for logging
+      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+      
       // Open INBOX
       await client.mailboxOpen('INBOX');
-      console.log(`📬 Monitoring INBOX for ${account.name}`);
+      console.log(`📬 Monitoring INBOX for ${accountName}`);
 
       // Get initial message count safely
       let initialCount = 0;
@@ -129,17 +151,17 @@ class RealTimeImapService {
           initialCount = client.mailbox.messages.total || 0;
         }
       } catch (error) {
-        console.warn(`⚠️ Could not get initial message count for ${account.name}:`, error.message);
+        console.warn(`⚠️ Could not get initial message count for ${accountName}:`, error.message);
       }
-      console.log(`📊 Initial message count for ${account.name}: ${initialCount}`);
+      console.log(`📊 Initial message count for ${accountName}: ${initialCount}`);
 
       // Start IDLE monitoring
       let idlePromise;
       try {
         idlePromise = client.idle();
-        console.log(`🔄 IDLE monitoring started for ${account.name}`);
+        console.log(`🔄 IDLE monitoring started for ${accountName}`);
       } catch (error) {
-        console.warn(`⚠️ IDLE not supported for ${account.name}, falling back to polling:`, error.message);
+        console.warn(`⚠️ IDLE not supported for ${accountName}, falling back to polling:`, error.message);
         // Fallback to polling if IDLE is not supported
         this.startPollingFallback(account, client);
         return;
@@ -147,13 +169,13 @@ class RealTimeImapService {
       
       // Handle IDLE events
       client.on('mailboxUpdate', async (update) => {
-        console.log(`📧 New email detected for ${account.name}:`, update);
+        console.log(`📧 New email detected for ${accountName}:`, update);
         await this.handleNewEmails(account, client, update);
       });
 
       // Handle connection errors
       client.on('error', async (error) => {
-        console.error(`❌ IMAP connection error for ${account.name}:`, error.message);
+        console.error(`❌ IMAP connection error for ${accountName}:`, error.message);
         await this.handleConnectionError(account, error);
       });
 
@@ -164,14 +186,15 @@ class RealTimeImapService {
             await client.noop(); // Keep connection alive
           }
         } catch (error) {
-          console.error(`❌ Keep-alive failed for ${account.name}:`, error.message);
+          console.error(`❌ Keep-alive failed for ${accountName}:`, error.message);
         }
       }, 30000); // Every 30 seconds
 
-      console.log(`✅ IDLE monitoring started for ${account.name}`);
+      console.log(`✅ IDLE monitoring started for ${accountName}`);
 
     } catch (error) {
-      console.error(`❌ Failed to start IDLE monitoring for ${account.name}:`, error.message);
+      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+      console.error(`❌ Failed to start IDLE monitoring for ${accountName}:`, error.message);
       await this.handleConnectionError(account, error);
     }
   }
@@ -180,12 +203,13 @@ class RealTimeImapService {
    * Fallback polling method when IDLE is not supported
    */
   startPollingFallback(account, client) {
-    console.log(`🔄 Starting polling fallback for ${account.name} (every 30 seconds)`);
+    const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+    console.log(`🔄 Starting polling fallback for ${accountName} (every 30 seconds)`);
     
     const pollInterval = setInterval(async () => {
       try {
         if (!client.connected) {
-          console.log(`❌ Client disconnected for ${account.name}, stopping polling`);
+          console.log(`❌ Client disconnected for ${accountName}, stopping polling`);
           clearInterval(pollInterval);
           return;
         }
@@ -193,7 +217,7 @@ class RealTimeImapService {
         // Check for new emails
         await this.checkForNewEmails(account, client);
       } catch (error) {
-        console.error(`❌ Polling error for ${account.name}:`, error.message);
+        console.error(`❌ Polling error for ${accountName}:`, error.message);
       }
     }, 30000); // Poll every 30 seconds
     
@@ -228,6 +252,19 @@ class RealTimeImapService {
         // Update stored count
         this.lastMessageCounts = this.lastMessageCounts || new Map();
         this.lastMessageCounts.set(account.id, currentCount);
+        
+        // Update database lastSyncAt when emails are fetched
+        try {
+          await EmailAccount.update(
+            { 
+              lastSyncAt: new Date(),
+              syncStatus: 'active'
+            },
+            { where: { id: account.id } }
+          );
+        } catch (error) {
+          console.error(`⚠️ Failed to update lastSyncAt for ${account.name}:`, error.message);
+        }
       }
     } catch (error) {
       console.error(`❌ Error checking for new emails for ${account.name}:`, error.message);
@@ -311,6 +348,21 @@ class RealTimeImapService {
         }
       }
 
+      // Update database lastSyncAt when emails are processed
+      if (newEmails.length > 0) {
+        try {
+          await EmailAccount.update(
+            { 
+              lastSyncAt: new Date(),
+              syncStatus: 'active'
+            },
+            { where: { id: account.id } }
+          );
+        } catch (error) {
+          console.error(`⚠️ Failed to update lastSyncAt for ${account.name}:`, error.message);
+        }
+      }
+
       // Emit real-time update via WebSocket
       if (newEmails.length > 0 && this.io) {
         this.io.emit('newEmails', {
@@ -333,6 +385,22 @@ class RealTimeImapService {
   async handleConnectionError(account, error) {
     const retryCount = this.retryAttempts.get(account.id) || 0;
     
+    // Remove connection from map
+    this.connections.delete(account.id);
+    
+    // Update database with error status
+    try {
+      await EmailAccount.update(
+        { 
+          syncStatus: retryCount < this.maxRetries ? 'error' : 'disconnected',
+          errorMessage: error.message || 'Connection error'
+        },
+        { where: { id: account.id } }
+      );
+    } catch (dbError) {
+      console.error(`⚠️ Failed to update database error status for ${account.name}:`, dbError.message);
+    }
+    
     if (retryCount < this.maxRetries) {
       console.log(`🔄 Retrying connection for ${account.name} (attempt ${retryCount + 1}/${this.maxRetries})`);
       
@@ -348,6 +416,19 @@ class RealTimeImapService {
     } else {
       console.error(`❌ Max retries exceeded for ${account.name}. Stopping monitoring.`);
       this.retryAttempts.delete(account.id);
+      
+      // Update database with final disconnected status
+      try {
+        await EmailAccount.update(
+          { 
+            syncStatus: 'disconnected',
+            errorMessage: `Max retries reached: ${error.message || 'Connection failed'}`
+          },
+          { where: { id: account.id } }
+        );
+      } catch (dbError) {
+        console.error(`⚠️ Failed to update database disconnected status for ${account.name}:`, dbError.message);
+      }
     }
   }
 

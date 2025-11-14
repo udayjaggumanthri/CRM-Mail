@@ -11,7 +11,10 @@ import {
   Server,
   Users,
   Shield,
-  Inbox
+  Inbox,
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2
 } from 'lucide-react';
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
@@ -96,6 +99,8 @@ const Settings = () => {
   const [showAddSmtpModal, setShowAddSmtpModal] = useState(false);
   const [showEditSmtpModal, setShowEditSmtpModal] = useState(false);
   const [selectedSmtp, setSelectedSmtp] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(10); // 10 items per page for list view
   const queryClient = useQueryClient();
 
   const { data: smtpAccounts, isLoading: smtpLoading } = useQuery('smtp-accounts', async () => {
@@ -210,6 +215,19 @@ const Settings = () => {
     });
   }, [smtpAccounts]);
 
+  // Get currently active primary SMTP (the one being used)
+  const activePrimarySmtp = React.useMemo(() => {
+    return sortedSmtpAccounts.find(account => 
+      account.isActive && account.sendPriority === 1
+    );
+  }, [sortedSmtpAccounts]);
+
+  // Pagination logic
+  const totalPages = Math.ceil(sortedSmtpAccounts.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedAccounts = sortedSmtpAccounts.slice(startIndex, endIndex);
+
   const handleSetPrimary = (accountId) => {
     setPriorityMutation.mutate({ id: accountId, priority: 1 });
   };
@@ -260,6 +278,14 @@ const Settings = () => {
             <div>
               <h2 className="text-lg font-medium text-gray-900">SMTP Accounts</h2>
               <p className="text-sm text-gray-600">Configure email sending accounts</p>
+              {activePrimarySmtp && (
+                <div className="mt-2 flex items-center space-x-2 text-sm">
+                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  <span className="text-gray-600">
+                    Currently using: <span className="font-semibold text-gray-900">{activePrimarySmtp.name}</span> ({activePrimarySmtp.email})
+                  </span>
+                </div>
+              )}
             </div>
             <button
               onClick={() => setShowAddSmtpModal(true)}
@@ -270,137 +296,193 @@ const Settings = () => {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {smtpLoading ? (
-              <div className="col-span-full flex justify-center py-8">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-              </div>
-            ) : sortedSmtpAccounts.length === 0 ? (
-              <div className="col-span-full text-center py-8">
-                <Server className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-500">No SMTP accounts configured</p>
-              </div>
-            ) : (
-              sortedSmtpAccounts.map((account, index) => (
-                <div key={account.id} className="card">
-                  <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <h3 className="text-lg font-medium text-gray-900 flex items-center space-x-2">
-                        <span>{account.name}</span>
-                        {account.sendPriority === 1 && (
-                          <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-800">
-                            Primary
-                          </span>
-                        )}
-                        {account.sendPriority === 2 && (
-                          <span className="px-2 py-0.5 text-xs rounded-full bg-purple-100 text-purple-700">
-                            Secondary
-                          </span>
-                        )}
-                      </h3>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Priority {account.sendPriority ?? '—'}
-                      </p>
-                    </div>
-                    <div className="flex space-x-2">
-                      <button
-                        onClick={() => handleTestSmtp(account.id)}
-                        className="text-gray-400 hover:text-gray-600"
-                        title="Test Connection"
-                      >
-                        <TestTube className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => handleEditSmtp(account)}
-                        className="text-gray-400 hover:text-gray-600"
-                        title="Edit"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => deleteSmtpMutation.mutate(account.id)}
-                        className="text-gray-400 hover:text-red-600"
-                        title="Delete"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-2 text-sm text-gray-600">
-                    <div>
-                      <span className="font-medium">Host:</span> {account.smtpHost || account.host}:{account.smtpPort || account.port}
-                    </div>
-                    <div>
-                      <span className="font-medium">From:</span> {account.email || account.fromEmail}
-                    </div>
-                    <div>
-                      <span className="font-medium">Type:</span> {account.type?.toUpperCase()}
-                    </div>
-                    <div>
-                      <span className="font-medium">Security:</span> {account.smtpSecure ? 'SSL/TLS' : 'None'}
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <span className="font-medium">System:</span>
-                      <span className={`status-badge ${account.isSystem ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
-                        {account.isSystem ? 'Yes' : 'No'}
-                      </span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <span className="font-medium">Allow Users:</span>
-                      <span className={`status-badge ${account.allowUsers ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
-                        {account.allowUsers ? 'Yes' : 'No'}
-                      </span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <span className="font-medium">Active for Sending:</span>
-                      <button
-                        onClick={() => handleToggleActive(account)}
-                        disabled={toggleActiveMutation.isLoading}
-                        className={`px-2 py-1 text-xs rounded ${
-                          account.isActive
-                            ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                        }`}
-                      >
-                        {account.isActive ? 'Active' : 'Paused'}
-                      </button>
-                    </div>
-                  </div>
+          {/* List View */}
+          <div className="bg-white rounded-lg shadow overflow-hidden">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Host</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Priority</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active</th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {smtpLoading ? (
+                    <tr>
+                      <td colSpan="8" className="px-6 py-8 text-center">
+                        <div className="flex justify-center">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : paginatedAccounts.length === 0 ? (
+                    <tr>
+                      <td colSpan="8" className="px-6 py-8 text-center text-gray-500">
+                        <Server className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                        <p>No SMTP accounts configured</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedAccounts.map((account) => {
+                      const isCurrentlyActive = activePrimarySmtp?.id === account.id;
+                      return (
+                        <tr key={account.id} className={isCurrentlyActive ? 'bg-green-50' : 'hover:bg-gray-50'}>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {isCurrentlyActive ? (
+                              <div className="flex items-center space-x-1">
+                                <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                <span className="text-xs text-green-600 font-medium">Active</span>
+                              </div>
+                            ) : (
+                              <span className={`px-2 py-1 text-xs rounded-full ${
+                                account.sendPriority === 1 
+                                  ? 'bg-blue-100 text-blue-800' 
+                                  : account.sendPriority === 2
+                                  ? 'bg-purple-100 text-purple-700'
+                                  : 'bg-gray-100 text-gray-800'
+                              }`}>
+                                {account.sendPriority === 1 ? 'Primary' : account.sendPriority === 2 ? 'Secondary' : `Priority ${account.sendPriority}`}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm font-medium text-gray-900">{account.name}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-600">{account.email || account.fromEmail}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-600">{account.smtpHost || account.host}:{account.smtpPort || account.port}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-600">{account.sendPriority ?? '—'}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-600">{account.type?.toUpperCase() || 'BOTH'}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <button
+                              onClick={() => handleToggleActive(account)}
+                              disabled={toggleActiveMutation.isLoading}
+                              className={`px-2 py-1 text-xs rounded ${
+                                account.isActive
+                                  ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                              }`}
+                            >
+                              {account.isActive ? 'Active' : 'Paused'}
+                            </button>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                            <div className="flex items-center justify-end space-x-2">
+                              <button
+                                onClick={() => handleTestSmtp(account.id)}
+                                className="text-gray-400 hover:text-gray-600"
+                                title="Test Connection"
+                              >
+                                <TestTube className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleEditSmtp(account)}
+                                className="text-gray-400 hover:text-gray-600"
+                                title="Edit"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => deleteSmtpMutation.mutate(account.id)}
+                                className="text-gray-400 hover:text-red-600"
+                                title="Delete"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
 
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {account.sendPriority !== 1 && (
-                      <button
-                        onClick={() => handleSetPrimary(account.id)}
-                        disabled={setPriorityMutation.isLoading}
-                        className="btn-secondary text-xs"
-                      >
-                        Set as Primary
-                      </button>
-                    )}
-                    {account.sendPriority > 1 && (
-                      <button
-                        onClick={() => handleMovePriority(account, -1)}
-                        disabled={setPriorityMutation.isLoading}
-                        className="btn-secondary text-xs"
-                      >
-                        Move Up
-                      </button>
-                    )}
-                    {account.sendPriority < sortedSmtpAccounts.length && (
-                      <button
-                        onClick={() => handleMovePriority(account, 1)}
-                        disabled={setPriorityMutation.isLoading}
-                        className="btn-secondary text-xs"
-                      >
-                        Move Down
-                      </button>
-                    )}
-                  </div>
+          {/* Pagination */}
+          {!smtpLoading && sortedSmtpAccounts.length > 0 && totalPages > 1 && (
+            <div className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg">
+              <div className="flex flex-1 justify-between sm:hidden">
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                  className="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                  className="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+              <div className="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm text-gray-700">
+                    Showing <span className="font-medium">{startIndex + 1}</span> to{' '}
+                    <span className="font-medium">{Math.min(endIndex, sortedSmtpAccounts.length)}</span> of{' '}
+                    <span className="font-medium">{sortedSmtpAccounts.length}</span> accounts
+                  </p>
                 </div>
-              ))
-            )}
-          </div>
+                <div>
+                  <nav className="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                    <button
+                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                      disabled={currentPage === 1}
+                      className="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <ChevronLeft className="h-5 w-5" />
+                    </button>
+                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+                      if (
+                        page === 1 ||
+                        page === totalPages ||
+                        (page >= currentPage - 1 && page <= currentPage + 1)
+                      ) {
+                        return (
+                          <button
+                            key={page}
+                            onClick={() => setCurrentPage(page)}
+                            className={`relative inline-flex items-center px-4 py-2 text-sm font-semibold ${
+                              currentPage === page
+                                ? 'z-10 bg-primary-600 text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600'
+                                : 'text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0'
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        );
+                      } else if (page === currentPage - 2 || page === currentPage + 2) {
+                        return <span key={page} className="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700">...</span>;
+                      }
+                      return null;
+                    })}
+                    <button
+                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                      disabled={currentPage === totalPages}
+                      className="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <ChevronRight className="h-5 w-5" />
+                    </button>
+                  </nav>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

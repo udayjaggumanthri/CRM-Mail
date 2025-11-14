@@ -28,6 +28,7 @@ const clientRoutes = require('./routes/clientRoutes');
 const { rescheduleConferenceFollowUps } = clientRoutes;
 const { router: imapRoutes, realTimeImapService } = require('./routes/imapRoutes');
 const templateDraftRoutes = require('./routes/templateDraftRoutes');
+const { sanitizeAttachmentsForStorage } = require('./utils/attachmentUtils');
 const { requireRole, requireConferenceAccess, requireUserManagement, requireClientAccess } = require('./middleware/rbac');
 require('dotenv').config();
 
@@ -528,13 +529,14 @@ async function sendDirectEmail(client, emailType, conferenceName = 'Conference')
     }
 
     // Create transporter
+    const { decryptEmailPassword } = require('./utils/passwordUtils');
     const transporter = nodemailer.createTransport({
       host: smtpAccount.smtpHost,
       port: smtpAccount.smtpPort,
       secure: smtpAccount.smtpPort === 465,
       auth: {
-        user: smtpAccount.username,
-        pass: smtpAccount.password
+        user: smtpAccount.smtpUsername || smtpAccount.username,
+        pass: decryptEmailPassword(smtpAccount.smtpPassword || smtpAccount.password)
       }
     });
 
@@ -711,20 +713,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
   }
 });
 
-// Add missing inbound email routes
-app.get('/api/inbound/status', authenticateToken, async (req, res) => {
-  try {
-    res.json({
-      status: 'stopped',
-      activeConnections: 0,
-      configuredAccounts: 0,
-      lastSync: null
-    });
-  } catch (error) {
-    console.error('Inbound status error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+// Note: /api/inbound/status is handled by imapRoutes router (mounted at /api/inbound)
 
 app.post('/api/inbound/polling', authenticateToken, async (req, res) => {
   try {
@@ -1068,7 +1057,30 @@ app.get('/api/templates', authenticateToken, async (req, res) => {
 
 app.post('/api/templates', authenticateToken, async (req, res) => {
   try {
-    const template = await EmailTemplate.create(req.body);
+    const parseAttachmentInput = (input) => {
+      if (Array.isArray(input)) return input;
+      if (typeof input === 'string') {
+        try {
+          const parsed = JSON.parse(input);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+          console.warn('Failed to parse attachments payload:', error.message);
+          return [];
+        }
+      }
+      return [];
+    };
+
+    const payload = {
+      ...req.body
+    };
+
+    if (payload.attachments !== undefined) {
+      const parsedAttachments = parseAttachmentInput(payload.attachments);
+      payload.attachments = sanitizeAttachmentsForStorage(parsedAttachments);
+    }
+
+    const template = await EmailTemplate.create(payload);
     res.status(201).json(template);
   } catch (error) {
     console.error('Create template error:', error);
@@ -1082,7 +1094,31 @@ app.put('/api/templates/:id', authenticateToken, async (req, res) => {
     if (!template) {
       return res.status(404).json({ error: 'Template not found' });
     }
-    await template.update(req.body);
+
+    const parseAttachmentInput = (input) => {
+      if (Array.isArray(input)) return input;
+      if (typeof input === 'string') {
+        try {
+          const parsed = JSON.parse(input);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+          console.warn('Failed to parse attachments payload:', error.message);
+          return [];
+        }
+      }
+      return [];
+    };
+
+    const payload = {
+      ...req.body
+    };
+
+    if (payload.attachments !== undefined) {
+      const parsedAttachments = parseAttachmentInput(payload.attachments);
+      payload.attachments = sanitizeAttachmentsForStorage(parsedAttachments);
+    }
+
+    await template.update(payload);
     res.json(template);
   } catch (error) {
     console.error('Update template error:', error);

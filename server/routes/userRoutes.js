@@ -30,13 +30,18 @@ const authenticateToken = (req, res, next) => {
 // GET /api/users - Get all users
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { role, search, page = 1, limit = 50 } = req.query;
+    const { role, search, page = 1, limit = 50, isActive } = req.query;
     
     let whereClause = {};
     
     // Filter by role if provided
     if (role && role !== 'all') {
       whereClause.role = role;
+    }
+
+    if (typeof isActive !== 'undefined') {
+      const isActiveBool = typeof isActive === 'string' ? isActive.toLowerCase() === 'true' : Boolean(isActive);
+      whereClause.isActive = isActiveBool;
     }
     
     // Search functionality

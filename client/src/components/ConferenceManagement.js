@@ -123,7 +123,13 @@ const ConferenceManagement = () => {
   // Fetch users for team assignment
   const { data: users = [] } = useQuery('users', async () => {
     try {
-    const response = await axios.get('/api/users');
+    const response = await axios.get('/api/users', {
+      params: {
+        role: 'all',
+        isActive: true,
+        limit: 500
+      }
+    });
     return response.data.users || [];
     } catch (error) {
       console.error('Error fetching users:', error);
@@ -376,6 +382,10 @@ const ConferenceManagement = () => {
       }
     }
     
+    const sanitizedAssignedMembers = Array.isArray(conference.assignedMemberIds)
+      ? conference.assignedMemberIds.filter(Boolean)
+      : [];
+
     setFormData({
       name: conference.name,
       shortName: conference.shortName || '',
@@ -400,6 +410,8 @@ const ConferenceManagement = () => {
       workingHoursStart: settings.working_hours?.start || '09:00',
       workingHoursEnd: settings.working_hours?.end || '17:00',
       timezone: settings.timezone || 'UTC',
+      assignedTeamLeadId: conference.assignedTeamLeadId || '',
+      assignedMemberIds: sanitizedAssignedMembers,
       stage1Template: conference.stage1Template || {
         subject: '',
         bodyHtml: '',

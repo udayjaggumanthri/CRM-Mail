@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { EmailTemplateDraft } = require('../models');
+const { sanitizeAttachmentsForStorage } = require('../utils/attachmentUtils');
 
 const buildOwnershipClause = (req) => {
   const clause = {};
@@ -29,11 +30,30 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
+    const parseAttachmentInput = (input) => {
+      if (Array.isArray(input)) return input;
+      if (typeof input === 'string') {
+        try {
+          const parsed = JSON.parse(input);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+          console.warn('Failed to parse draft attachments payload:', error.message);
+          return [];
+        }
+      }
+      return [];
+    };
+
     const payload = {
       ...req.body,
       createdBy: req.user?.id || req.body.createdBy,
       organizationId: req.user?.organizationId || req.body.organizationId || null
     };
+
+    if (payload.attachments !== undefined) {
+      const parsedAttachments = parseAttachmentInput(payload.attachments);
+      payload.attachments = sanitizeAttachmentsForStorage(parsedAttachments);
+    }
 
     const draft = await EmailTemplateDraft.create(payload);
     res.status(201).json(draft);
@@ -57,11 +77,32 @@ router.put('/:id', async (req, res) => {
       return res.status(403).json({ error: 'You do not have permission to modify this draft' });
     }
 
-    const updated = await draft.update({
+    const parseAttachmentInput = (input) => {
+      if (Array.isArray(input)) return input;
+      if (typeof input === 'string') {
+        try {
+          const parsed = JSON.parse(input);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+          console.warn('Failed to parse draft attachments payload:', error.message);
+          return [];
+        }
+      }
+      return [];
+    };
+
+    const payload = {
       ...req.body,
       organizationId: req.user?.organizationId || req.body.organizationId || draft.organizationId,
       createdBy: draft.createdBy || req.user?.id || req.body.createdBy
-    });
+    };
+
+    if (payload.attachments !== undefined) {
+      const parsedAttachments = parseAttachmentInput(payload.attachments);
+      payload.attachments = sanitizeAttachmentsForStorage(parsedAttachments);
+    }
+
+    const updated = await draft.update(payload);
 
     res.json(updated);
   } catch (error) {

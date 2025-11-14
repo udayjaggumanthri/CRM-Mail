@@ -1,6 +1,7 @@
 const { EmailAccount } = require('../models');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 
 class SMTPManagementService {
   constructor() {
@@ -332,8 +333,9 @@ class SMTPManagementService {
         replyTo: account.replyTo
       };
 
-      if (emailData.attachments) {
-        mailOptions.attachments = emailData.attachments;
+      const normalizedAttachments = prepareAttachmentsForSending(emailData.attachments);
+      if (normalizedAttachments.length > 0) {
+        mailOptions.attachments = normalizedAttachments;
       }
 
       const result = await transporter.sendMail(mailOptions);

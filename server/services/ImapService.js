@@ -1,6 +1,7 @@
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const { v4: uuidv4 } = require('uuid');
+const { decryptEmailPassword } = require('../utils/passwordUtils');
 
 class ImapService {
   constructor() {
@@ -89,7 +90,7 @@ class ImapService {
         secure: normalizedAccount.imapSecurity === 'ssl' || Number(normalizedAccount.imapPort) === 993,
         auth: {
           user: normalizedAccount.imapUsername,
-          pass: normalizedAccount.imapPassword
+          pass: decryptEmailPassword(normalizedAccount.imapPassword)
         },
         logger: false, // Disable ImapFlow logging
         tls: {

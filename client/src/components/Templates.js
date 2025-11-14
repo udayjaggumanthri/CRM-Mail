@@ -208,6 +208,24 @@ const stripHtml = (html) => {
   return (div.textContent || div.innerText || '').trim();
 };
 
+const readFileAsBase64 = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const { result } = reader;
+      if (typeof result === 'string') {
+        const base64 = result.includes(',')
+          ? result.split(',')[1]
+          : result;
+        resolve(base64);
+      } else {
+        reject(new Error('Unable to read file'));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('Unable to read file'));
+    reader.readAsDataURL(file);
+  });
+
 const getInitialTemplateForm = () => ({
   name: '',
   stage: '',
@@ -436,16 +454,38 @@ const Templates = () => {
     }));
   };
 
-  const handleFileUpload = (e) => {
-    const files = Array.from(e.target.files);
-    const newAttachments = files.map(file => ({
-      id: Date.now() + Math.random(),
-      file,
-      name: file.name,
-      size: file.size,
-      type: file.type
-    }));
-    setAttachments(prev => [...prev, ...newAttachments]);
+  const handleFileUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    try {
+      const processed = await Promise.all(
+        files.map(async (file) => {
+          const base64Content = await readFileAsBase64(file);
+          return {
+            id: `${Date.now()}-${Math.random()}`,
+            name: file.name,
+            filename: file.name,
+            size: file.size,
+            type: file.type || 'application/octet-stream',
+            contentType: file.type || 'application/octet-stream',
+            encoding: 'base64',
+            content: base64Content
+          };
+        })
+      );
+
+      setAttachments(prev => [...prev, ...processed]);
+    } catch (error) {
+      console.error('Error reading attachment:', error);
+      toast.error('Failed to read one or more attachments');
+    } finally {
+      if (e.target) {
+        e.target.value = '';
+      }
+    }
   };
 
   const removeAttachment = (id) => {
@@ -463,9 +503,14 @@ const Templates = () => {
     sendAfterDays: formData.sendAfterDays || 1,
     followUpNumber: formData.followUpNumber || 1,
     attachments: attachments.map(att => ({
+      id: att.id,
       name: att.name,
+      filename: att.filename || att.name,
       size: att.size,
-      type: att.type
+      type: att.type,
+      contentType: att.contentType || att.type,
+      encoding: att.encoding || (att.content ? 'base64' : undefined),
+      content: att.content || null
     }))
   });
 
@@ -501,7 +546,10 @@ const Templates = () => {
     setAttachments(
       (draft.attachments || []).map((att, idx) => ({
         ...att,
-        id: att.id || `${draft.id}-${idx}`
+        id: att.id || `${draft.id}-${idx}`,
+        filename: att.filename || att.name,
+        contentType: att.contentType || att.type,
+        encoding: att.encoding || (att.content ? 'base64' : att.encoding)
       }))
     );
     setShowAddModal(true);
@@ -578,9 +626,14 @@ const Templates = () => {
       ...formData,
       bodyText: bodyTextValue,
       attachments: attachments.map(att => ({
+        id: att.id,
         name: att.name,
+        filename: att.filename || att.name,
         size: att.size,
-        type: att.type
+        type: att.type,
+        contentType: att.contentType || att.type,
+        encoding: att.encoding || (att.content ? 'base64' : undefined),
+        content: att.content || null
       }))
     };
     

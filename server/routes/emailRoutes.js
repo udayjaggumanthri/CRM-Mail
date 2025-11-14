@@ -1,9 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client } = require('../models');
+const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client, EmailTemplate } = require('../models');
 const { Op } = require('sequelize');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
+const { decryptEmailPassword } = require('../utils/passwordUtils');
+const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 
 // Configure multer for file uploads - use any() to handle both files and fields
 const upload = multer({ 
@@ -374,6 +376,27 @@ router.post('/send', upload.any(), async (req, res) => {
 
     // Get uploaded files - filter by fieldname 'attachments'
     const uploadedFiles = (req.files || []).filter(file => file.fieldname === 'attachments');
+    let templateAttachmentsMeta = [];
+    let templateAttachmentsForSending = [];
+    if (req.body.templateId) {
+      try {
+        const template = await EmailTemplate.findByPk(req.body.templateId);
+        if (template?.attachments && Array.isArray(template.attachments)) {
+          templateAttachmentsMeta = template.attachments.map(att => ({
+            filename: att.filename || att.name || 'attachment',
+            name: att.name || att.filename || 'attachment',
+            size: att.size || null,
+            type: att.contentType || att.type || null,
+            contentType: att.contentType || att.type || null,
+            encoding: att.encoding || (att.content ? 'base64' : undefined),
+            content: att.content || null
+          }));
+          templateAttachmentsForSending = prepareAttachmentsForSending(template.attachments);
+        }
+      } catch (err) {
+        console.warn('⚠️  Unable to load template attachments:', err.message);
+      }
+    }
 
     // Validate required fields with detailed error
     if (!emailAccountId || emailAccountId === 'undefined' || emailAccountId === 'null' || emailAccountId === '') {
@@ -439,12 +462,16 @@ router.post('/send', upload.any(), async (req, res) => {
     console.log('✅ Found email account:', account.email, account.name, 'ID:', accountId);
 
     // Prepare attachments array for database storage
-    const attachments = uploadedFiles.map(file => ({
-      filename: file.originalname,
-      content: file.buffer.toString('base64'),
-      contentType: file.mimetype,
-      size: file.size
-    }));
+    const attachments = [
+      ...uploadedFiles.map(file => ({
+        filename: file.originalname,
+        name: file.originalname,
+        content: file.buffer.toString('base64'),
+        contentType: file.mimetype,
+        size: file.size
+      })),
+      ...templateAttachmentsMeta
+    ];
 
     // Create email record
     const email = await Email.create({
@@ -481,7 +508,7 @@ router.post('/send', upload.any(), async (req, res) => {
         },
         auth: {
           user: account.smtpUsername,
-          pass: account.smtpPassword
+          pass: decryptEmailPassword(account.smtpPassword)
         }
       });
 
@@ -521,12 +548,19 @@ router.post('/send', upload.any(), async (req, res) => {
       if (bcc) mailOptions.bcc = bcc;
 
       // Add attachments if any
-      if (uploadedFiles.length > 0) {
-        mailOptions.attachments = uploadedFiles.map(file => ({
-          filename: file.originalname,
-          content: file.buffer,
-          contentType: file.mimetype
-        }));
+      const uploadAttachmentsForSending = uploadedFiles.map(file => ({
+        filename: file.originalname,
+        content: file.buffer,
+        contentType: file.mimetype
+      }));
+
+      const combinedAttachments = [
+        ...templateAttachmentsForSending,
+        ...uploadAttachmentsForSending
+      ];
+
+      if (combinedAttachments.length > 0) {
+        mailOptions.attachments = combinedAttachments;
       }
 
       // Send email

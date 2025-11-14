@@ -3,6 +3,8 @@ const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
 const { v4: uuidv4 } = require('uuid');
 const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client } = require('../models');
+const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
+const { decryptEmailPassword } = require('../utils/passwordUtils');
 
 class EmailService {
   constructor() {
@@ -68,7 +70,7 @@ class EmailService {
       secure: account.imapSecure,
       auth: {
         user: account.imapUsername,
-        pass: account.imapPassword
+        pass: decryptEmailPassword(account.imapPassword)
       },
       logger: false
     };
@@ -93,7 +95,7 @@ class EmailService {
       },
       auth: {
         user: account.smtpUsername,
-        pass: account.smtpPassword
+        pass: decryptEmailPassword(account.smtpPassword)
       }
     };
 
@@ -402,16 +404,23 @@ class EmailService {
       });
 
       // Send email
-      const result = await transporter.sendMail({
+      const normalizedAttachments = prepareAttachmentsForSending(emailData.attachments);
+
+      const mailOptions = {
         from: `${account.name} <${account.email}>`,
         to: emailData.to,
         cc: emailData.cc,
         bcc: emailData.bcc,
         subject: emailData.subject,
         text: emailData.bodyText,
-        html: emailData.bodyHtml,
-        attachments: emailData.attachments
-      });
+        html: emailData.bodyHtml
+      };
+
+      if (normalizedAttachments.length > 0) {
+        mailOptions.attachments = normalizedAttachments;
+      }
+
+      const result = await transporter.sendMail(mailOptions);
 
       // Update email with message ID
       await email.update({

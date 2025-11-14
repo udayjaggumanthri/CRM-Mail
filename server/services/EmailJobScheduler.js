@@ -3,6 +3,7 @@ const { FollowUpJob, Client, Conference, EmailTemplate, EmailAccount } = require
 const EmailService = require('./EmailService');
 const TemplateEngine = require('./TemplateEngine');
 const { Op } = require('sequelize');
+const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 
 const toNonNegativeInt = (value) => {
   const num = Number(value);
@@ -143,6 +144,9 @@ class EmailJobScheduler {
         return; // Skip sending this email
       }
 
+      // Dynamic SMTP selection: Always uses account with lowest sendPriority (primary)
+      // This allows admin to change primary SMTP mid-follow-up without breaking sequences
+      // Threading is preserved via threadRootMessageId in job.settings
       // Get SMTP account
       const smtpAccount = await EmailAccount.findOne({
         where: {
@@ -158,6 +162,9 @@ class EmailJobScheduler {
         console.log('⚠️  No SMTP account found, skipping email');
         return;
       }
+
+      // Diagnostic logging: Verify which SMTP account is being used
+      console.log(`📧 [SMTP Selection] Using account: "${smtpAccount.name}" (${smtpAccount.email}) | Priority: ${smtpAccount.sendPriority} | Job ID: ${job.id}`);
 
       // Render template
       const templateEngine = new TemplateEngine();
@@ -183,36 +190,78 @@ class EmailJobScheduler {
       const { Email } = require('../models');
       
       // Create transporter for this SMTP account
+      const { decryptEmailPassword } = require('../utils/passwordUtils');
       const transporter = nodemailer.createTransport({
         host: smtpAccount.smtpHost,
         port: smtpAccount.smtpPort,
         secure: smtpAccount.smtpPort === 465,
         auth: {
           user: smtpAccount.smtpUsername,
-          pass: smtpAccount.smtpPassword
+          pass: decryptEmailPassword(smtpAccount.smtpPassword)
         }
       });
 
       // Get threading headers from previous emails
+      // Build proper threading chain: use most recent email's messageId as inReplyTo
+      // and build References chain with all previous message IDs
       const threadRootMessageId = job.settings?.threadRootMessageId;
       const threadingHeaders = {};
       
       if (threadRootMessageId) {
-        // This is a follow-up email, add threading headers
-        threadingHeaders.inReplyTo = threadRootMessageId;
-        threadingHeaders.references = threadRootMessageId;
-        console.log(`🔗 Threading follow-up email to: ${threadRootMessageId}`);
+        // Find the most recent email sent to this client (for inReplyTo)
+        // and build References chain with all emails in the thread
+        const previousEmails = await Email.findAll({
+          where: {
+            clientId: freshClient.id,
+            isSent: true,
+            status: 'sent'
+          },
+          order: [['createdAt', 'ASC']],
+          attributes: ['messageId', 'inReplyTo', 'references'],
+          limit: 50 // Reasonable limit for thread chain
+        });
+
+        if (previousEmails.length > 0) {
+          // Use the most recent email's messageId as inReplyTo
+          const mostRecentEmail = previousEmails[previousEmails.length - 1];
+          threadingHeaders.inReplyTo = mostRecentEmail.messageId;
+
+          // Build References chain: start with root, then add all previous messageIds
+          const referencesChain = [threadRootMessageId];
+          previousEmails.forEach(email => {
+            if (email.messageId && !referencesChain.includes(email.messageId)) {
+              referencesChain.push(email.messageId);
+            }
+          });
+          threadingHeaders.references = referencesChain.join(' ');
+
+          console.log(`🔗 [Threading] Preserving thread - Root: ${threadRootMessageId.substring(0, 30)}... | InReplyTo: ${mostRecentEmail.messageId.substring(0, 30)}... | Chain length: ${referencesChain.length}`);
+        } else {
+          // Fallback: use root messageId if no previous emails found
+          threadingHeaders.inReplyTo = threadRootMessageId;
+          threadingHeaders.references = threadRootMessageId;
+          console.log(`🔗 [Threading] Using root messageId (no previous emails found): ${threadRootMessageId.substring(0, 50)}...`);
+        }
+      } else {
+        console.log(`⚠️  [Threading] No threadRootMessageId found in job settings - this is the first email in thread`);
       }
 
       // Send the email with threading headers
-      const mailResult = await transporter.sendMail({
+      const mailOptions = {
         from: `${smtpAccount.name || 'Conference CRM'} <${smtpAccount.email}>`,
         to: freshClient.email,
         subject: emailSubject,
         text: renderedTemplate.bodyText,
         html: renderedTemplate.bodyHtml,
-        ...threadingHeaders  // Add In-Reply-To and References headers for threading
-      });
+        ...threadingHeaders
+      };
+
+      const normalizedAttachments = prepareAttachmentsForSending(renderedTemplate.attachments);
+      if (normalizedAttachments.length > 0) {
+        mailOptions.attachments = normalizedAttachments;
+      }
+
+      const mailResult = await transporter.sendMail(mailOptions);
 
       // Create email record in database
       await Email.create({
@@ -229,7 +278,8 @@ class EmailJobScheduler {
         isSent: true,
         status: 'sent',
         messageId: mailResult.messageId,
-        inReplyTo: threadRootMessageId || null,
+        inReplyTo: threadingHeaders.inReplyTo || threadRootMessageId || null,
+        references: threadingHeaders.references || threadRootMessageId || null,
         deliveredAt: new Date()
       });
 

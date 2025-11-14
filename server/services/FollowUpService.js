@@ -302,8 +302,8 @@ class FollowUpService {
           ciphers: 'SSLv3'
         },
         auth: {
-          user: smtpAccount.username,
-          pass: smtpAccount.password
+          user: smtpAccount.smtpUsername || smtpAccount.username,
+          pass: require('../utils/passwordUtils').decryptEmailPassword(smtpAccount.smtpPassword || smtpAccount.password)
         }
       });
 

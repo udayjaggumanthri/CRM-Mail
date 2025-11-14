@@ -26,12 +26,33 @@ const ImapSettings = () => {
     return response.data;
   });
 
-  // Fetch IMAP status
-  const { data: imapStatus, refetch: refetchStatus } = useQuery('imap-status', async () => {
-    const response = await axios.get('/api/inbound/status');
-    return response.data;
+  // Fetch IMAP status with real-time updates
+  const { data: imapStatus, refetch: refetchStatus, isLoading: statusLoading } = useQuery('imap-status', async () => {
+    try {
+      const response = await axios.get('/api/inbound/status');
+      return response.data || {
+        isPolling: false,
+        totalConnections: 0,
+        configuredAccounts: 0,
+        connections: [],
+        lastSync: null
+      };
+    } catch (error) {
+      console.error('Error fetching IMAP status:', error);
+      // Return empty status on error to prevent UI crashes
+      return {
+        isPolling: false,
+        totalConnections: 0,
+        configuredAccounts: 0,
+        connections: [],
+        lastSync: null
+      };
+    }
   }, {
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: 5000, // Refresh every 5 seconds for real-time status updates
+    retry: 2,
+    retryDelay: 1000,
+    staleTime: 3000 // Consider data stale after 3 seconds
   });
 
   // Test IMAP connection
@@ -164,19 +185,32 @@ const ImapSettings = () => {
     pollingMutation.mutate('stop');
   };
 
-  const getStatusIcon = (isConnected) => {
+  const getStatusIcon = (isConnected, status) => {
     if (isConnected) {
       return <CheckCircle className="h-5 w-5 text-green-500" />;
+    } else if (status === 'active') {
+      // Active but not connected - show yellow/orange indicator
+      return <AlertCircle className="h-5 w-5 text-yellow-500" />;
+    } else if (status === 'error') {
+      return <XCircle className="h-5 w-5 text-orange-500" />;
     } else {
       return <XCircle className="h-5 w-5 text-red-500" />;
     }
   };
 
-  const getStatusText = (isConnected, retryCount) => {
+  const getStatusText = (isConnected, retryCount, status, isPolling) => {
     if (isConnected) {
       return 'Connected';
     } else if (retryCount > 0) {
-      return `Retrying (${retryCount}/${3})`;
+      return `Retrying (${retryCount}/3)`;
+    } else if (status === 'active' && isPolling) {
+      return 'Active'; // Service is running, connection should be active
+    } else if (status === 'active' && !isPolling) {
+      return 'Disconnected'; // Database says active but service not running
+    } else if (status === 'error') {
+      return 'Connection Error';
+    } else if (status === 'paused') {
+      return 'Paused';
     } else {
       return 'Disconnected';
     }
@@ -356,41 +390,84 @@ const ImapSettings = () => {
       </div>
 
       {/* Connection Status */}
-      {imapStatus?.connections && imapStatus.connections.length > 0 && (
-        <div className="card">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Connection Status</h3>
-          
+      <div className="card">
+        <h3 className="text-lg font-medium text-gray-900 mb-4">Connection Status</h3>
+        
+        {!imapStatus || !imapStatus.connections || imapStatus.connections.length === 0 ? (
+          <div className="text-center py-8">
+            <XCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+            <p className="text-gray-500">No IMAP accounts configured</p>
+            <p className="text-sm text-gray-400 mt-2">
+              Configure IMAP settings in your email accounts to enable connection status monitoring
+            </p>
+          </div>
+        ) : (
           <div className="space-y-3">
-            {imapStatus.connections.map((connection) => (
-              <div
-                key={connection.accountId}
-                className="flex items-center justify-between p-4 bg-gray-50 rounded-lg"
-              >
-                <div className="flex items-center space-x-3">
-                  {getStatusIcon(connection.isConnected)}
-                  <div>
-                    <p className="font-medium text-gray-900">{connection.accountName}</p>
-                    <p className="text-sm text-gray-600">
-                      {getStatusText(connection.isConnected, connection.retryCount)}
+            {imapStatus.connections.map((connection) => {
+              // Handle invalid dates
+              let lastActivityText = 'Never';
+              try {
+                if (connection.lastActivity && connection.lastActivity !== 'Invalid Date') {
+                  const lastActivityDate = new Date(connection.lastActivity);
+                  if (!isNaN(lastActivityDate.getTime())) {
+                    lastActivityText = lastActivityDate.toLocaleString();
+                  }
+                }
+              } catch (e) {
+                console.warn('Invalid lastActivity date:', connection.lastActivity);
+              }
+
+              return (
+                <div
+                  key={connection.accountId}
+                  className={`flex items-center justify-between p-4 rounded-lg ${
+                    connection.isConnected 
+                      ? 'bg-green-50 border border-green-200' 
+                      : connection.status === 'active'
+                      ? 'bg-yellow-50 border border-yellow-200'
+                      : connection.status === 'error'
+                      ? 'bg-orange-50 border border-orange-200'
+                      : 'bg-gray-50 border border-gray-200'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    {getStatusIcon(connection.isConnected, connection.status)}
+                    <div>
+                      <p className="font-medium text-gray-900">
+                        {connection.accountName || connection.accountEmail || connection.imapHost || 'Unknown Account'}
+                      </p>
+                      {(connection.accountEmail || connection.imapHost) && (
+                        <p className="text-xs text-gray-500">
+                          {connection.accountEmail || connection.imapHost}
+                        </p>
+                      )}
+                      <p className="text-sm text-gray-600">
+                        {getStatusText(connection.isConnected, connection.retryCount || 0, connection.status, imapStatus?.isPolling)}
+                      </p>
+                      {connection.errorMessage && (
+                        <p className="text-xs text-red-600 mt-1">
+                          Error: {connection.errorMessage}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="text-right">
+                    <p className="text-sm text-gray-500">
+                      Last Activity: {lastActivityText}
                     </p>
+                    {connection.retryCount > 0 && (
+                      <p className="text-sm text-orange-600">
+                        Retry Count: {connection.retryCount}
+                      </p>
+                    )}
                   </div>
                 </div>
-                
-                <div className="text-right">
-                  <p className="text-sm text-gray-500">
-                    Last Activity: {new Date(connection.lastActivity).toLocaleString()}
-                  </p>
-                  {connection.retryCount > 0 && (
-                    <p className="text-sm text-orange-600">
-                      Retry Count: {connection.retryCount}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* IMAP Configuration Help */}
       <div className="card">
