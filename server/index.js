@@ -307,6 +307,36 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// App version endpoint for cache-busting
+app.get('/api/version', (req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  
+  // Get package.json version or use timestamp
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8')
+    );
+    const version = packageJson.version || '1.0.0';
+    
+    // Use build time as version (file modification time of index.js)
+    const buildTime = fs.statSync(__filename).mtime.getTime();
+    
+    res.json({
+      version: version,
+      buildTime: buildTime,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    // Fallback to timestamp if package.json not found
+    res.json({
+      version: '1.0.0',
+      buildTime: Date.now(),
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Favicon endpoint to prevent 500 errors
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end();

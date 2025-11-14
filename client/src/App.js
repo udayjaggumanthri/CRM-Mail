@@ -18,7 +18,33 @@ import EnhancedUserManagement from './components/EnhancedUserManagement';
 import Layout from './components/Layout';
 import GlobalCommunications from './components/GlobalCommunications';
 
-const queryClient = new QueryClient();
+// Configure QueryClient with cache-busting for development
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: true,
+      refetchOnMount: true,
+      refetchOnReconnect: true,
+      staleTime: 0, // Always consider data stale in development
+      cacheTime: 0, // Don't cache in development to prevent stale data
+      retry: 1,
+    },
+  },
+});
+
+// Clear React Query cache on app start to prevent stale data
+if (typeof window !== 'undefined') {
+  // Clear React Query cache when app starts
+  const lastClear = sessionStorage.getItem('queryCacheCleared');
+  const now = Date.now();
+  
+  // Clear cache if not cleared in last 5 minutes (on deployment)
+  if (!lastClear || (now - parseInt(lastClear)) > 300000) {
+    queryClient.clear();
+    sessionStorage.setItem('queryCacheCleared', now.toString());
+    console.log('🧹 React Query cache cleared');
+  }
+}
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();

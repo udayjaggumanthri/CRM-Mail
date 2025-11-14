@@ -54,6 +54,8 @@ const sequelize = connectionString
               require: true,
               rejectUnauthorized: false
             }
+          : process.env.PGSSLMODE === 'disable'
+          ? false
           : false
       }
     })
@@ -82,6 +84,8 @@ const sequelize = connectionString
               require: true,
               rejectUnauthorized: false
             }
+          : process.env.PGSSLMODE === 'disable'
+          ? false
           : false
       }
     });
