@@ -84,13 +84,14 @@ class RealTimeImapService {
    * Start monitoring a specific account with IDLE support
    */
   async startAccountMonitoring(account) {
+    let client = null;
     try {
       // Determine account name for logging
       const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
       console.log(`🔄 Setting up real-time monitoring for ${accountName}...`);
 
-      // Create IMAP connection with IDLE support
-      const client = new ImapFlow({
+      // Create IMAP connection with IDLE support and timeout configuration
+      client = new ImapFlow({
         host: account.imapHost,
         port: account.imapPort || 993,
         secure: account.imapSecure !== false,
@@ -99,13 +100,69 @@ class RealTimeImapService {
           pass: decryptEmailPassword(account.imapPassword)
         },
         logger: false,
-        idling: true // Enable IDLE support
+        idling: true, // Enable IDLE support
+        // Timeout configuration to prevent socket timeouts
+        socketTimeout: 300000, // 5 minutes (300000ms) - increased from default
+        greetingTimeout: 30000, // 30 seconds for initial greeting
+        connectionTimeout: 60000, // 60 seconds for connection establishment
+        // TLS options
+        tls: {
+          rejectUnauthorized: false // Allow self-signed certificates
+        }
       });
 
-      await client.connect();
-      console.log(`✅ Connected to ${accountName} (${account.imapHost})`);
+      // Set up error handlers BEFORE connecting to catch all errors
+      client.on('error', async (error) => {
+        const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+        console.error(`❌ IMAP client error for ${accountName}:`, error.message, error.code);
+        
+        // Remove connection from map if it exists
+        if (this.connections.has(account.id)) {
+          this.connections.delete(account.id);
+        }
+        
+        // Handle timeout errors specifically
+        if (error.code === 'ETIMEOUT' || error.message.includes('timeout')) {
+          console.warn(`⏱️ Socket timeout for ${accountName}, will retry connection...`);
+          // Don't increment retry count for timeouts - they're network issues, not auth failures
+          await this.handleConnectionError(account, error, false);
+        } else {
+          // For other errors, use normal retry logic
+          await this.handleConnectionError(account, error);
+        }
+      });
 
-      // Store connection
+      // Handle connection close events
+      client.on('close', () => {
+        const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+        console.log(`🔌 IMAP connection closed for ${accountName}`);
+        if (this.connections.has(account.id)) {
+          this.connections.delete(account.id);
+        }
+      });
+
+      // Connect with timeout handling
+      try {
+        await Promise.race([
+          client.connect(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Connection timeout')), 60000)
+          )
+        ]);
+        console.log(`✅ Connected to ${accountName} (${account.imapHost})`);
+      } catch (connectError) {
+        // Clean up client if connection fails
+        try {
+          if (client && client.connected) {
+            await client.logout();
+          }
+        } catch (logoutError) {
+          // Ignore logout errors during failed connection
+        }
+        throw connectError;
+      }
+
+      // Store connection only after successful connection
       this.connections.set(account.id, client);
       
       // Update database sync status
@@ -170,25 +227,43 @@ class RealTimeImapService {
       // Handle IDLE events
       client.on('mailboxUpdate', async (update) => {
         console.log(`📧 New email detected for ${accountName}:`, update);
-        await this.handleNewEmails(account, client, update);
-      });
-
-      // Handle connection errors
-      client.on('error', async (error) => {
-        console.error(`❌ IMAP connection error for ${accountName}:`, error.message);
-        await this.handleConnectionError(account, error);
-      });
-
-      // Keep IDLE alive
-      setInterval(async () => {
         try {
-          if (client.connected) {
-            await client.noop(); // Keep connection alive
+          await this.handleNewEmails(account, client, update);
+        } catch (error) {
+          console.error(`❌ Error handling mailbox update for ${accountName}:`, error.message);
+          // Don't throw - just log the error to prevent unhandled promise rejection
+        }
+      });
+
+      // Keep IDLE alive with timeout protection
+      const keepAliveInterval = setInterval(async () => {
+        try {
+          if (client && client.connected) {
+            // Use Promise.race to prevent keep-alive from hanging
+            await Promise.race([
+              client.noop(), // Keep connection alive
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Keep-alive timeout')), 10000)
+              )
+            ]);
+          } else {
+            // Connection lost, clear interval
+            clearInterval(keepAliveInterval);
+            console.warn(`⚠️ Connection lost for ${accountName}, stopping keep-alive`);
           }
         } catch (error) {
           console.error(`❌ Keep-alive failed for ${accountName}:`, error.message);
+          // If keep-alive fails, the connection might be dead - trigger reconnection
+          if (error.code === 'ETIMEOUT' || error.message.includes('timeout')) {
+            clearInterval(keepAliveInterval);
+            await this.handleConnectionError(account, error, false);
+          }
         }
       }, 30000); // Every 30 seconds
+      
+      // Store interval for cleanup
+      this.keepAliveIntervals = this.keepAliveIntervals || new Map();
+      this.keepAliveIntervals.set(account.id, keepAliveInterval);
 
       console.log(`✅ IDLE monitoring started for ${accountName}`);
 
@@ -381,40 +456,66 @@ class RealTimeImapService {
 
   /**
    * Handle connection errors with retry logic
+   * @param {Object} account - Email account
+   * @param {Error} error - Connection error
+   * @param {boolean} incrementRetry - Whether to increment retry count (default: true)
    */
-  async handleConnectionError(account, error) {
+  async handleConnectionError(account, error, incrementRetry = true) {
+    const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
     const retryCount = this.retryAttempts.get(account.id) || 0;
     
     // Remove connection from map
     this.connections.delete(account.id);
+    
+    // Clear keep-alive interval if it exists
+    if (this.keepAliveIntervals && this.keepAliveIntervals.has(account.id)) {
+      clearInterval(this.keepAliveIntervals.get(account.id));
+      this.keepAliveIntervals.delete(account.id);
+    }
+    
+    // Determine error type and message
+    const isTimeout = error.code === 'ETIMEOUT' || error.message.includes('timeout');
+    const errorMessage = isTimeout 
+      ? `Socket timeout: ${error.message || 'Connection timed out'}`
+      : error.message || 'Connection error';
     
     // Update database with error status
     try {
       await EmailAccount.update(
         { 
           syncStatus: retryCount < this.maxRetries ? 'error' : 'disconnected',
-          errorMessage: error.message || 'Connection error'
+          errorMessage: errorMessage
         },
         { where: { id: account.id } }
       );
     } catch (dbError) {
-      console.error(`⚠️ Failed to update database error status for ${account.name}:`, dbError.message);
+      console.error(`⚠️ Failed to update database error status for ${accountName}:`, dbError.message);
     }
     
+    // For timeout errors, use longer retry delay (network issues take longer to resolve)
+    const retryDelay = isTimeout ? this.retryDelay * 2 : this.retryDelay;
+    
     if (retryCount < this.maxRetries) {
-      console.log(`🔄 Retrying connection for ${account.name} (attempt ${retryCount + 1}/${this.maxRetries})`);
+      const newRetryCount = incrementRetry ? retryCount + 1 : retryCount;
+      console.log(`🔄 Retrying connection for ${accountName} (attempt ${newRetryCount}/${this.maxRetries}) - ${isTimeout ? 'timeout' : 'error'}`);
       
-      this.retryAttempts.set(account.id, retryCount + 1);
+      if (incrementRetry) {
+        this.retryAttempts.set(account.id, newRetryCount);
+      }
       
       setTimeout(async () => {
         try {
           await this.startAccountMonitoring(account);
         } catch (retryError) {
-          console.error(`❌ Retry failed for ${account.name}:`, retryError.message);
+          console.error(`❌ Retry failed for ${accountName}:`, retryError.message);
+          // Continue retry loop if not max retries
+          if (newRetryCount < this.maxRetries) {
+            await this.handleConnectionError(account, retryError);
+          }
         }
-      }, this.retryDelay);
+      }, retryDelay);
     } else {
-      console.error(`❌ Max retries exceeded for ${account.name}. Stopping monitoring.`);
+      console.error(`❌ Max retries exceeded for ${accountName}. Stopping monitoring.`);
       this.retryAttempts.delete(account.id);
       
       // Update database with final disconnected status
@@ -422,12 +523,12 @@ class RealTimeImapService {
         await EmailAccount.update(
           { 
             syncStatus: 'disconnected',
-            errorMessage: `Max retries reached: ${error.message || 'Connection failed'}`
+            errorMessage: `Max retries reached: ${errorMessage}`
           },
           { where: { id: account.id } }
         );
       } catch (dbError) {
-        console.error(`⚠️ Failed to update database disconnected status for ${account.name}:`, dbError.message);
+        console.error(`⚠️ Failed to update database disconnected status for ${accountName}:`, dbError.message);
       }
     }
   }
@@ -440,16 +541,47 @@ class RealTimeImapService {
     
     this.isRunning = false;
     
-    // Close all connections
-    for (const [accountId, client] of this.connections) {
-      try {
-        if (client.connected) {
-          await client.logout();
-        }
-      } catch (error) {
-        console.error(`❌ Error closing connection for account ${accountId}:`, error.message);
+    // Clear all keep-alive intervals
+    if (this.keepAliveIntervals) {
+      for (const [accountId, interval] of this.keepAliveIntervals) {
+        clearInterval(interval);
       }
+      this.keepAliveIntervals.clear();
     }
+    
+    // Clear all polling intervals
+    if (this.pollingIntervals) {
+      for (const [accountId, interval] of this.pollingIntervals) {
+        clearInterval(interval);
+      }
+      this.pollingIntervals.clear();
+    }
+    
+    // Close all connections with timeout protection
+    const closePromises = [];
+    for (const [accountId, client] of this.connections) {
+      closePromises.push(
+        Promise.race([
+          (async () => {
+            try {
+              if (client && client.connected) {
+                await client.logout();
+              }
+            } catch (error) {
+              console.error(`❌ Error closing connection for account ${accountId}:`, error.message);
+            }
+          })(),
+          new Promise((resolve) => 
+            setTimeout(() => {
+              console.warn(`⏱️ Timeout closing connection for account ${accountId}`);
+              resolve();
+            }, 5000)
+          )
+        ])
+      );
+    }
+    
+    await Promise.allSettled(closePromises);
     
     this.connections.clear();
     this.idleConnections.clear();

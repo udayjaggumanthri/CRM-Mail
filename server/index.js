@@ -37,6 +37,31 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const EMAIL_TEST_MODE = process.env.EMAIL_TEST_MODE !== 'false';
 
+// Global error handlers to prevent server crashes from unhandled errors (e.g., ImapFlow timeouts)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Check if it's an ImapFlow timeout error
+  if (reason && (reason.code === 'ETIMEOUT' || reason.message?.includes('timeout'))) {
+    console.error('⏱️ ImapFlow timeout error caught - this is handled by RealTimeImapService');
+    // Don't crash - the service will handle reconnection
+    return;
+  }
+  // Log other unhandled rejections but don't crash
+  console.error('⚠️ Unhandled rejection logged, server continues running');
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('⚠️ Uncaught Exception:', error);
+  // Check if it's an ImapFlow timeout error
+  if (error.code === 'ETIMEOUT' || error.message?.includes('timeout')) {
+    console.error('⏱️ ImapFlow timeout error caught - this is handled by RealTimeImapService');
+    // Don't crash - the service will handle reconnection
+    return;
+  }
+  // For other uncaught exceptions, log and continue (or exit if critical)
+  console.error('⚠️ Uncaught exception logged, server continues running');
+});
+
 // Enhanced CORS configuration - Allow all origins for Replit environment
 const corsOptions = {
   origin: true,
