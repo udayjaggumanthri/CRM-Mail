@@ -11,6 +11,7 @@ import {
   Paperclip,
   X,
   Upload,
+  Download,
   Code,
   User,
   Building,
@@ -267,6 +268,8 @@ const Templates = () => {
     { key: 'abstractDeadline', label: 'Abstract Deadline', icon: Calendar, description: 'Deadline for abstract submission' },
     { key: 'registrationDeadline', label: 'Registration Deadline', icon: Calendar, description: 'Deadline for registration' },
     { key: 'conferenceWebsite', label: 'Conference Website', icon: Globe, description: 'Conference website URL' },
+    { key: 'conferenceAbstractSubmissionLink', label: 'Abstract Submission Link', icon: Globe, description: 'Link for abstract submissions' },
+    { key: 'conferenceRegistrationLink', label: 'Registration Link', icon: Globe, description: 'Registration portal link' },
     { key: 'conferenceDescription', label: 'Conference Description', icon: Building, description: 'Conference description' },
     // System variables
     { key: 'currentDate', label: 'Current Date', icon: Calendar, description: 'Today\'s date' },
@@ -426,6 +429,7 @@ const Templates = () => {
   };
 
   const handleEdit = (template) => {
+    if (!template) return;
     setActiveDraftId(null);
     setActiveTab('templates');
     setSelectedTemplate(template);
@@ -680,6 +684,12 @@ const Templates = () => {
       abstractDeadline: 'November 30, 2024',
       registrationDeadline: 'December 1, 2024',
       conferenceWebsite: 'https://techconf2024.com',
+      conferenceAbstractSubmissionLink: 'https://techconf2024.com/abstracts',
+      conferenceRegistrationLink: 'https://techconf2024.com/register',
+      'conference.abstractSubmissionLink': 'https://techconf2024.com/abstracts',
+      'conference.registrationLink': 'https://techconf2024.com/register',
+      conference_abstract_submission_link: 'https://techconf2024.com/abstracts',
+      conference_registration_link: 'https://techconf2024.com/register',
       conferenceDescription: 'Annual Technology Conference',
       // System variables
       currentDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
@@ -1203,15 +1213,21 @@ const Templates = () => {
                     Edit Template
                   </Dialog.Title>
                   
-                  <TemplateForm 
-                    template={selectedTemplate}
-                    onSubmit={(data) => updateTemplateMutation.mutate({ id: selectedTemplate.id, data })}
-                    onCancel={() => {
-                      setShowEditModal(false);
-                      setSelectedTemplate(null);
-                    }}
-                    loading={updateTemplateMutation.isLoading}
-                  />
+                  {selectedTemplate ? (
+                    <TemplateForm
+                      template={selectedTemplate}
+                      onSubmit={(data) => updateTemplateMutation.mutate({ id: selectedTemplate.id, data })}
+                      onCancel={() => {
+                        setShowEditModal(false);
+                        setSelectedTemplate(null);
+                      }}
+                      loading={updateTemplateMutation.isLoading}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                      Select a template to edit.
+                    </div>
+                  )}
                 </Dialog.Panel>
               </Transition.Child>
             </div>
@@ -1291,8 +1307,44 @@ const Templates = () => {
   );
 };
 
+const estimateSizeFromBase64 = (content) => {
+  if (!content || typeof content !== 'string') return 0;
+  const padding = (content.match(/=*$/) || [''])[0].length;
+  return Math.ceil(content.length / 4) * 3 - padding;
+};
+
+const normalizeExistingAttachments = (template) => {
+  if (!template?.attachments || !Array.isArray(template.attachments)) {
+    return [];
+  }
+
+  return template.attachments.map((att, idx) => {
+    const content = typeof att.content === 'string' ? att.content : '';
+    return {
+      ...att,
+      id: att.id || `${template.id || 'template'}-attachment-${idx}`,
+      name: att.name || att.filename || `Attachment ${idx + 1}`,
+      filename: att.filename || att.name || `attachment-${idx + 1}`,
+      content,
+      type: att.type || att.contentType || 'application/octet-stream',
+      contentType: att.contentType || att.type || 'application/octet-stream',
+      encoding: att.encoding || (content ? 'base64' : undefined),
+      size: typeof att.size === 'number' ? att.size : estimateSizeFromBase64(content)
+    };
+  });
+};
+
+const formatBytes = (bytes) => {
+  if (!bytes || Number.isNaN(bytes)) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
 const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
   const editorRef = useRef(null);
+  const fileInputRef = useRef(null);
+
   const [formData, setFormData] = useState({
     name: template?.name || '',
     stage: template?.stage || '',
@@ -1300,6 +1352,7 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
     bodyHtml: template?.bodyHtml || '',
     bodyText: template?.bodyText || stripHtml(template?.bodyHtml || '')
   });
+  const [attachments, setAttachments] = useState(normalizeExistingAttachments(template));
 
   useEffect(() => {
     setFormData({
@@ -1309,6 +1362,7 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
       bodyHtml: template?.bodyHtml || '',
       bodyText: template?.bodyText || stripHtml(template?.bodyHtml || '')
     });
+    setAttachments(normalizeExistingAttachments(template));
   }, [template]);
 
   const handleSubmit = (e) => {
@@ -1318,9 +1372,22 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
       toast.error('Email body is required');
       return;
     }
+
+    const attachmentPayload = attachments.map(att => ({
+      id: att.id,
+      name: att.name,
+      filename: att.filename || att.name,
+      size: att.size,
+      type: att.type,
+      contentType: att.contentType || att.type,
+      encoding: att.encoding || (att.content ? 'base64' : undefined),
+      content: att.content || null
+    }));
+
     onSubmit({
       ...formData,
-      bodyText: bodyTextValue
+      bodyText: bodyTextValue,
+      attachments: attachmentPayload
     });
   };
 
@@ -1337,6 +1404,75 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
       bodyHtml: value,
       bodyText: stripHtml(value)
     });
+  };
+
+  const handleFileUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    try {
+      const processed = await Promise.all(
+        files.map(async (file) => {
+          const base64Content = await readFileAsBase64(file);
+          return {
+            id: `${Date.now()}-${Math.random()}`,
+            name: file.name,
+            filename: file.name,
+            size: file.size,
+            type: file.type || 'application/octet-stream',
+            contentType: file.type || 'application/octet-stream',
+            encoding: 'base64',
+            content: base64Content
+          };
+        })
+      );
+
+      setAttachments((prev) => [...prev, ...processed]);
+    } catch (error) {
+      console.error('Error reading attachment:', error);
+      toast.error('Failed to read one or more attachments');
+    } finally {
+      if (event.target) {
+        event.target.value = '';
+      }
+    }
+  };
+
+  const removeAttachment = (id) => {
+    setAttachments((prev) => prev.filter((att) => att.id !== id));
+  };
+
+  const handleDownloadAttachment = (attachment) => {
+    if (typeof window === 'undefined') {
+      toast.error('Download is only available in the browser');
+      return;
+    }
+
+    if (!attachment?.content) {
+      toast.error('Attachment content is unavailable');
+      return;
+    }
+
+    try {
+      const byteCharacters = window.atob(attachment.content);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i += 1) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: attachment.contentType || 'application/octet-stream' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = attachment.filename || attachment.name || 'attachment';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to download attachment:', error);
+      toast.error('Unable to download attachment');
+    }
   };
 
   return (
@@ -1406,6 +1542,60 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
         <p className="text-xs text-gray-500 mt-1">
           Available variables: {'{Name}'}, {'{ConferenceName}'}, {'{Email}'}, {'{Country}'}
         </p>
+      </div>
+
+      <div className="bg-gray-50 rounded-lg p-4">
+        <h4 className="text-sm font-semibold text-gray-900 mb-4">File Attachments</h4>
+        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors duration-200">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            onChange={handleFileUpload}
+            className="hidden"
+            id="edit-file-upload"
+          />
+          <label htmlFor="edit-file-upload" className="cursor-pointer">
+            <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+            <p className="text-sm text-gray-600">Click to upload files or drag and drop</p>
+            <p className="text-xs text-gray-500">PDF, DOC, DOCX, PNG, JPG up to 10MB each</p>
+          </label>
+        </div>
+
+        {attachments.length > 0 && (
+          <div className="space-y-2 mt-4">
+            <h5 className="text-sm font-medium text-gray-700">Attached Files:</h5>
+            {attachments.map((attachment) => (
+              <div key={attachment.id} className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg">
+                <div className="flex items-center">
+                  <Paperclip className="h-4 w-4 text-gray-400 mr-2" />
+                  <div>
+                    <p className="text-sm text-gray-700">{attachment.filename || attachment.name}</p>
+                    <p className="text-xs text-gray-500">{formatBytes(attachment.size)}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadAttachment(attachment)}
+                    className="p-1.5 text-blue-500 hover:text-blue-700 rounded-full hover:bg-blue-50"
+                    title="Download attachment"
+                  >
+                    <Download className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(attachment.id)}
+                    className="p-1.5 text-red-500 hover:text-red-700 rounded-full hover:bg-red-50"
+                    title="Remove attachment"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       
       <div className="flex justify-end space-x-3 pt-4">

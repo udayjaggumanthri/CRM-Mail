@@ -104,6 +104,9 @@ class TemplateEngine {
         const conference = await Conference.findByPk(conferenceId);
         
         if (conference) {
+          const settings = conference.settings || {};
+          const abstractSubmissionLink = settings.abstractSubmissionLink || settings.abstract_submission_link || conference.website || '';
+          const registrationLink = settings.registrationLink || settings.registration_link || conference.website || '';
           const formattedStartDate = formatDate(conference.startDate);
           const formattedEndDate = formatDate(conference.endDate);
           const formattedAbstractDeadline = formatDate(conference.abstractDeadline);
@@ -123,6 +126,8 @@ class TemplateEngine {
             dateRange: dateRange,
             description: conference.description || '',
             website: conference.website || '',
+            abstractSubmissionLink,
+            registrationLink,
             abstractDeadline: formattedAbstractDeadline,
             registrationDeadline: formattedRegistrationDeadline,
             currency: conference.currency || 'USD',
@@ -145,6 +150,8 @@ class TemplateEngine {
           variables.registrationDeadline = formattedRegistrationDeadline;
           variables.conferenceWebsite = conference.website || '';
           variables.conferenceDescription = conference.description || '';
+          variables.conferenceAbstractSubmissionLink = abstractSubmissionLink;
+          variables.conferenceRegistrationLink = registrationLink;
 
           // Underscore format (migrations use this): conference_name, conference_venue, etc.
           variables.conference_name = conference.name || '';
@@ -157,6 +164,12 @@ class TemplateEngine {
           variables.registration_deadline = formattedRegistrationDeadline;
           variables.conference_website = conference.website || '';
           variables.conference_description = conference.description || '';
+          variables.conference_abstract_submission_link = abstractSubmissionLink;
+          variables.conference_registration_link = registrationLink;
+
+          // Direct accessors for backward compatibility
+          variables.abstractSubmissionLink = abstractSubmissionLink;
+          variables.registrationLink = registrationLink;
         }
       }
 
@@ -375,7 +388,9 @@ class TemplateEngine {
           venue: 'Convention Center',
           startDate: '2024-06-15',
           endDate: '2024-06-17',
-          website: 'https://example.com'
+          website: 'https://example.com',
+          abstractSubmissionLink: 'https://abstracts.example.com',
+          registrationLink: 'https://register.example.com'
         },
         organization: {
           name: 'Sample Organization',

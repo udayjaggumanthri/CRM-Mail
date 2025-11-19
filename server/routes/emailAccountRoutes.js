@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { EmailAccount, EmailFolder, User, sequelize } = require('../models');
+const { EmailAccount, EmailFolder, User, Email, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 // Simple authentication middleware
@@ -26,20 +26,92 @@ const authenticateToken = (req, res, next) => {
 // Apply authentication to all routes
 router.use(authenticateToken);
 
+const normalizeRole = (role) => (role || '').toString().toLowerCase();
+const isCeoUser = (req) => normalizeRole(req.user?.role) === 'ceo';
+const parseBoolean = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    return ['true', '1', 'yes', 'on'].includes(value.toLowerCase());
+  }
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+  return false;
+};
+
+const getAccountOwnerId = (account) => {
+  if (!account) return null;
+  if (account.ownerId) return account.ownerId;
+  if (account.createdBy) return account.createdBy;
+  return null;
+};
+
+const canUserAccessAccount = (req, account) => {
+  if (!account) return false;
+  if (isCeoUser(req)) return true;
+  if (account.isSystemAccount) return true;
+  const ownerId = getAccountOwnerId(account);
+  return ownerId && req.user?.id && ownerId === req.user.id;
+};
+
+const canUserManageAccount = (req, account) => {
+  if (!account) return false;
+  if (isCeoUser(req)) return true;
+  const ownerId = getAccountOwnerId(account);
+  return ownerId && req.user?.id && ownerId === req.user.id;
+};
+
+const buildVisibilityWhereClause = (req) => {
+  if (isCeoUser(req)) {
+    return {};
+  }
+
+  const userId = req.user?.id;
+  if (!userId) {
+    return { isSystemAccount: true };
+  }
+
+  return {
+    [Op.or]: [
+      { isSystemAccount: true },
+      { ownerId: userId },
+      {
+        [Op.and]: [
+          { ownerId: { [Op.is]: null } },
+          { createdBy: userId }
+        ]
+      }
+    ]
+  };
+};
+
+const accountIncludes = [
+  { model: User, as: 'creator', attributes: ['id', 'name', 'email'] },
+  { model: User, as: 'owner', attributes: ['id', 'name', 'email'] }
+];
+
+const formatAccountResponse = (account) => {
+  if (!account) return null;
+  const data = typeof account.toJSON === 'function' ? account.toJSON() : account;
+  data.ownerId = getAccountOwnerId(data);
+  data.isSystemAccount = typeof data.isSystemAccount === 'boolean' ? data.isSystemAccount : false;
+  return data;
+};
+
 // Get email accounts
 router.get('/', async (req, res) => {
   try {
+    const whereClause = buildVisibilityWhereClause(req);
     const accounts = await EmailAccount.findAll({
-      include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email'] }
-      ],
+      where: whereClause,
+      include: accountIncludes,
       order: [
         ['sendPriority', 'ASC'],
         ['createdAt', 'ASC']
       ]
     });
 
-    res.json(accounts);
+    res.json(accounts.map(formatAccountResponse));
   } catch (error) {
     console.error('Get email accounts error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -51,7 +123,7 @@ router.get('/:id', async (req, res) => {
   try {
     const account = await EmailAccount.findByPk(req.params.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email'] },
+        ...accountIncludes,
         { model: EmailFolder, as: 'folders', order: [['sortOrder', 'ASC']] }
       ]
     });
@@ -60,7 +132,11 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Email account not found' });
     }
 
-    res.json(account);
+    if (!canUserAccessAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to view this SMTP account' });
+    }
+
+    res.json(formatAccountResponse(account));
   } catch (error) {
     console.error('Get email account error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -203,7 +279,8 @@ router.post('/', async (req, res) => {
       autoReplyMessage,
       signature,
       syncStatus: 'disconnected',
-      isSystem: isSystem || false,
+      ownerId: creatorId || (req.user ? req.user.id : null),
+      isSystemAccount: isCeoUser(req) ? parseBoolean(isSystem ?? req.body.isSystemAccount) : false,
       allowUsers: allowUsers || false
     };
 
@@ -294,7 +371,9 @@ router.post('/', async (req, res) => {
         status: 'created',
         syncStatus: (type === 'imap' || type === 'both') ? 'syncing' : 'not_applicable',
         createdAt: account.createdAt,
-        sendPriority: account.sendPriority
+        sendPriority: account.sendPriority,
+        ownerId: getAccountOwnerId(account),
+        isSystemAccount: account.isSystemAccount
       }
     });
   } catch (error) {
@@ -345,8 +424,27 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Email account not found' });
     }
 
-    const updatedAccount = await account.update(req.body);
-    res.json(updatedAccount);
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to update this SMTP account' });
+    }
+
+    const updates = { ...req.body };
+    const ceo = isCeoUser(req);
+
+    if (!ceo) {
+      delete updates.sendPriority;
+      delete updates.isSystemAccount;
+      delete updates.ownerId;
+    } else if (updates.isSystemAccount !== undefined) {
+      updates.isSystemAccount = parseBoolean(updates.isSystemAccount);
+    }
+
+    if (!ceo || updates.ownerId === undefined) {
+      updates.ownerId = getAccountOwnerId(account);
+    }
+
+    const updatedAccount = await account.update(updates);
+    res.json(formatAccountResponse(updatedAccount));
   } catch (error) {
     console.error('Update email account error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -363,6 +461,10 @@ router.post('/:id/set-priority', async (req, res) => {
   }
 
   try {
+    if (!isCeoUser(req)) {
+      return res.status(403).json({ error: 'Only CEOs can reorder system SMTP accounts' });
+    }
+
     const account = await EmailAccount.findByPk(req.params.id);
     if (!account) {
       return res.status(404).json({ error: 'Email account not found' });
@@ -400,9 +502,7 @@ router.post('/:id/set-priority', async (req, res) => {
     });
 
     const updatedAccounts = await EmailAccount.findAll({
-      include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email'] }
-      ],
+      include: accountIncludes,
       order: [
         ['sendPriority', 'ASC'],
         ['createdAt', 'ASC']
@@ -412,7 +512,7 @@ router.post('/:id/set-priority', async (req, res) => {
     res.json({
       success: true,
       message: 'Priority updated successfully',
-      accounts: updatedAccounts
+      accounts: updatedAccounts.map(formatAccountResponse)
     });
   } catch (error) {
     console.error('Set priority error:', error);
@@ -426,6 +526,10 @@ router.post('/:id/test', async (req, res) => {
     const account = await EmailAccount.findByPk(req.params.id);
     if (!account) {
       return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserAccessAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to access this SMTP account' });
     }
 
     // TODO: Implement connection testing
@@ -446,6 +550,10 @@ router.post('/:id/start-sync', async (req, res) => {
       return res.status(404).json({ error: 'Email account not found' });
     }
 
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this SMTP account' });
+    }
+
     // TODO: Start sync using EmailService
     await account.update({ syncStatus: 'active' });
 
@@ -462,6 +570,10 @@ router.post('/:id/stop-sync', async (req, res) => {
     const account = await EmailAccount.findByPk(req.params.id);
     if (!account) {
       return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this SMTP account' });
     }
 
     // TODO: Stop sync using EmailService
@@ -482,6 +594,10 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Email account not found' });
     }
 
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to delete this SMTP account' });
+    }
+
     // TODO: Stop sync and close connections
     await account.destroy();
 
@@ -492,9 +608,102 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// Get SMTP account usage statistics
+router.get('/:id/usage', async (req, res) => {
+  try {
+    const account = await EmailAccount.findByPk(req.params.id);
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserAccessAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to view this SMTP account' });
+    }
+
+    // Count total emails sent
+    const totalSent = await Email.count({
+      where: {
+        emailAccountId: account.id,
+        isSent: true,
+        status: 'sent'
+      }
+    });
+
+    // Count emails sent today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const sentToday = await Email.count({
+      where: {
+        emailAccountId: account.id,
+        isSent: true,
+        status: 'sent',
+        deliveredAt: {
+          [Op.gte]: today
+        }
+      }
+    });
+
+    // Count emails sent this week
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    const sentThisWeek = await Email.count({
+      where: {
+        emailAccountId: account.id,
+        isSent: true,
+        status: 'sent',
+        deliveredAt: {
+          [Op.gte]: weekAgo
+        }
+      }
+    });
+
+    // Get last email sent
+    const lastEmail = await Email.findOne({
+      where: {
+        emailAccountId: account.id,
+        isSent: true,
+        status: 'sent'
+      },
+      order: [['deliveredAt', 'DESC']],
+      attributes: ['deliveredAt', 'subject', 'to']
+    });
+
+    res.json({
+      accountId: account.id,
+      totalSent,
+      sentToday,
+      sentThisWeek,
+      lastUsed: account.lastUsed || lastEmail?.deliveredAt || null,
+      lastEmail: lastEmail ? {
+        deliveredAt: lastEmail.deliveredAt,
+        subject: lastEmail.subject,
+        to: lastEmail.to
+      } : null,
+      dailyEmailCount: account.dailyEmailCount || 0,
+      hourlyEmailCount: account.hourlyEmailCount || 0,
+      maxEmailsPerDay: account.maxEmailsPerDay || null,
+      maxEmailsPerHour: account.maxEmailsPerHour || null,
+      ownerId: getAccountOwnerId(account),
+      isSystemAccount: account.isSystemAccount
+    });
+  } catch (error) {
+    console.error('Get usage statistics error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get email folders for account
 router.get('/:id/folders', async (req, res) => {
   try {
+    const account = await EmailAccount.findByPk(req.params.id);
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserAccessAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to view this SMTP account' });
+    }
+
     const folders = await EmailFolder.findAll({
       where: { emailAccountId: req.params.id },
       order: [['sortOrder', 'ASC'], ['name', 'ASC']]
@@ -510,6 +719,15 @@ router.get('/:id/folders', async (req, res) => {
 // Create email folder
 router.post('/:id/folders', async (req, res) => {
   try {
+    const account = await EmailAccount.findByPk(req.params.id);
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this SMTP account' });
+    }
+
     const { name, type, parentId, path, delimiter = '/' } = req.body;
 
     if (!name || !type) {
@@ -540,6 +758,15 @@ router.put('/folders/:folderId', async (req, res) => {
       return res.status(404).json({ error: 'Email folder not found' });
     }
 
+    const account = await EmailAccount.findByPk(folder.emailAccountId);
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this SMTP account' });
+    }
+
     const updatedFolder = await folder.update(req.body);
     res.json(updatedFolder);
   } catch (error) {
@@ -554,6 +781,15 @@ router.delete('/folders/:folderId', async (req, res) => {
     const folder = await EmailFolder.findByPk(req.params.folderId);
     if (!folder) {
       return res.status(404).json({ error: 'Email folder not found' });
+    }
+
+    const account = await EmailAccount.findByPk(folder.emailAccountId);
+    if (!account) {
+      return res.status(404).json({ error: 'Email account not found' });
+    }
+
+    if (!canUserManageAccount(req, account)) {
+      return res.status(403).json({ error: 'You do not have permission to modify this SMTP account' });
     }
 
     await folder.destroy();

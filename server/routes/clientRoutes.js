@@ -184,6 +184,37 @@ const resolveFollowUpConfig = (conference) => {
   };
 };
 
+const getStageTemplateSequence = (conference, stage) => {
+  if (!conference) {
+    return [];
+  }
+  const settings = conference.settings || {};
+  const rawSequence = stage === 'stage1'
+    ? settings.stage1Templates
+    : settings.stage2Templates;
+  const cleaned = Array.isArray(rawSequence)
+    ? rawSequence.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+    : [];
+  const fallbackId = stage === 'stage1' ? conference.stage1TemplateId : conference.stage2TemplateId;
+  if (!cleaned.length && fallbackId) {
+    cleaned.push(fallbackId);
+  }
+  return cleaned;
+};
+
+const getTemplateIdForAttempt = (sequence, attemptIndex) => {
+  if (!Array.isArray(sequence) || sequence.length === 0) {
+    return null;
+  }
+  if (attemptIndex <= 0) {
+    return sequence[0];
+  }
+  if (attemptIndex >= sequence.length) {
+    return sequence[sequence.length - 1];
+  }
+  return sequence[attemptIndex];
+};
+
 // JWT Secret from environment or default
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
@@ -1103,16 +1134,19 @@ async function createStage2FollowUpJobs(client, conference) {
       `max attempts ${stage2MaxAttempts}, skipWeekends=${skipWeekends}`
     );
 
+    const stage2TemplateSequence = getStageTemplateSequence(conference, 'stage2');
+    console.log(`🎯 Stage 2 template sequence for conference ${conference.id}: ${stage2TemplateSequence.join(', ') || 'none defined'}`);
+
     // Get Stage 2 (Registration) template - USE CONFERENCE'S ASSIGNED TEMPLATE
     let stage2Template = null;
 
-    // Priority 1: Use the template assigned to this conference
-    if (conference.stage2TemplateId) {
-      stage2Template = await EmailTemplate.findByPk(conference.stage2TemplateId);
+    for (const templateId of stage2TemplateSequence) {
+      stage2Template = await EmailTemplate.findByPk(templateId);
       if (stage2Template) {
-        console.log(`✅ Using conference's assigned Stage 2 template: ${stage2Template.name} (ID: ${stage2Template.id})`);
+        console.log(`✅ Using Stage 2 template for follow-up 1: ${stage2Template.name} (ID: ${stage2Template.id})`);
+        break;
       } else {
-        console.log(`⚠️ Conference has stage2TemplateId ${conference.stage2TemplateId} but template not found`);
+        console.warn(`⚠️ Stage 2 template ${templateId} not found; trying next slot`);
       }
     }
 
@@ -1189,7 +1223,8 @@ async function createStage2FollowUpJobs(client, conference) {
         timezone,
         workingHours,
         intervalConfig: stage2Interval,
-        threadRootMessageId: latestEmail?.messageId // Continue the email thread
+        threadRootMessageId: latestEmail?.messageId, // Continue the email thread
+        stageTemplateSequence: stage2TemplateSequence
       }
     });
 
@@ -1261,16 +1296,19 @@ async function scheduleFollowUpEmails(client, conference) {
       `max attempts ${stage1MaxAttempts}, skipWeekends=${skipWeekends}`
     );
 
-    // Get Stage 1 (Abstract Submission) template - USE CONFERENCE'S ASSIGNED TEMPLATE
+    const stage1TemplateSequence = getStageTemplateSequence(conference, 'stage1');
+    console.log(`🎯 Stage 1 template sequence for conference ${conference.id}: ${stage1TemplateSequence.join(', ') || 'none defined'}`);
+
+    // Get Stage 1 (Abstract Submission) template - USE CONFERENCE'S ASSIGNED TEMPLATE(S)
     let stage1Template = null;
 
-    // Priority 1: Use the template assigned to this conference
-    if (conference.stage1TemplateId) {
-      stage1Template = await EmailTemplate.findByPk(conference.stage1TemplateId);
+    for (const templateId of stage1TemplateSequence) {
+      stage1Template = await EmailTemplate.findByPk(templateId);
       if (stage1Template) {
-        console.log(`✅ Using conference's assigned Stage 1 template: ${stage1Template.name} (ID: ${stage1Template.id})`);
+        console.log(`✅ Using Stage 1 template for follow-up 1: ${stage1Template.name} (ID: ${stage1Template.id})`);
+        break;
       } else {
-        console.log(`⚠️ Conference has stage1TemplateId ${conference.stage1TemplateId} but template not found`);
+        console.warn(`⚠️ Stage 1 template ${templateId} not found; trying next slot`);
       }
     }
 
@@ -1342,7 +1380,8 @@ async function scheduleFollowUpEmails(client, conference) {
           timezone,
           workingHours,
           intervalConfig: stage1Interval, // Store original interval config (THIS is what we use!)
-          threadRootMessageId: initialEmail?.messageId // Store initial email's messageId for threading
+          threadRootMessageId: initialEmail?.messageId, // Store initial email's messageId for threading
+          stageTemplateSequence: stage1TemplateSequence
         }
       });
 
@@ -1456,11 +1495,14 @@ async function rescheduleConferenceFollowUps(conference) {
     `Stage2=${stage2Interval.value} ${stage2Interval.unit} (max ${stage2MaxAttempts}), skipWeekends=${skipWeekends}`
   );
 
+  const stage1Sequence = getStageTemplateSequence(conference, 'stage1');
+  const stage2Sequence = getStageTemplateSequence(conference, 'stage2');
+
   const stageTemplateMap = {
-    abstract_submission: conference.stage1TemplateId,
-    stage1: conference.stage1TemplateId,
-    registration: conference.stage2TemplateId,
-    stage2: conference.stage2TemplateId
+    abstract_submission: stage1Sequence[0] || conference.stage1TemplateId,
+    stage1: stage1Sequence[0] || conference.stage1TemplateId,
+    registration: stage2Sequence[0] || conference.stage2TemplateId,
+    stage2: stage2Sequence[0] || conference.stage2TemplateId
   };
 
   let updatedCount = 0;
@@ -1510,7 +1552,10 @@ async function rescheduleConferenceFollowUps(conference) {
         intervalConfig,
         skipWeekends,
         timezone,
-        workingHours
+        workingHours,
+        stageTemplateSequence: (job.stage === 'abstract_submission' || job.stage === 'stage1')
+          ? stage1Sequence
+          : stage2Sequence
       };
     }
 

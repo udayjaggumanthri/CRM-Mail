@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "migrate": "npx sequelize-cli db:migrate --config config/config.js",
+    "migrate:status": "npx sequelize-cli db:migrate:status --config config/config.js",
+    "migrate:undo": "npx sequelize-cli db:migrate:undo --config config/config.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

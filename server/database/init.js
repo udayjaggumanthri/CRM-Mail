@@ -1,6 +1,7 @@
 const { sequelize, User, Role, Conference, Client, Email, EmailTemplate, FollowUpJob, EmailLog, EmailAccount, EmailFolder, EmailThread, Campaign } = require('../models');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
+const { ensureEmailAccountOwnershipColumns } = require('./ensureEmailAccountOwnershipColumns');
 
 const initDatabase = async () => {
   try {
@@ -10,13 +11,33 @@ const initDatabase = async () => {
     console.log('📊 Database: crmdb');
     console.log('👤 User: root');
 
-    // Sync all models (create tables if they don't exist, preserve existing data)
-    await sequelize.sync({ force: false }); // Set to false to preserve existing data
-    console.log('✅ Database synchronized successfully.');
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowSchemaBootstrap =
+      !isProduction || process.env.ALLOW_SCHEMA_BOOTSTRAP === 'true';
+    const allowAutoSync =
+      !isProduction || process.env.AUTO_DB_SYNC === 'true';
+    const allowAutoSeed =
+      !isProduction || process.env.ALLOW_AUTO_SEED === 'true';
 
-    // Seed initial data
-    await seedInitialData();
-    console.log('✅ Initial data seeded successfully.');
+    if (allowSchemaBootstrap) {
+      await ensureEmailAccountOwnershipColumns(sequelize);
+    } else {
+      console.log('ℹ️ Skipping automatic schema bootstrap (production safeguard). Run migrations manually if needed.');
+    }
+
+    if (allowAutoSync) {
+      await sequelize.sync({ force: false }); // Set to false to preserve existing data
+      console.log('✅ Database synchronized successfully.');
+    } else {
+      console.log('ℹ️ Skipping sequelize.sync. Apply migrations manually before starting the server.');
+    }
+
+    if (allowAutoSeed) {
+      await seedInitialData();
+      console.log('✅ Initial data seeded successfully.');
+    } else {
+      console.log('ℹ️ Auto-seed disabled. Run seed script manually if this is a brand-new environment.');
+    }
 
     return true;
   } catch (error) {

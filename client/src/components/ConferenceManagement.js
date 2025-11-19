@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   PlusIcon, 
   CalendarIcon, 
@@ -16,6 +16,70 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+
+const EMAIL_INPUT_SPLIT_REGEX = /[,\n\r;]+/;
+const EMAIL_VALIDATE_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+
+const formatEmailListForInput = (list) => {
+  if (!Array.isArray(list) || list.length === 0) {
+    return '';
+  }
+  return list.join(', ');
+};
+
+const parseFollowupCcInput = (input) => {
+  if (!input || typeof input !== 'string') {
+    return { emails: [], invalid: [] };
+  }
+
+  const seen = new Set();
+  const emails = [];
+  const invalid = [];
+
+  input.split(EMAIL_INPUT_SPLIT_REGEX).forEach((part) => {
+    const email = part.trim();
+    if (!email) {
+      return;
+    }
+    if (!EMAIL_VALIDATE_REGEX.test(email)) {
+      invalid.push(email);
+      return;
+    }
+    const key = email.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    emails.push(email);
+  });
+
+  return { emails, invalid };
+};
+
+const sanitizeTemplateSequence = (sequence, limit) => {
+  if (!Array.isArray(sequence)) {
+    return [];
+  }
+  const cleaned = sequence
+    .map((id) => (typeof id === 'string' ? id.trim() : ''))
+    .filter(Boolean);
+  if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+    return cleaned.slice(0, limit);
+  }
+  return cleaned;
+};
+
+const isValidHttpUrl = (value) => {
+  if (!value || typeof value !== 'string') {
+    return false;
+  }
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+};
 
 const ConferenceManagement = () => {
   const { user } = useAuth();
@@ -40,11 +104,15 @@ const ConferenceManagement = () => {
     endDate: '',
     description: '',
     website: '',
+    abstractSubmissionLink: '',
+    registrationLink: '',
     currency: 'USD',
     abstractDeadline: '',
     registrationDeadline: '',
     stage1TemplateId: '',
     stage2TemplateId: '',
+    stage1Templates: [],
+    stage2Templates: [],
     // Conference Settings
     stage1IntervalValue: 7,
     stage1IntervalUnit: 'days',
@@ -56,6 +124,7 @@ const ConferenceManagement = () => {
     workingHoursStart: '09:00',
     workingHoursEnd: '17:00',
     timezone: 'UTC',
+    followupCcInput: '',
     // Team Assignment
     assignedTeamLeadId: '',
     assignedMemberIds: [],
@@ -119,6 +188,22 @@ const ConferenceManagement = () => {
     cacheTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
+
+  const templatesById = useMemo(() => {
+    const lookup = {};
+    (templates || []).forEach((template) => {
+      if (template?.id) {
+        lookup[template.id] = template;
+      }
+    });
+    return lookup;
+  }, [templates]);
+
+  const stageTemplateOptions = useMemo(() => {
+    const stage1 = (templates || []).filter((template) => template.stage === 'abstract_submission');
+    const stage2 = (templates || []).filter((template) => template.stage === 'registration');
+    return { stage1, stage2 };
+  }, [templates]);
 
   // Fetch users for team assignment
   const { data: users = [] } = useQuery('users', async () => {
@@ -312,11 +397,15 @@ const ConferenceManagement = () => {
       endDate: '',
       description: '',
       website: '',
+      abstractSubmissionLink: '',
+      registrationLink: '',
       currency: 'USD',
       abstractDeadline: '',
       registrationDeadline: '',
       stage1TemplateId: '',
       stage2TemplateId: '',
+      stage1Templates: [],
+      stage2Templates: [],
       // Conference Settings
       stage1IntervalValue: 7,
       stage1IntervalUnit: 'days',
@@ -328,6 +417,7 @@ const ConferenceManagement = () => {
       workingHoursStart: '09:00',
       workingHoursEnd: '17:00',
       timezone: 'UTC',
+      followupCcInput: '',
       // Team Assignment
       assignedTeamLeadId: '',
       assignedMemberIds: [],
@@ -359,6 +449,7 @@ const ConferenceManagement = () => {
     const settings = conference.settings || {};
     const followupIntervals = settings.followup_intervals || {};
     const maxAttempts = settings.max_attempts || {};
+    const followupCcInput = formatEmailListForInput(Array.isArray(settings.followupCC) ? settings.followupCC : []);
     
     // Stage 1 interval
     let stage1Value = 7, stage1Unit = 'days';
@@ -382,6 +473,23 @@ const ConferenceManagement = () => {
       }
     }
     
+    const abstractLinkFromSettings = typeof settings.abstractSubmissionLink === 'string' ? settings.abstractSubmissionLink : '';
+    const registrationLinkFromSettings = typeof settings.registrationLink === 'string' ? settings.registrationLink : '';
+    const fallbackWebsiteLink = conference.website || '';
+    const abstractSubmissionLink = abstractLinkFromSettings || fallbackWebsiteLink;
+    const registrationLink = registrationLinkFromSettings || fallbackWebsiteLink;
+    const stage1Templates = Array.isArray(settings.stage1Templates)
+      ? settings.stage1Templates.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+      : [];
+    const stage2Templates = Array.isArray(settings.stage2Templates)
+      ? settings.stage2Templates.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+      : [];
+    if (!stage1Templates.length && conference.stage1TemplateId) {
+      stage1Templates.push(conference.stage1TemplateId);
+    }
+    if (!stage2Templates.length && conference.stage2TemplateId) {
+      stage2Templates.push(conference.stage2TemplateId);
+    }
     const sanitizedAssignedMembers = Array.isArray(conference.assignedMemberIds)
       ? conference.assignedMemberIds.filter(Boolean)
       : [];
@@ -394,11 +502,15 @@ const ConferenceManagement = () => {
       endDate: conference.endDate ? conference.endDate.split('T')[0] : '',
       description: conference.description || '',
       website: conference.website || '',
+      abstractSubmissionLink,
+      registrationLink,
       currency: conference.currency || 'USD',
       abstractDeadline: conference.abstractDeadline ? conference.abstractDeadline.split('T')[0] : '',
       registrationDeadline: conference.registrationDeadline ? conference.registrationDeadline.split('T')[0] : '',
-      stage1TemplateId: conference.stage1TemplateId || '',
-      stage2TemplateId: conference.stage2TemplateId || '',
+      stage1TemplateId: stage1Templates[0] || conference.stage1TemplateId || '',
+      stage2TemplateId: stage2Templates[0] || conference.stage2TemplateId || '',
+      stage1Templates,
+      stage2Templates,
       // Conference Settings
       stage1IntervalValue: stage1Value,
       stage1IntervalUnit: stage1Unit,
@@ -410,6 +522,7 @@ const ConferenceManagement = () => {
       workingHoursStart: settings.working_hours?.start || '09:00',
       workingHoursEnd: settings.working_hours?.end || '17:00',
       timezone: settings.timezone || 'UTC',
+      followupCcInput,
       assignedTeamLeadId: conference.assignedTeamLeadId || '',
       assignedMemberIds: sanitizedAssignedMembers,
       stage1Template: conference.stage1Template || {
@@ -453,6 +566,88 @@ const ConferenceManagement = () => {
     setShowTemplateModal(true);
   };
 
+  const getTemplateSlots = (stage) => {
+    const max = stage === 'stage1'
+      ? Number(formData.stage1MaxFollowUps) || 0
+      : Number(formData.stage2MaxFollowUps) || 0;
+    const templatesKey = stage === 'stage1' ? 'stage1Templates' : 'stage2Templates';
+    const source = Array.isArray(formData[templatesKey]) ? formData[templatesKey] : [];
+    return Array.from({ length: max }, (_, index) => source[index] || '');
+  };
+
+  const handleMaxFollowUpsInputChange = (stage, rawValue) => {
+    const parsedNumber = Number(rawValue);
+    const parsed = Number.isFinite(parsedNumber) && parsedNumber > 0
+      ? Math.min(20, Math.floor(parsedNumber))
+      : 1;
+
+    setFormData((prev) => {
+      const maxKey = stage === 'stage1' ? 'stage1MaxFollowUps' : 'stage2MaxFollowUps';
+      const templatesKey = stage === 'stage1' ? 'stage1Templates' : 'stage2Templates';
+      const templateIdKey = stage === 'stage1' ? 'stage1TemplateId' : 'stage2TemplateId';
+      const currentTemplates = Array.isArray(prev[templatesKey]) ? [...prev[templatesKey]] : [];
+      let nextTemplates = currentTemplates;
+
+      if (parsed < currentTemplates.length) {
+        const trimmed = currentTemplates.slice(parsed);
+        const hasAssignments = trimmed.some((id) => id && id.trim());
+        if (hasAssignments && typeof window !== 'undefined') {
+          const confirmed = window.confirm(
+            'Reducing the max follow-ups will remove template assignments beyond the new limit. Continue?'
+          );
+          if (!confirmed) {
+            return prev;
+          }
+        }
+        nextTemplates = currentTemplates.slice(0, parsed);
+      } else if (parsed > currentTemplates.length) {
+        nextTemplates = [
+          ...currentTemplates,
+          ...Array(parsed - currentTemplates.length).fill('')
+        ];
+      }
+
+      const firstNonEmpty = nextTemplates.find((id) => id && id.trim()) || '';
+
+      return {
+        ...prev,
+        [maxKey]: parsed,
+        [templatesKey]: nextTemplates,
+        [templateIdKey]: firstNonEmpty
+      };
+    });
+  };
+
+  const handleTemplateSlotChange = (stage, index, templateId) => {
+    setFormData((prev) => {
+      const templatesKey = stage === 'stage1' ? 'stage1Templates' : 'stage2Templates';
+      const templateIdKey = stage === 'stage1' ? 'stage1TemplateId' : 'stage2TemplateId';
+      const previewKey = stage === 'stage1' ? 'stage1Template' : 'stage2Template';
+      const currentTemplates = Array.isArray(prev[templatesKey]) ? [...prev[templatesKey]] : [];
+      while (currentTemplates.length <= index) {
+        currentTemplates.push('');
+      }
+      currentTemplates[index] = templateId || '';
+      const firstNonEmpty = currentTemplates.find((id) => id && id.trim()) || '';
+      const selectedTemplate = templateId ? templatesById[templateId] : null;
+
+      return {
+        ...prev,
+        [templatesKey]: currentTemplates,
+        [templateIdKey]: firstNonEmpty,
+        [previewKey]: selectedTemplate ? {
+          subject: selectedTemplate.subject,
+          bodyHtml: selectedTemplate.bodyHtml,
+          bodyText: selectedTemplate.bodyText
+        } : {
+          subject: '',
+          bodyHtml: '',
+          bodyText: ''
+        }
+      };
+    });
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     
@@ -491,6 +686,35 @@ const ConferenceManagement = () => {
 
     const stage1Unit = normalizeUnit(formData.stage1IntervalUnit);
     const stage2Unit = normalizeUnit(formData.stage2IntervalUnit);
+    const ensureValidOptionalUrl = (value, label) => {
+      const trimmed = (value || '').trim();
+      if (!trimmed) {
+        return '';
+      }
+      if (!isValidHttpUrl(trimmed)) {
+        toast.error(`${label} must be a valid URL starting with http:// or https://`);
+        throw new Error('invalid-url');
+      }
+      return trimmed;
+    };
+
+    let abstractLink = '';
+    let registrationLink = '';
+
+    try {
+      abstractLink = ensureValidOptionalUrl(formData.abstractSubmissionLink, 'Abstract Submission Link');
+      registrationLink = ensureValidOptionalUrl(formData.registrationLink, 'Registration Link');
+    } catch (validationError) {
+      return;
+    }
+    const { emails: followupCcList, invalid: invalidCc } = parseFollowupCcInput(formData.followupCcInput);
+    if (invalidCc.length > 0) {
+      toast.error(`Invalid CC email${invalidCc.length > 1 ? 's' : ''}: ${invalidCc.join(', ')}`);
+      return;
+    }
+
+    const stage1Sequence = sanitizeTemplateSequence(formData.stage1Templates || [], stage1MaxFollowUps);
+    const stage2Sequence = sanitizeTemplateSequence(formData.stage2Templates || [], stage2MaxFollowUps);
 
     const submitData = {
       ...formData,
@@ -515,9 +739,21 @@ const ConferenceManagement = () => {
         working_hours: {
           start: formData.workingHoursStart,
           end: formData.workingHoursEnd
-        }
+        },
+        abstractSubmissionLink: abstractLink || null,
+        registrationLink: registrationLink || null,
+        followupCC: followupCcList,
+        stage1Templates: stage1Sequence,
+        stage2Templates: stage2Sequence
       }
     };
+    submitData.website = formData.website || registrationLink || abstractLink || '';
+    delete submitData.abstractSubmissionLink;
+    delete submitData.registrationLink;
+    delete submitData.stage1Templates;
+    delete submitData.stage2Templates;
+    submitData.stage1TemplateId = stage1Sequence[0] || submitData.stage1TemplateId || '';
+    submitData.stage2TemplateId = stage2Sequence[0] || submitData.stage2TemplateId || '';
     
     if (editingConference) {
       updateMutation.mutate({ id: editingConference.id, data: submitData });
@@ -915,18 +1151,31 @@ const ConferenceManagement = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Website
+                      Abstract Submission Link
                     </label>
                     <input
                       type="url"
-                      name="website"
-                      value={formData.website}
+                      name="abstractSubmissionLink"
+                      value={formData.abstractSubmissionLink}
                       onChange={handleInputChange}
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
-                      placeholder="https://example.com"
+                      placeholder="https://abstracts.example.com"
                     />
                   </div>
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Registration Link
+                    </label>
+                    <input
+                      type="url"
+                      name="registrationLink"
+                      value={formData.registrationLink}
+                      onChange={handleInputChange}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
+                      placeholder="https://register.example.com"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Currency
                     </label>
@@ -1169,6 +1418,22 @@ const ConferenceManagement = () => {
                       <option value="Australia/Sydney">AEST - Australian Eastern Time</option>
                     </select>
                   </div>
+              <div className="mt-6">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  CC emails for follow-ups (optional)
+                </label>
+                <textarea
+                  name="followupCcInput"
+                  value={formData.followupCcInput}
+                  onChange={handleInputChange}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent transition-all duration-200 bg-white resize-none"
+                  placeholder="e.g. ops@example.com, finance@example.com"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Separate multiple emails with commas, semicolons, or new lines. These addresses are copied on every automated follow-up for this conference.
+                </p>
+              </div>
                 </div>
               </div>
 
@@ -1300,51 +1565,50 @@ const ConferenceManagement = () => {
                     </div>
                     
                     <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Select Template
-                        </label>
-                        <select
-                          name="stage1TemplateId"
-                          value={formData.stage1TemplateId || ''}
-                          onChange={(e) => {
-                            const templateId = e.target.value;
-                            const selectedTemplate = templates?.find(t => t.id === templateId);
-                            setFormData(prev => ({
-                              ...prev,
-                              stage1TemplateId: templateId,
-                              stage1Template: selectedTemplate ? {
-                                subject: selectedTemplate.subject,
-                                bodyHtml: selectedTemplate.bodyHtml,
-                                bodyText: selectedTemplate.bodyText
-                              } : { subject: '', bodyHtml: '', bodyText: '' }
-                            }));
-                          }}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
-                        >
-                          <option value="">Choose Stage 1 Template</option>
-                          {templates?.filter(t => t.stage === 'abstract_submission').map(template => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Stage 1 Template Preview */}
-                      {formData.stage1Template && formData.stage1Template.subject && (
-                        <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
-                          <h5 className="text-sm font-medium text-gray-700 mb-3 flex items-center">
-                            <span className="w-2 h-2 bg-blue-400 rounded-full mr-2"></span>
-                            Preview
-                          </h5>
-                          <div className="space-y-2">
-                            <p className="text-sm font-medium text-gray-900">Subject: {formData.stage1Template.subject}</p>
-                            <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded border-l-2 border-blue-200">
-                              {formData.stage1Template.bodyText || formData.stage1Template.bodyHtml?.replace(/<[^>]*>/g, '')}
+                      {getTemplateSlots('stage1').map((templateId, index) => {
+                        const selectedTemplate = templateId ? templatesById[templateId] : null;
+                        return (
+                          <div key={`stage1-slot-${index}`} className="bg-white border border-blue-100 rounded-lg p-4 shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                              <div>
+                                <p className="text-sm font-semibold text-gray-900">Follow-up {index + 1}</p>
+                                <p className="text-xs text-gray-500">Attempt #{index + 1}</p>
+                              </div>
+                              {selectedTemplate && (
+                                <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded-full">
+                                  {selectedTemplate.name}
+                                </span>
+                              )}
                             </div>
+                            <select
+                              value={templateId}
+                              onChange={(e) => handleTemplateSlotChange('stage1', index, e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white text-sm"
+                            >
+                              <option value="">Select a template</option>
+                              {stageTemplateOptions.stage1.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                            {selectedTemplate ? (
+                              <div className="mt-3 text-xs text-gray-600 bg-gray-50 p-3 rounded border border-gray-100">
+                                <p className="font-medium text-gray-800">Subject: {selectedTemplate.subject}</p>
+                                <p className="mt-1 line-clamp-2">
+                                  {selectedTemplate.bodyText || selectedTemplate.bodyHtml?.replace(/<[^>]*>/g, '')}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="mt-3 text-xs text-gray-400">No template selected. The previous template will be reused.</p>
+                            )}
                           </div>
-                        </div>
+                        );
+                      })}
+                      {stageTemplateOptions.stage1.length === 0 && (
+                        <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg p-3">
+                          No Stage 1 templates available. Please create templates in the Templates page.
+                        </p>
                       )}
                     </div>
                   </div>
@@ -1362,51 +1626,50 @@ const ConferenceManagement = () => {
                     </div>
                     
                     <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Select Template
-                        </label>
-                        <select
-                          name="stage2TemplateId"
-                          value={formData.stage2TemplateId || ''}
-                          onChange={(e) => {
-                            const templateId = e.target.value;
-                            const selectedTemplate = templates?.find(t => t.id === templateId);
-                            setFormData(prev => ({
-                              ...prev,
-                              stage2TemplateId: templateId,
-                              stage2Template: selectedTemplate ? {
-                                subject: selectedTemplate.subject,
-                                bodyHtml: selectedTemplate.bodyHtml,
-                                bodyText: selectedTemplate.bodyText
-                              } : { subject: '', bodyHtml: '', bodyText: '' }
-                            }));
-                          }}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all duration-200 bg-white"
-                        >
-                          <option value="">Choose Stage 2 Template</option>
-                          {templates?.filter(t => t.stage === 'registration').map(template => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Stage 2 Template Preview */}
-                      {formData.stage2Template && formData.stage2Template.subject && (
-                        <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
-                          <h5 className="text-sm font-medium text-gray-700 mb-3 flex items-center">
-                            <span className="w-2 h-2 bg-green-400 rounded-full mr-2"></span>
-                            Preview
-                          </h5>
-                          <div className="space-y-2">
-                            <p className="text-sm font-medium text-gray-900">Subject: {formData.stage2Template.subject}</p>
-                            <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded border-l-2 border-green-200">
-                              {formData.stage2Template.bodyText || formData.stage2Template.bodyHtml?.replace(/<[^>]*>/g, '')}
+                      {getTemplateSlots('stage2').map((templateId, index) => {
+                        const selectedTemplate = templateId ? templatesById[templateId] : null;
+                        return (
+                          <div key={`stage2-slot-${index}`} className="bg-white border border-green-100 rounded-lg p-4 shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                              <div>
+                                <p className="text-sm font-semibold text-gray-900">Follow-up {index + 1}</p>
+                                <p className="text-xs text-gray-500">Attempt #{index + 1}</p>
+                              </div>
+                              {selectedTemplate && (
+                                <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                                  {selectedTemplate.name}
+                                </span>
+                              )}
                             </div>
+                            <select
+                              value={templateId}
+                              onChange={(e) => handleTemplateSlotChange('stage2', index, e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all duration-200 bg-white text-sm"
+                            >
+                              <option value="">Select a template</option>
+                              {stageTemplateOptions.stage2.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                            {selectedTemplate ? (
+                              <div className="mt-3 text-xs text-gray-600 bg-gray-50 p-3 rounded border border-gray-100">
+                                <p className="font-medium text-gray-800">Subject: {selectedTemplate.subject}</p>
+                                <p className="mt-1 line-clamp-2">
+                                  {selectedTemplate.bodyText || selectedTemplate.bodyHtml?.replace(/<[^>]*>/g, '')}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="mt-3 text-xs text-gray-400">No template selected. The previous template will be reused.</p>
+                            )}
                           </div>
-                        </div>
+                        );
+                      })}
+                      {stageTemplateOptions.stage2.length === 0 && (
+                        <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg p-3">
+                          No Stage 2 templates available. Please create templates in the Templates page.
+                        </p>
                       )}
                     </div>
                   </div>

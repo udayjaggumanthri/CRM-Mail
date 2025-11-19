@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '../contexts/AuthContext';
 import {
   Mail,
   Inbox,
@@ -161,6 +162,9 @@ const ESPOEmailClient = () => {
   });
 
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const currentUserId = user?.id || null;
+  const isCeo = (user?.role || '').toLowerCase() === 'ceo';
 
   // Fetch emails
   const { data: emails = [], isLoading: emailsLoading, refetch: refetchEmails } = useQuery(
@@ -187,6 +191,14 @@ const ESPOEmailClient = () => {
     const response = await axios.get('/api/email-accounts');
     return response.data;
   });
+
+  const groupedEmailAccounts = React.useMemo(() => {
+    const accountsArray = Array.isArray(emailAccounts) ? emailAccounts : [];
+    const shared = accountsArray.filter(account => account.isSystemAccount);
+    const mine = accountsArray.filter(account => !account.isSystemAccount && account.ownerId === currentUserId);
+    const others = accountsArray.filter(account => !account.isSystemAccount && account.ownerId && account.ownerId !== currentUserId);
+    return { shared, mine, others };
+  }, [emailAccounts, currentUserId]);
 
   // Fetch folders
   const { data: folders = [] } = useQuery('email-folders', async () => {
@@ -738,11 +750,21 @@ const ESPOEmailClient = () => {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">From *</label>
                     <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                      {emailAccounts.map(account => (
-                        <option key={account.id} value={account.id}>
-                          {account.name} ({account.email})
-                        </option>
-                      ))}
+                      {[
+                        { label: 'Shared (System)', accounts: groupedEmailAccounts.shared },
+                        { label: 'My Accounts', accounts: groupedEmailAccounts.mine },
+                        ...(isCeo ? [{ label: 'Team Accounts', accounts: groupedEmailAccounts.others }] : [])
+                      ].map((section) =>
+                        section.accounts.length > 0 ? (
+                          <optgroup key={section.label} label={section.label}>
+                            {section.accounts.map((account) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name} ({account.email}){account.isActive === false ? ' (Paused)' : ''}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : null
+                      )}
                     </select>
                   </div>
                   <div>

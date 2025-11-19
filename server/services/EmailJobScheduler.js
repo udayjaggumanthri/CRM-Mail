@@ -4,6 +4,42 @@ const EmailService = require('./EmailService');
 const TemplateEngine = require('./TemplateEngine');
 const { Op } = require('sequelize');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
+const { normalizeEmailList } = require('../utils/emailListUtils');
+
+const getTemplateIdForAttempt = (sequence, attemptIndex, fallbackId) => {
+  if (!Array.isArray(sequence) || sequence.length === 0) {
+    return fallbackId || null;
+  }
+  if (attemptIndex <= 0) {
+    return sequence[0];
+  }
+  if (attemptIndex >= sequence.length) {
+    return sequence[sequence.length - 1];
+  }
+  return sequence[attemptIndex];
+};
+
+const getConferenceStageSequence = (conference, stage) => {
+  if (!conference) {
+    return [];
+  }
+  const settings = conference.settings || {};
+  const rawSequence = stage === 'abstract_submission' || stage === 'stage1'
+    ? settings.stage1Templates
+    : settings.stage2Templates;
+  const cleaned = Array.isArray(rawSequence)
+    ? rawSequence.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+    : [];
+  if (cleaned.length === 0) {
+    const fallback = (stage === 'abstract_submission' || stage === 'stage1')
+      ? conference.stage1TemplateId
+      : conference.stage2TemplateId;
+    if (fallback) {
+      cleaned.push(fallback);
+    }
+  }
+  return cleaned;
+};
 
 const toNonNegativeInt = (value) => {
   const num = Number(value);
@@ -100,7 +136,19 @@ class EmailJobScheduler {
         return;
       }
       
-      const { conference, template } = job;
+      const { conference } = job;
+      let activeTemplate = job.template || null;
+      const attemptIndex = job.currentAttempt || 0;
+
+      let conferenceContext = conference || null;
+      const conferenceId = job.conferenceId || conference?.id;
+      if (conferenceId) {
+        try {
+          conferenceContext = await Conference.findByPk(conferenceId);
+        } catch (confErr) {
+          console.warn(`⚠️  Unable to load latest conference data for ID ${conferenceId}:`, confErr.message);
+        }
+      }
       
       const intervalSummary = job.settings?.intervalConfig
         ? `${job.settings.intervalConfig.value} ${job.settings.intervalConfig.unit}`
@@ -166,24 +214,48 @@ class EmailJobScheduler {
       // Diagnostic logging: Verify which SMTP account is being used
       console.log(`📧 [SMTP Selection] Using account: "${smtpAccount.name}" (${smtpAccount.email}) | Priority: ${smtpAccount.sendPriority} | Job ID: ${job.id}`);
 
+      const stageSequenceFromJob = Array.isArray(job.settings?.stageTemplateSequence)
+        ? job.settings.stageTemplateSequence.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+        : [];
+      const stageSequence = stageSequenceFromJob.length
+        ? stageSequenceFromJob
+        : getConferenceStageSequence(conferenceContext || conference, job.stage);
+      const desiredTemplateId = getTemplateIdForAttempt(stageSequence, attemptIndex, activeTemplate?.id);
+      if (desiredTemplateId && (!activeTemplate || activeTemplate.id !== desiredTemplateId)) {
+        const resolvedTemplate = await EmailTemplate.findByPk(desiredTemplateId);
+        if (resolvedTemplate) {
+          activeTemplate = resolvedTemplate;
+        }
+      }
+
+      if (!activeTemplate) {
+        console.warn(`⚠️  No template available for job ${job.id}. Skipping send.`);
+        return;
+      }
+
       // Render template
       const templateEngine = new TemplateEngine();
       const renderedTemplate = await templateEngine.renderTemplate(
-        template.id,
+        activeTemplate.id,
         freshClient.id,
-        conference.id
+        conferenceContext?.id || conference?.id
       );
 
-      // Validate subject line and fall back to template.subject if empty
-      const emailSubject = renderedTemplate.subject && renderedTemplate.subject.trim() 
-        ? renderedTemplate.subject 
-        : template.subject;
-      
-      if (!emailSubject || !emailSubject.trim()) {
-        throw new Error(`Email subject cannot be empty for template ${template.id}`);
+      const renderedSubject = renderedTemplate.subject && renderedTemplate.subject.trim()
+        ? renderedTemplate.subject
+        : activeTemplate.subject;
+
+      let finalSubject = renderedSubject;
+      const storedThreadSubject = job.settings?.threadSubject;
+      if (storedThreadSubject && storedThreadSubject.trim()) {
+        finalSubject = storedThreadSubject.trim();
       }
 
-      console.log(`📧 Sending follow-up with subject: "${emailSubject}"`);
+      if (!finalSubject || !finalSubject.trim()) {
+        throw new Error(`Email subject cannot be empty for template ${activeTemplate.id}`);
+      }
+
+      console.log(`📧 Sending follow-up with subject: "${finalSubject}"`);
 
       // Send email using nodemailer directly
       const nodemailer = require('nodemailer');
@@ -250,11 +322,17 @@ class EmailJobScheduler {
       const mailOptions = {
         from: `${smtpAccount.name || 'Conference CRM'} <${smtpAccount.email}>`,
         to: freshClient.email,
-        subject: emailSubject,
+        subject: finalSubject,
         text: renderedTemplate.bodyText,
         html: renderedTemplate.bodyHtml,
         ...threadingHeaders
       };
+
+      const conferenceFollowupCc = normalizeEmailList(conferenceContext?.settings?.followupCC);
+      if (conferenceFollowupCc.length > 0) {
+        mailOptions.cc = conferenceFollowupCc.join(', ');
+        console.log(`📎 [Follow-up CC] Added ${conferenceFollowupCc.length} conference-level CC recipient(s) for job ${job.id}`);
+      }
 
       const normalizedAttachments = prepareAttachmentsForSending(renderedTemplate.attachments);
       if (normalizedAttachments.length > 0) {
@@ -267,13 +345,13 @@ class EmailJobScheduler {
       await Email.create({
         from: smtpAccount.email,
         to: freshClient.email,
-        subject: emailSubject,
+        subject: finalSubject,
         bodyHtml: renderedTemplate.bodyHtml,
         bodyText: renderedTemplate.bodyText,
         date: new Date(),
         clientId: freshClient.id,
-        conferenceId: conference.id,
-        templateId: template.id,
+        conferenceId: conferenceContext?.id || conference?.id,
+        templateId: activeTemplate.id,
         emailAccountId: smtpAccount.id,
         isSent: true,
         status: 'sent',
@@ -284,6 +362,19 @@ class EmailJobScheduler {
       });
 
       console.log(`✅ Follow-up email sent: ${mailResult.messageId}`);
+
+      // Persist thread metadata (root + subject) if not already stored
+      if (!job.settings?.threadRootMessageId || !job.settings?.threadSubject) {
+        const updatedSettings = { ...(job.settings || {}) };
+        if (!updatedSettings.threadRootMessageId) {
+          updatedSettings.threadRootMessageId = mailResult.messageId;
+        }
+        if (!updatedSettings.threadSubject && finalSubject) {
+          updatedSettings.threadSubject = finalSubject;
+        }
+        await job.update({ settings: updatedSettings });
+        job.settings = updatedSettings;
+      }
 
       // Update client engagement and manual-follow-up counters
       const currentEngagement = freshClient.engagement || {};
@@ -351,7 +442,7 @@ class EmailJobScheduler {
           intervalConfig = { value: job.customInterval, unit: 'days' };
         } else {
           // Get from conference settings
-          const conferenceSettings = conference.settings || {};
+          const conferenceSettings = conferenceContext?.settings || conference?.settings || {};
           const followupIntervals = conferenceSettings.followup_intervals || { 
             "Stage1": { value: 7, unit: "days" }, 
             "Stage2": { value: 3, unit: "days" } 

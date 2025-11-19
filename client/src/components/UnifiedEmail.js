@@ -55,6 +55,8 @@ Quill.register(Font, true);
 
 const UnifiedEmail = () => {
   const { user } = useAuth();
+  const currentUserId = user?.id || null;
+  const isCeo = (user?.role || '').toLowerCase() === 'ceo';
   const [activeFolder, setActiveFolder] = useState('inbox');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEmail, setSelectedEmail] = useState(null);
@@ -167,32 +169,48 @@ const UnifiedEmail = () => {
     });
   }, [emailAccounts]);
 
+  const groupedEmailAccounts = React.useMemo(() => {
+    const accountsArray = Array.isArray(sortedEmailAccounts) ? sortedEmailAccounts : [];
+    const shared = accountsArray.filter(account => account.isSystemAccount);
+    const mine = accountsArray.filter(account => !account.isSystemAccount && account.ownerId === currentUserId);
+    const others = accountsArray.filter(account => !account.isSystemAccount && account.ownerId && account.ownerId !== currentUserId);
+    return { shared, mine, others };
+  }, [sortedEmailAccounts, currentUserId]);
+
+  const visibleEmailAccounts = React.useMemo(() => {
+    return [
+      ...groupedEmailAccounts.shared,
+      ...groupedEmailAccounts.mine,
+      ...groupedEmailAccounts.others
+    ];
+  }, [groupedEmailAccounts]);
+
   React.useEffect(() => {
-    if (!sortedEmailAccounts.length) {
+    if (!visibleEmailAccounts.length) {
       setSelectedEmailAccountId(null);
       return;
     }
     setSelectedEmailAccountId((prev) => {
-      if (prev && sortedEmailAccounts.some(acc => acc.id === prev)) {
+      if (prev && visibleEmailAccounts.some(acc => acc.id === prev)) {
         return prev;
       }
-      return sortedEmailAccounts[0].id;
+      return visibleEmailAccounts[0].id;
     });
     setActiveEmailAccountId((prev) => {
       if (prev === 'all') return prev;
-      if (sortedEmailAccounts.some(acc => acc.id === prev)) {
+      if (visibleEmailAccounts.some(acc => acc.id === prev)) {
         return prev;
       }
-      return sortedEmailAccounts[0].id;
+      return visibleEmailAccounts[0].id;
     });
-  }, [sortedEmailAccounts]);
+  }, [visibleEmailAccounts]);
 
   React.useEffect(() => {
     if (showCompose) return;
-    if (activeEmailAccountId !== 'all' && sortedEmailAccounts.some(acc => acc.id === activeEmailAccountId)) {
+    if (activeEmailAccountId !== 'all' && visibleEmailAccounts.some(acc => acc.id === activeEmailAccountId)) {
       setSelectedEmailAccountId(activeEmailAccountId);
     }
-  }, [activeEmailAccountId, showCompose, sortedEmailAccounts]);
+  }, [activeEmailAccountId, showCompose, visibleEmailAccounts]);
 
   // Fetch email suggestions for autocomplete
   const { data: suggestionsData, isLoading: suggestionsLoading } = useQuery(
@@ -345,7 +363,7 @@ const UnifiedEmail = () => {
         throw new Error('No email account configured');
       }
 
-      const accountsArray = sortedEmailAccounts;
+      const accountsArray = visibleEmailAccounts;
       if (accountsArray.length === 0) {
         throw new Error('No email account configured');
       }
@@ -563,7 +581,7 @@ const UnifiedEmail = () => {
       return;
     }
     
-    let accountsArray = sortedEmailAccounts;
+    let accountsArray = visibleEmailAccounts;
 
     if (accountsArray.length === 0) {
       toast.error('No email account configured. Please add an email account first.');
@@ -776,10 +794,10 @@ const UnifiedEmail = () => {
   ];
 
   const openComposeWindow = (preferredAccountId = null) => {
-    if (preferredAccountId && preferredAccountId !== 'all' && sortedEmailAccounts.some(acc => acc.id === preferredAccountId)) {
+    if (preferredAccountId && preferredAccountId !== 'all' && visibleEmailAccounts.some(acc => acc.id === preferredAccountId)) {
       setSelectedEmailAccountId(preferredAccountId);
-    } else if (!selectedEmailAccountId && sortedEmailAccounts.length) {
-      setSelectedEmailAccountId(sortedEmailAccounts[0].id);
+    } else if (!selectedEmailAccountId && visibleEmailAccounts.length) {
+      setSelectedEmailAccountId(visibleEmailAccounts[0].id);
     }
     setShowCompose(true);
     setIsComposeMinimized(false);
@@ -986,29 +1004,42 @@ const UnifiedEmail = () => {
               >
                 All Accounts
               </button>
-              {sortedEmailAccounts.map((account) => {
-                const isSelected = activeEmailAccountId === account.id;
-                const badge =
-                  account.sendPriority === 1
-                    ? 'Primary'
-                    : account.sendPriority === 2
-                      ? 'Secondary'
-                      : `#${account.sendPriority}`;
-                return (
-                  <button
-                    key={account.id}
-                    onClick={() => setActiveEmailAccountId(account.id)}
-                    className={`w-full px-3 py-2 text-sm rounded-md transition-colors flex items-center justify-between ${
-                      isSelected
-                        ? 'bg-blue-100 text-blue-800 font-medium'
-                        : 'text-gray-700 hover:bg-gray-100'
-                    } ${account.isActive ? '' : 'opacity-60'}`}
-                  >
-                    <span className="truncate">{account.name || account.email}</span>
-                    <span className="ml-2 text-xs text-gray-500">{badge}</span>
-                  </button>
-                );
-              })}
+              {[
+                { key: 'shared', label: 'Shared (System)', accounts: groupedEmailAccounts.shared },
+                { key: 'mine', label: 'My Accounts', accounts: groupedEmailAccounts.mine },
+                ...(isCeo ? [{ key: 'others', label: 'Team Accounts', accounts: groupedEmailAccounts.others }] : [])
+              ].map((section) =>
+                section.accounts.length > 0 ? (
+                  <div key={section.key} className="mt-3">
+                    <p className="text-[11px] font-semibold uppercase text-gray-400 mb-1">{section.label}</p>
+                    <div className="space-y-1">
+                      {section.accounts.map((account) => {
+                        const isSelected = activeEmailAccountId === account.id;
+                        const badge =
+                          account.sendPriority === 1
+                            ? 'Primary'
+                            : account.sendPriority === 2
+                              ? 'Secondary'
+                              : `#${account.sendPriority}`;
+                        return (
+                          <button
+                            key={account.id}
+                            onClick={() => setActiveEmailAccountId(account.id)}
+                            className={`w-full px-3 py-2 text-sm rounded-md transition-colors flex items-center justify-between ${
+                              isSelected
+                                ? 'bg-blue-100 text-blue-800 font-medium'
+                                : 'text-gray-700 hover:bg-gray-100'
+                            } ${account.isActive ? '' : 'opacity-60'}`}
+                          >
+                            <span className="truncate">{account.name || account.email}</span>
+                            <span className="ml-2 text-xs text-gray-500">{badge}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null
+              )}
             </div>
           </div>
 
@@ -1444,20 +1475,30 @@ const UnifiedEmail = () => {
                   <span className="text-xs text-gray-500 w-12 flex-shrink-0">From</span>
                   {emailAccountsLoading ? (
                     <span className="text-xs text-gray-500 ml-2">Loading accounts...</span>
-                  ) : !sortedEmailAccounts.length ? (
+                  ) : !visibleEmailAccounts.length ? (
                     <span className="text-xs text-red-500 ml-2">No SMTP accounts</span>
                   ) : (
-                    <select
-                      value={selectedEmailAccountId || ''}
-                      onChange={(e) => setSelectedEmailAccountId(e.target.value)}
-                      className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
-                    >
-                      {sortedEmailAccounts.map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {account.name || account.email}{account.isActive === false ? ' (Paused)' : ''}
-                        </option>
-                      ))}
-                    </select>
+                  <select
+                    value={selectedEmailAccountId || ''}
+                    onChange={(e) => setSelectedEmailAccountId(e.target.value)}
+                    className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+                  >
+                    {[
+                      { label: 'Shared (System)', accounts: groupedEmailAccounts.shared },
+                      { label: 'My Accounts', accounts: groupedEmailAccounts.mine },
+                      ...(isCeo ? [{ label: 'Team Accounts', accounts: groupedEmailAccounts.others }] : [])
+                    ].map((section) =>
+                      section.accounts.length > 0 ? (
+                        <optgroup key={section.label} label={section.label}>
+                          {section.accounts.map((account) => (
+                            <option key={account.id} value={account.id}>
+                              {account.name || account.email}{account.isActive === false ? ' (Paused)' : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null
+                    )}
+                  </select>
                   )}
                 </div>
                 <div className="relative">

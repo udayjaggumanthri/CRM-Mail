@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client, EmailTemplate } = require('../models');
+const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client, EmailTemplate, Conference } = require('../models');
 const { Op } = require('sequelize');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
 const { decryptEmailPassword } = require('../utils/passwordUtils');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
+const { normalizeEmailList, mergeEmailLists } = require('../utils/emailListUtils');
 
 // Configure multer for file uploads - use any() to handle both files and fields
 const upload = multer({ 
@@ -364,8 +365,8 @@ router.post('/send', upload.any(), async (req, res) => {
     // Parse form fields from multipart/form-data
     const emailAccountId = req.body.emailAccountId;
     const to = req.body.to;
-    const cc = req.body.cc || '';
-    const bcc = req.body.bcc || '';
+    const rawCc = req.body.cc || '';
+    const rawBcc = req.body.bcc || '';
     const subject = req.body.subject;
     const body = req.body.body || '';
     const bodyHtml = req.body.bodyHtml || req.body.body || '';
@@ -373,6 +374,8 @@ router.post('/send', upload.any(), async (req, res) => {
     const parentId = req.body.parentId || null;
     const parentType = req.body.parentType || null;
     const isTracked = req.body.isTracked === 'true' || req.body.isTracked === true;
+    const clientId = req.body.clientId || null;
+    const conferenceId = req.body.conferenceId || null;
 
     // Get uploaded files - filter by fieldname 'attachments'
     const uploadedFiles = (req.files || []).filter(file => file.fieldname === 'attachments');
@@ -473,14 +476,36 @@ router.post('/send', upload.any(), async (req, res) => {
       ...templateAttachmentsMeta
     ];
 
+    // Conference-level follow-up CC recipients
+    let conferenceFollowupCc = [];
+    if (conferenceId) {
+      try {
+        const conference = await Conference.findByPk(conferenceId);
+        if (conference?.settings?.followupCC) {
+          conferenceFollowupCc = normalizeEmailList(conference.settings.followupCC);
+        }
+      } catch (err) {
+        console.warn(`⚠️  Unable to load conference follow-up CC for conference ${conferenceId}:`, err.message);
+      }
+    }
+
+    const ccListFromRequest = normalizeEmailList(rawCc);
+    const combinedCcList = mergeEmailLists(ccListFromRequest, conferenceFollowupCc);
+    const ccHeaderValue = combinedCcList.length > 0 ? combinedCcList.join(', ') : null;
+    const bccHeaderValue = rawBcc && rawBcc.trim() ? rawBcc : null;
+
+    if (conferenceFollowupCc.length > 0) {
+      console.log(`📎 [Follow-up CC] Applying ${conferenceFollowupCc.length} conference-level CC recipient(s) to this email.`);
+    }
+
     // Create email record
     const email = await Email.create({
       emailAccountId: accountId,
       from: account.email,
       fromName: account.name,
       to,
-      cc: cc || null,
-      bcc: bcc || null,
+      cc: ccHeaderValue,
+      bcc: bccHeaderValue,
       subject,
       body: body || bodyText || '',
       bodyHtml: bodyHtml || '',
@@ -515,7 +540,6 @@ router.post('/send', upload.any(), async (req, res) => {
       // Threading headers (add-only, preserve existing behavior when none found)
       let threadingHeaders = {};
       try {
-        const { clientId, conferenceId } = req.body || {};
         if (clientId) {
           const where = { clientId, status: 'sent' };
           if (conferenceId) where.conferenceId = conferenceId;
@@ -544,8 +568,8 @@ router.post('/send', upload.any(), async (req, res) => {
       };
 
       // Add CC and BCC if provided
-      if (cc) mailOptions.cc = cc;
-      if (bcc) mailOptions.bcc = bcc;
+      if (ccHeaderValue) mailOptions.cc = ccHeaderValue;
+      if (bccHeaderValue) mailOptions.bcc = bccHeaderValue;
 
       // Add attachments if any
       const uploadAttachmentsForSending = uploadedFiles.map(file => ({

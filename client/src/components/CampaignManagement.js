@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '../contexts/AuthContext';
 import {
   Plus,
   Play,
@@ -47,6 +48,9 @@ const CampaignManagement = () => {
   const [filterStatus, setFilterStatus] = useState('all');
   const [showStageMapping, setShowStageMapping] = useState(false);
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const currentUserId = user?.id || null;
+  const isCeo = (user?.role || '').toLowerCase() === 'ceo';
 
   // Fetch campaigns
   const { data: campaigns = [], isLoading } = useQuery(
@@ -71,6 +75,14 @@ const CampaignManagement = () => {
     const response = await axios.get('/api/smtp-accounts');
     return response.data;
   });
+
+  const groupedSmtpAccounts = React.useMemo(() => {
+    const accountsArray = Array.isArray(smtpAccounts) ? smtpAccounts : [];
+    const shared = accountsArray.filter(account => account.isSystemAccount);
+    const mine = accountsArray.filter(account => !account.isSystemAccount && account.ownerId === currentUserId);
+    const others = accountsArray.filter(account => !account.isSystemAccount && account.ownerId && account.ownerId !== currentUserId);
+    return { shared, mine, others };
+  }, [smtpAccounts, currentUserId]);
 
   // Fetch conferences
   const { data: conferences = [] } = useQuery('conferences', async () => {
@@ -625,11 +637,21 @@ const CreateCampaignModal = ({ onClose, templates, smtpAccounts, conferences }) 
                 required
               >
                 <option value="">Select SMTP Account</option>
-                {smtpAccounts.map(account => (
-                  <option key={account.id} value={account.id}>
-                    {account.name} ({account.email})
-                  </option>
-                ))}
+                {[
+                  { label: 'Shared (System)', accounts: groupedSmtpAccounts.shared },
+                  { label: 'My Accounts', accounts: groupedSmtpAccounts.mine },
+                  ...(isCeo ? [{ label: 'Team Accounts', accounts: groupedSmtpAccounts.others }] : [])
+                ].map((section) =>
+                  section.accounts.length > 0 ? (
+                    <optgroup key={section.label} label={section.label}>
+                      {section.accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name} ({account.email}){account.isActive === false ? ' (Paused)' : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null
+                )}
               </select>
             </div>
 

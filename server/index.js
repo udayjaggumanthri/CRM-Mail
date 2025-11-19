@@ -17,6 +17,7 @@ const RealTimeImapService = require('./services/RealTimeImapService');
 const EmailJobScheduler = require('./services/EmailJobScheduler');
 const { initDatabase } = require('./database/init');
 const { seedCleanData } = require('./database/cleanSeed');
+const { ensureEmailAccountOwnershipColumns } = require('./database/ensureEmailAccountOwnershipColumns');
 const { Organization, User, Role, Conference, Client, Email, EmailTemplate, FollowUpJob, EmailLog, EmailAccount, EmailFolder, EmailThread, sequelize } = require('./models');
 const { Op, Sequelize } = require('sequelize');
 const EmailService = require('./services/EmailService');
@@ -29,6 +30,7 @@ const { rescheduleConferenceFollowUps } = clientRoutes;
 const { router: imapRoutes, realTimeImapService } = require('./routes/imapRoutes');
 const templateDraftRoutes = require('./routes/templateDraftRoutes');
 const { sanitizeAttachmentsForStorage } = require('./utils/attachmentUtils');
+const { normalizeEmailList } = require('./utils/emailListUtils');
 const { requireRole, requireConferenceAccess, requireUserManagement, requireClientAccess } = require('./middleware/rbac');
 require('dotenv').config();
 
@@ -141,7 +143,62 @@ const normalizeWorkingHours = (raw) => {
   return { start, end };
 };
 
-const normalizeConferenceSettings = (rawSettings = {}) => {
+const sanitizeOptionalUrl = (value) => {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.href;
+  } catch (error) {
+    return null;
+  }
+};
+
+const normalizeTemplateSequence = (rawSequence, fallbackId) => {
+  let candidates = [];
+
+  if (Array.isArray(rawSequence)) {
+    candidates = rawSequence;
+  } else if (typeof rawSequence === 'string') {
+    const trimmed = rawSequence.trim();
+    if (trimmed) {
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            candidates = parsed;
+          } else {
+            candidates = [trimmed];
+          }
+        } catch (error) {
+          candidates = [trimmed];
+        }
+      } else {
+        candidates = [trimmed];
+      }
+    }
+  }
+
+  const cleaned = candidates
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter(Boolean);
+
+  if (!cleaned.length && typeof fallbackId === 'string' && fallbackId.trim()) {
+    cleaned.push(fallbackId.trim());
+  }
+
+  return cleaned;
+};
+
+const normalizeConferenceSettings = (rawSettings = {}, options = {}) => {
   const normalizedFollowups = {
     Stage1: normalizeIntervalConfig(rawSettings.followup_intervals?.Stage1, DEFAULT_STAGE1_INTERVAL),
     Stage2: normalizeIntervalConfig(rawSettings.followup_intervals?.Stage2, DEFAULT_STAGE2_INTERVAL)
@@ -157,6 +214,15 @@ const normalizeConferenceSettings = (rawSettings = {}) => {
     ? rawSettings.timezone.trim()
     : DEFAULT_TIMEZONE;
   const workingHours = normalizeWorkingHours(rawSettings.working_hours);
+  const followupCC = normalizeEmailList(rawSettings.followupCC);
+  const abstractSubmissionLink = sanitizeOptionalUrl(rawSettings.abstractSubmissionLink || rawSettings.abstract_submission_link);
+  const registrationLink = sanitizeOptionalUrl(rawSettings.registrationLink || rawSettings.registration_link);
+  const stage1TemplatesRaw = rawSettings.stage1Templates ?? rawSettings.stage1TemplateSequence;
+  const stage2TemplatesRaw = rawSettings.stage2Templates ?? rawSettings.stage2TemplateSequence;
+  const stage1Templates = normalizeTemplateSequence(stage1TemplatesRaw, options.stage1TemplateId);
+  const stage2Templates = normalizeTemplateSequence(stage2TemplatesRaw, options.stage2TemplateId);
+  const limitedStage1Templates = stage1Templates.slice(0, normalizedAttempts.Stage1);
+  const limitedStage2Templates = stage2Templates.slice(0, normalizedAttempts.Stage2);
 
   return {
     ...rawSettings,
@@ -170,7 +236,12 @@ const normalizeConferenceSettings = (rawSettings = {}) => {
     },
     skip_weekends: skipWeekends,
     timezone,
-    working_hours: workingHours
+    working_hours: workingHours,
+    followupCC,
+    abstractSubmissionLink,
+    registrationLink,
+    stage1Templates: limitedStage1Templates,
+    stage2Templates: limitedStage2Templates
   };
 };
 
@@ -256,16 +327,37 @@ async function initializeDatabase() {
       console.log('ℹ️ Preflight adjustments skipped:', e.message);
     }
     
-    // Sync database - create tables if they don't exist
-    await sequelize.sync({ force: false });
-    console.log('✅ Database connected and synced');
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowSchemaBootstrap =
+      !isProduction || process.env.ALLOW_SCHEMA_BOOTSTRAP === 'true';
+    const allowAutoSync =
+      !isProduction || process.env.AUTO_DB_SYNC === 'true';
+    const allowAutoSeed =
+      !isProduction || process.env.ALLOW_AUTO_SEED === 'true';
+
+    if (allowSchemaBootstrap) {
+      await ensureEmailAccountOwnershipColumns(sequelize);
+    } else {
+      console.log('ℹ️ Skipping automatic schema bootstrap (production safeguard). Run migrations manually if needed.');
+    }
+
+    if (allowAutoSync) {
+      await sequelize.sync({ force: false });
+      console.log('✅ Database connected and synced');
+    } else {
+      console.log('ℹ️ Skipping sequelize.sync in production – apply migrations manually before restart.');
+    }
     
     // Check if we have users, if not seed the database
     const userCount = await User.count();
     if (userCount === 0) {
+      if (!allowAutoSeed) {
+        console.log('⚠️  Database is empty but auto-seed is disabled in production. Run seed script manually if this is intentional.');
+      } else {
       console.log('🌱 Seeding database with initial data...');
       await seedCleanData();
       console.log('✅ Database seeded successfully');
+      }
     } else {
       console.log(`📊 Database already has ${userCount} users, preserving existing data`);
     }
@@ -950,11 +1042,21 @@ app.post('/api/conferences', authenticateToken, async (req, res) => {
       conferenceData.stage2TemplateId = null;
     }
 
-    if (conferenceData.settings) {
-      conferenceData.settings = normalizeConferenceSettings(conferenceData.settings);
-    } else {
-      conferenceData.settings = normalizeConferenceSettings();
+    const incomingSettings = conferenceData.settings || {};
+    if (conferenceData.stage1Templates) {
+      incomingSettings.stage1Templates = conferenceData.stage1Templates;
     }
+    if (conferenceData.stage2Templates) {
+      incomingSettings.stage2Templates = conferenceData.stage2Templates;
+    }
+    conferenceData.settings = normalizeConferenceSettings(incomingSettings, {
+      stage1TemplateId: conferenceData.stage1TemplateId,
+      stage2TemplateId: conferenceData.stage2TemplateId
+    });
+    conferenceData.stage1TemplateId = conferenceData.settings.stage1Templates?.[0] || conferenceData.stage1TemplateId || null;
+    conferenceData.stage2TemplateId = conferenceData.settings.stage2Templates?.[0] || conferenceData.stage2TemplateId || null;
+    delete conferenceData.stage1Templates;
+    delete conferenceData.stage2Templates;
     
     // Ensure other required fields have defaults
     conferenceData.status = conferenceData.status || 'draft';
@@ -1002,9 +1104,54 @@ app.put('/api/conferences/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    if (Object.prototype.hasOwnProperty.call(updateData, 'settings')) {
-      updateData.settings = normalizeConferenceSettings(updateData.settings);
+    if (Object.prototype.hasOwnProperty.call(updateData, 'stage1TemplateId')) {
+      if (!updateData.stage1TemplateId || updateData.stage1TemplateId === '') {
+        updateData.stage1TemplateId = null;
+      }
     }
+    if (Object.prototype.hasOwnProperty.call(updateData, 'stage2TemplateId')) {
+      if (!updateData.stage2TemplateId || updateData.stage2TemplateId === '') {
+        updateData.stage2TemplateId = null;
+      }
+    }
+
+    let shouldNormalizeSettings = false;
+    let settingsPayload = null;
+
+    if (Object.prototype.hasOwnProperty.call(updateData, 'settings')) {
+      shouldNormalizeSettings = true;
+      settingsPayload = updateData.settings || {};
+    }
+
+    if (updateData.stage1Templates || updateData.stage2Templates) {
+      shouldNormalizeSettings = true;
+      settingsPayload = settingsPayload || { ...(conference.settings || {}) };
+      if (updateData.stage1Templates) {
+        settingsPayload.stage1Templates = updateData.stage1Templates;
+      }
+      if (updateData.stage2Templates) {
+        settingsPayload.stage2Templates = updateData.stage2Templates;
+      }
+    }
+
+    if (shouldNormalizeSettings) {
+      updateData.settings = normalizeConferenceSettings(settingsPayload, {
+        stage1TemplateId: Object.prototype.hasOwnProperty.call(updateData, 'stage1TemplateId')
+          ? updateData.stage1TemplateId
+          : conference.stage1TemplateId,
+        stage2TemplateId: Object.prototype.hasOwnProperty.call(updateData, 'stage2TemplateId')
+          ? updateData.stage2TemplateId
+          : conference.stage2TemplateId
+      });
+      if (!updateData.stage1TemplateId && updateData.settings.stage1Templates?.length) {
+        updateData.stage1TemplateId = updateData.settings.stage1Templates[0];
+      }
+      if (!updateData.stage2TemplateId && updateData.settings.stage2Templates?.length) {
+        updateData.stage2TemplateId = updateData.settings.stage2Templates[0];
+      }
+    }
+    delete updateData.stage1Templates;
+    delete updateData.stage2Templates;
 
     const previousState = conference.toJSON();
 
@@ -1093,6 +1240,18 @@ function hasFollowupSettingsChanged(previous, current) {
     return true;
   }
 
+  const prevStage1Templates = JSON.stringify(prevSettings.stage1Templates || []);
+  const currStage1Templates = JSON.stringify(currSettings.stage1Templates || []);
+  if (prevStage1Templates !== currStage1Templates) {
+    return true;
+  }
+
+  const prevStage2Templates = JSON.stringify(prevSettings.stage2Templates || []);
+  const currStage2Templates = JSON.stringify(currSettings.stage2Templates || []);
+  if (prevStage2Templates !== currStage2Templates) {
+    return true;
+  }
+
   return false;
 }
 
@@ -1106,6 +1265,19 @@ app.get('/api/templates', authenticateToken, async (req, res) => {
     res.json(templates);
   } catch (error) {
     console.error('Get templates error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/templates/:id', authenticateToken, async (req, res) => {
+  try {
+    const template = await EmailTemplate.findByPk(req.params.id);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    res.json(template);
+  } catch (error) {
+    console.error('Get template by id error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

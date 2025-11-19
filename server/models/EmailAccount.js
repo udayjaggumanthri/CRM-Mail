@@ -91,6 +91,14 @@ const EmailAccount = sequelize.define('EmailAccount', {
   errorMessage: {
     type: DataTypes.TEXT
   },
+  ownerId: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  isSystemAccount: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
   // Advanced Settings
   syncInterval: {
     type: DataTypes.INTEGER,
@@ -125,6 +133,8 @@ const EmailAccount = sequelize.define('EmailAccount', {
     { fields: ['isActive'] },
     { fields: ['isDefault'] },
     { fields: ['createdBy'] },
+    { fields: ['ownerId'] },
+    { fields: ['isSystemAccount'] },
     { fields: ['syncStatus'] },
     { fields: ['sendPriority'] }
   ]

@@ -133,6 +133,8 @@ EmailLog.belongsTo(Email, { foreignKey: 'emailId', as: 'email' });
 // Email Account relationships
 User.hasMany(EmailAccount, { foreignKey: 'createdBy', as: 'emailAccounts' });
 EmailAccount.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+User.hasMany(EmailAccount, { foreignKey: 'ownerId', as: 'ownedEmailAccounts' });
+EmailAccount.belongsTo(User, { foreignKey: 'ownerId', as: 'owner' });
 
 EmailAccount.hasMany(EmailFolder, { foreignKey: 'emailAccountId', as: 'folders' });
 EmailFolder.belongsTo(EmailAccount, { foreignKey: 'emailAccountId', as: 'emailAccount' });

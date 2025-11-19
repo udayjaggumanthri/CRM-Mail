@@ -12,13 +12,18 @@ import {
   Users,
   Shield,
   Inbox,
-  ChevronLeft,
-  ChevronRight,
-  CheckCircle2
+  CheckCircle2,
+  Zap,
+  Activity,
+  Clock,
+  Send,
+  AlertCircle,
+  Info
 } from 'lucide-react';
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import ImapSettings from './ImapSettings';
+import { useAuth } from '../contexts/AuthContext';
 
 const deriveSecurityOption = (securityValue, secureFlag, fallback = 'tls') => {
   if (typeof securityValue === 'string' && securityValue.length > 0) {
@@ -32,7 +37,7 @@ const deriveSecurityOption = (securityValue, secureFlag, fallback = 'tls') => {
 
 const boolFromSecurityOption = (option) => option !== 'none';
 
-const mapAccountToFormData = (account = {}) => ({
+const mapAccountToFormData = (account = {}, defaultOwnerId = '') => ({
   id: account.id,
   name: account.name || '',
   host: account.host || account.smtpHost || '',
@@ -41,8 +46,9 @@ const mapAccountToFormData = (account = {}) => ({
   username: account.username || account.smtpUsername || '',
   password: account.password || account.smtpPassword || '',
   fromEmail: account.fromEmail || account.email || '',
-  isSystem: Boolean(account.isSystem),
+  isSystemAccount: Boolean(account.isSystemAccount),
   allowUsers: account.allowUsers !== undefined ? Boolean(account.allowUsers) : true,
+  ownerId: account.ownerId || account.createdBy || defaultOwnerId || '',
   type: account.type || 'both',
   imapHost: account.imapHost || '',
   imapPort: account.imapPort || 993,
@@ -52,7 +58,7 @@ const mapAccountToFormData = (account = {}) => ({
   imapFolder: account.imapFolder || 'INBOX'
 });
 
-const mapFormDataToPayload = (formData) => {
+const mapFormDataToPayload = (formData, { canManageSystemAccount = false, defaultOwnerId = null } = {}) => {
   const port = Number(formData.port) || 587;
   const imapPort = Number(formData.imapPort) || 993;
   const smtpSecure = boolFromSecurityOption(formData.security);
@@ -72,8 +78,9 @@ const mapFormDataToPayload = (formData) => {
     smtpAuth: true,
     username: formData.username,
     smtpUsername: formData.username,
-    isSystem: Boolean(formData.isSystem),
+    isSystemAccount: canManageSystemAccount ? Boolean(formData.isSystemAccount) : false,
     allowUsers: Boolean(formData.allowUsers),
+    ownerId: formData.ownerId || defaultOwnerId || null,
     imapHost: formData.imapHost,
     imapPort,
     imapSecurity: formData.imapSecurity,
@@ -99,14 +106,42 @@ const Settings = () => {
   const [showAddSmtpModal, setShowAddSmtpModal] = useState(false);
   const [showEditSmtpModal, setShowEditSmtpModal] = useState(false);
   const [selectedSmtp, setSelectedSmtp] = useState(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(10); // 10 items per page for list view
+  const [showSwitchConfirm, setShowSwitchConfirm] = useState(false);
+  const [accountToSwitch, setAccountToSwitch] = useState(null);
+  const { user } = useAuth();
+  const currentUserId = user?.id || null;
+  const isCeo = (user?.role || '').toLowerCase() === 'ceo';
   const queryClient = useQueryClient();
 
   const { data: smtpAccounts, isLoading: smtpLoading } = useQuery('smtp-accounts', async () => {
     const response = await axios.get('/api/smtp-accounts');
     return response.data;
   });
+
+  // Fetch usage statistics for each account
+  const { data: usageStats, refetch: refetchUsageStats } = useQuery(
+    ['smtp-usage', smtpAccounts?.map(a => a.id)],
+    async () => {
+      if (!smtpAccounts || smtpAccounts.length === 0) return {};
+      const stats = {};
+      await Promise.all(
+        smtpAccounts.map(async (account) => {
+          try {
+            const response = await axios.get(`/api/smtp-accounts/${account.id}/usage`);
+            stats[account.id] = response.data;
+          } catch (error) {
+            console.error(`Failed to fetch usage for account ${account.id}:`, error);
+            stats[account.id] = null;
+          }
+        })
+      );
+      return stats;
+    },
+    {
+      enabled: !!smtpAccounts && smtpAccounts.length > 0,
+      refetchInterval: 30000 // Refetch every 30 seconds
+    }
+  );
 
   const addSmtpMutation = useMutation(async (smtpData) => {
     const response = await axios.post('/api/smtp-accounts', smtpData);
@@ -168,7 +203,7 @@ const Settings = () => {
   }, {
     onSuccess: () => {
       queryClient.invalidateQueries('smtp-accounts');
-      toast.success('SMTP priority updated');
+      queryClient.invalidateQueries('smtp-usage');
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to update priority');
@@ -215,6 +250,43 @@ const Settings = () => {
     });
   }, [smtpAccounts]);
 
+  const groupedSmtpAccounts = React.useMemo(() => {
+    const accountsArray = Array.isArray(sortedSmtpAccounts) ? sortedSmtpAccounts : [];
+    const shared = accountsArray.filter(account => account.isSystemAccount);
+    const myAccounts = accountsArray.filter(account => !account.isSystemAccount && account.ownerId === currentUserId);
+    const otherPrivate = accountsArray.filter(account => !account.isSystemAccount && account.ownerId && account.ownerId !== currentUserId);
+    return { shared, my: myAccounts, others: otherPrivate };
+  }, [sortedSmtpAccounts, currentUserId]);
+
+  const tableSections = React.useMemo(() => {
+    const sections = [];
+    if (groupedSmtpAccounts.shared.length > 0) {
+      sections.push({
+        key: 'shared',
+        label: 'Shared (System Accounts)',
+        description: 'Visible to everyone',
+        accounts: groupedSmtpAccounts.shared
+      });
+    }
+    if (groupedSmtpAccounts.my.length > 0) {
+      sections.push({
+        key: 'mine',
+        label: 'My Accounts',
+        description: 'Only visible to you',
+        accounts: groupedSmtpAccounts.my
+      });
+    }
+    if (isCeo && groupedSmtpAccounts.others.length > 0) {
+      sections.push({
+        key: 'others',
+        label: 'Team Members’ Private Accounts',
+        description: 'Visible to CEOs for oversight',
+        accounts: groupedSmtpAccounts.others
+      });
+    }
+    return sections;
+  }, [groupedSmtpAccounts, isCeo]);
+
   // Get currently active primary SMTP (the one being used)
   const activePrimarySmtp = React.useMemo(() => {
     return sortedSmtpAccounts.find(account => 
@@ -222,19 +294,30 @@ const Settings = () => {
     );
   }, [sortedSmtpAccounts]);
 
-  // Pagination logic
-  const totalPages = Math.ceil(sortedSmtpAccounts.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const paginatedAccounts = sortedSmtpAccounts.slice(startIndex, endIndex);
-
-  const handleSetPrimary = (accountId) => {
-    setPriorityMutation.mutate({ id: accountId, priority: 1 });
+  const handleSetPrimary = (account) => {
+    if (!isCeo) {
+      toast.error('Only CEOs can switch the primary follow-up account');
+      return;
+    }
+    if (activePrimarySmtp?.id === account.id) {
+      toast.info('This account is already the primary account');
+      return;
+    }
+    setAccountToSwitch(account);
+    setShowSwitchConfirm(true);
   };
 
-  const handleMovePriority = (account, direction) => {
-    const nextPriority = Math.max(1, (account.sendPriority || 1) + direction);
-    setPriorityMutation.mutate({ id: account.id, priority: nextPriority });
+  const confirmSwitchPrimary = () => {
+    if (accountToSwitch) {
+      setPriorityMutation.mutate({ id: accountToSwitch.id, priority: 1 }, {
+        onSuccess: () => {
+          refetchUsageStats();
+          toast.success(`"${accountToSwitch.name}" is now the primary account for follow-ups`);
+        }
+      });
+    }
+    setShowSwitchConfirm(false);
+    setAccountToSwitch(null);
   };
 
   const handleToggleActive = (account) => {
@@ -246,6 +329,9 @@ const Settings = () => {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-600">Manage system configuration and user accounts</p>
+      </div>
+      <div className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3">
+        Private accounts are only visible to you (and CEOs). System accounts are shared with the entire organization.
       </div>
 
       {/* Tabs */}
@@ -279,11 +365,47 @@ const Settings = () => {
               <h2 className="text-lg font-medium text-gray-900">SMTP Accounts</h2>
               <p className="text-sm text-gray-600">Configure email sending accounts</p>
               {activePrimarySmtp && (
-                <div className="mt-2 flex items-center space-x-2 text-sm">
-                  <CheckCircle2 className="h-4 w-4 text-green-500" />
-                  <span className="text-gray-600">
-                    Currently using: <span className="font-semibold text-gray-900">{activePrimarySmtp.name}</span> ({activePrimarySmtp.email})
-                  </span>
+                <div className="mt-3 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center">
+                        <Zap className="h-5 w-5 text-white" />
+                      </div>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <CheckCircle2 className="h-5 w-5 text-green-600" />
+                          <span className="text-sm font-semibold text-gray-900">Active for Follow-ups</span>
+                        </div>
+                        <p className="text-sm text-gray-700 mt-1">
+                          <span className="font-medium">{activePrimarySmtp.name}</span> ({activePrimarySmtp.email})
+                        </p>
+                        {usageStats && usageStats[activePrimarySmtp.id] && (
+                          <div className="flex items-center space-x-4 mt-2 text-xs text-gray-600">
+                            {usageStats[activePrimarySmtp.id].sentToday > 0 && (
+                              <span className="flex items-center space-x-1">
+                                <Send className="h-3 w-3" />
+                                <span>{usageStats[activePrimarySmtp.id].sentToday} sent today</span>
+                              </span>
+                            )}
+                            {usageStats[activePrimarySmtp.id].lastUsed && (
+                              <span className="flex items-center space-x-1">
+                                <Clock className="h-3 w-3" />
+                                <span>Last used: {new Date(usageStats[activePrimarySmtp.id].lastUsed).toLocaleString()}</span>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <Info className="h-4 w-4 text-gray-400" title="This account is used for all automated follow-up emails. Switching won't interrupt existing follow-ups." />
+                    </div>
+                  </div>
+                  {!isCeo && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      Only CEOs can switch the primary follow-up account.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -297,192 +419,183 @@ const Settings = () => {
           </div>
 
           {/* List View */}
-          <div className="bg-white rounded-lg shadow overflow-hidden">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
+          <div className="bg-white rounded-lg shadow overflow-x-auto">
+            <table className="min-w-[1100px] divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Visibility</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Host</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Priority</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {smtpLoading ? (
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Host</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Priority</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    <td colSpan="9" className="px-6 py-8 text-center">
+                      <div className="flex justify-center">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+                      </div>
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {smtpLoading ? (
-                    <tr>
-                      <td colSpan="8" className="px-6 py-8 text-center">
-                        <div className="flex justify-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : paginatedAccounts.length === 0 ? (
-                    <tr>
-                      <td colSpan="8" className="px-6 py-8 text-center text-gray-500">
-                        <Server className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                        <p>No SMTP accounts configured</p>
-                      </td>
-                    </tr>
-                  ) : (
-                    paginatedAccounts.map((account) => {
-                      const isCurrentlyActive = activePrimarySmtp?.id === account.id;
-                      return (
-                        <tr key={account.id} className={isCurrentlyActive ? 'bg-green-50' : 'hover:bg-gray-50'}>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            {isCurrentlyActive ? (
-                              <div className="flex items-center space-x-1">
-                                <CheckCircle2 className="h-4 w-4 text-green-500" />
-                                <span className="text-xs text-green-600 font-medium">Active</span>
-                              </div>
-                            ) : (
-                              <span className={`px-2 py-1 text-xs rounded-full ${
-                                account.sendPriority === 1 
-                                  ? 'bg-blue-100 text-blue-800' 
-                                  : account.sendPriority === 2
-                                  ? 'bg-purple-100 text-purple-700'
-                                  : 'bg-gray-100 text-gray-800'
-                              }`}>
-                                {account.sendPriority === 1 ? 'Primary' : account.sendPriority === 2 ? 'Secondary' : `Priority ${account.sendPriority}`}
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-gray-900">{account.name}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm text-gray-600">{account.email || account.fromEmail}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm text-gray-600">{account.smtpHost || account.host}:{account.smtpPort || account.port}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm text-gray-600">{account.sendPriority ?? '—'}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm text-gray-600">{account.type?.toUpperCase() || 'BOTH'}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <button
-                              onClick={() => handleToggleActive(account)}
-                              disabled={toggleActiveMutation.isLoading}
-                              className={`px-2 py-1 text-xs rounded ${
-                                account.isActive
-                                  ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                              }`}
-                            >
-                              {account.isActive ? 'Active' : 'Paused'}
-                            </button>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            <div className="flex items-center justify-end space-x-2">
-                              <button
-                                onClick={() => handleTestSmtp(account.id)}
-                                className="text-gray-400 hover:text-gray-600"
-                                title="Test Connection"
-                              >
-                                <TestTube className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() => handleEditSmtp(account)}
-                                className="text-gray-400 hover:text-gray-600"
-                                title="Edit"
-                              >
-                                <Edit className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() => deleteSmtpMutation.mutate(account.id)}
-                                className="text-gray-400 hover:text-red-600"
-                                title="Delete"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+                ) : tableSections.length === 0 ? (
+                  <tr>
+                    <td colSpan="9" className="px-6 py-8 text-center text-gray-500">
+                      <Server className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                      <p>No SMTP accounts configured or accessible</p>
+                    </td>
+                  </tr>
+                ) : (
+                  tableSections.map((section) => (
+                    <React.Fragment key={section.key}>
+                      <tr className="bg-gray-50/70">
+                        <td colSpan="9" className="px-6 py-2 text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                          <div className="flex items-center justify-between">
+                            <span>{section.label}</span>
+                            <span className="text-gray-400 normal-case font-normal">{section.description}</span>
+                          </div>
+                        </td>
+                      </tr>
+                      {section.accounts.map((account) => {
+                        const isCurrentlyActive = activePrimarySmtp?.id === account.id;
+                        const accountStats = usageStats?.[account.id];
+                        const isActive = account.isActive;
+                        const isSharedAccount = account.isSystemAccount;
+                        const isMine = account.ownerId === currentUserId;
+                        const ownerName = account.owner?.name || account.creator?.name || '';
+                        const visibilityLabel = isSharedAccount
+                          ? 'Shared (System)'
+                          : isMine
+                          ? 'My Account'
+                          : 'Private';
+                        const visibilityBadgeClass = isSharedAccount
+                          ? 'bg-blue-100 text-blue-800'
+                          : isMine
+                          ? 'bg-purple-100 text-purple-700'
+                          : 'bg-gray-100 text-gray-700';
+                        const canManageAccount = isCeo || (account.ownerId && account.ownerId === currentUserId);
+                        const canSetPrimary = isCeo && !isCurrentlyActive && isActive;
 
-          {/* Pagination */}
-          {!smtpLoading && sortedSmtpAccounts.length > 0 && totalPages > 1 && (
-            <div className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg">
-              <div className="flex flex-1 justify-between sm:hidden">
-                <button
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                  disabled={currentPage === 1}
-                  className="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  disabled={currentPage === totalPages}
-                  className="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Next
-                </button>
-              </div>
-              <div className="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm text-gray-700">
-                    Showing <span className="font-medium">{startIndex + 1}</span> to{' '}
-                    <span className="font-medium">{Math.min(endIndex, sortedSmtpAccounts.length)}</span> of{' '}
-                    <span className="font-medium">{sortedSmtpAccounts.length}</span> accounts
-                  </p>
-                </div>
-                <div>
-                  <nav className="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-                    <button
-                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                      disabled={currentPage === 1}
-                      className="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <ChevronLeft className="h-5 w-5" />
-                    </button>
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
-                      if (
-                        page === 1 ||
-                        page === totalPages ||
-                        (page >= currentPage - 1 && page <= currentPage + 1)
-                      ) {
                         return (
-                          <button
-                            key={page}
-                            onClick={() => setCurrentPage(page)}
-                            className={`relative inline-flex items-center px-4 py-2 text-sm font-semibold ${
-                              currentPage === page
-                                ? 'z-10 bg-primary-600 text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-600'
-                                : 'text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0'
-                            }`}
-                          >
-                            {page}
-                          </button>
+                          <tr key={account.id} className={isCurrentlyActive ? 'bg-green-50 border-l-4 border-l-green-500' : 'hover:bg-gray-50'}>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              {isCurrentlyActive ? (
+                                <div className="flex flex-col space-y-1">
+                                  <div className="flex items-center space-x-1">
+                                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                    <span className="text-xs text-green-600 font-semibold">Active for Follow-ups</span>
+                                  </div>
+                                  {accountStats && (
+                                    <div className="text-xs text-gray-500">
+                                      {accountStats.sentToday || 0} today
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="flex flex-col space-y-1">
+                                  <span className={`px-2 py-1 text-xs rounded-full inline-block ${
+                                    account.sendPriority === 1 
+                                      ? 'bg-blue-100 text-blue-800' 
+                                      : account.sendPriority === 2
+                                      ? 'bg-purple-100 text-purple-700'
+                                      : 'bg-gray-100 text-gray-800'
+                                  }`}>
+                                    {account.sendPriority === 1 ? 'Primary' : account.sendPriority === 2 ? 'Secondary' : `Priority ${account.sendPriority}`}
+                                  </span>
+                                  {!isActive && (
+                                    <span className="text-xs text-gray-400">Paused</span>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="text-sm font-medium text-gray-900">{account.name}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${visibilityBadgeClass}`}>
+                                {visibilityLabel}
+                              </div>
+                              {!isSharedAccount && !isMine && ownerName && (
+                                <p className="text-[11px] text-gray-500 mt-1">Owner: {ownerName}</p>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="text-sm text-gray-600">{account.email || account.fromEmail}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="text-sm text-gray-600">{account.smtpHost || account.host}:{account.smtpPort || account.port}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="text-sm text-gray-600">{account.sendPriority ?? '—'}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="text-sm text-gray-600">{account.type?.toUpperCase() || 'BOTH'}</div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <button
+                                onClick={() => canManageAccount && handleToggleActive(account)}
+                                disabled={toggleActiveMutation.isLoading || !canManageAccount}
+                                className={`px-2 py-1 text-xs rounded ${
+                                  account.isActive
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-gray-100 text-gray-500'
+                                } ${(!canManageAccount || toggleActiveMutation.isLoading) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-200'}`}
+                              >
+                                {account.isActive ? 'Active' : 'Paused'}
+                              </button>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <div className="flex items-center justify-end space-x-2">
+                                {canSetPrimary && (
+                                  <button
+                                    onClick={() => handleSetPrimary(account)}
+                                    className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                                    title="Set as Primary for Follow-ups"
+                                  >
+                                    <Zap className="h-4 w-4" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => handleTestSmtp(account.id)}
+                                  className="text-gray-400 hover:text-gray-600"
+                                  title="Test Connection"
+                                >
+                                  <TestTube className="h-4 w-4" />
+                                </button>
+                                {canManageAccount && (
+                                  <>
+                                    <button
+                                      onClick={() => handleEditSmtp(account)}
+                                      className="text-gray-400 hover:text-gray-600"
+                                      title="Edit"
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => deleteSmtpMutation.mutate(account.id)}
+                                      className="text-gray-400 hover:text-red-600"
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
                         );
-                      } else if (page === currentPage - 2 || page === currentPage + 2) {
-                        return <span key={page} className="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700">...</span>;
-                      }
-                      return null;
-                    })}
-                    <button
-                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                      disabled={currentPage === totalPages}
-                      className="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <ChevronRight className="h-5 w-5" />
-                    </button>
-                  </nav>
-                </div>
-              </div>
-            </div>
-          )}
+                      })}
+                    </React.Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -578,7 +691,106 @@ const Settings = () => {
                     onSubmit={(data) => addSmtpMutation.mutate(data)}
                     onCancel={() => setShowAddSmtpModal(false)}
                     loading={addSmtpMutation.isLoading}
+                    canManageSystemAccount={isCeo}
+                    currentUser={user}
                   />
+                </Dialog.Panel>
+              </Transition.Child>
+            </div>
+          </div>
+        </Dialog>
+      </Transition>
+
+      {/* Switch Primary Account Confirmation Modal */}
+      <Transition appear show={showSwitchConfirm} as={Fragment}>
+        <Dialog as="div" className="relative z-50" onClose={() => setShowSwitchConfirm(false)}>
+          <Transition.Child
+            as={Fragment}
+            enter="ease-out duration-300"
+            enterFrom="opacity-0"
+            enterTo="opacity-100"
+            leave="ease-in duration-200"
+            leaveFrom="opacity-100"
+            leaveTo="opacity-0"
+          >
+            <div className="fixed inset-0 bg-black bg-opacity-25" />
+          </Transition.Child>
+
+          <div className="fixed inset-0 overflow-y-auto">
+            <div className="flex min-h-full items-center justify-center p-4 text-center">
+              <Transition.Child
+                as={Fragment}
+                enter="ease-out duration-300"
+                enterFrom="opacity-0 scale-95"
+                enterTo="opacity-100 scale-100"
+                leave="ease-in duration-200"
+                leaveFrom="opacity-100 scale-100"
+                leaveTo="opacity-0 scale-95"
+              >
+                <Dialog.Panel className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
+                  <Dialog.Title as="h3" className="text-lg font-medium leading-6 text-gray-900 mb-4 flex items-center space-x-2">
+                    <Zap className="h-5 w-5 text-blue-600" />
+                    <span>Switch Primary SMTP Account</span>
+                  </Dialog.Title>
+                  
+                  <div className="space-y-4">
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <div className="flex items-start space-x-3">
+                        <Info className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                        <div className="text-sm text-gray-700">
+                          <p className="font-medium text-gray-900 mb-1">Safe to Switch</p>
+                          <p>Switching the primary account won't interrupt existing follow-up sequences. Future emails will automatically use the new primary account.</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-sm text-gray-600">Current Primary:</p>
+                      <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                        <p className="font-medium text-gray-900">{activePrimarySmtp?.name}</p>
+                        <p className="text-xs text-gray-500">{activePrimarySmtp?.email}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-sm text-gray-600">New Primary:</p>
+                      <div className="bg-green-50 rounded-lg p-3 border border-green-200">
+                        <p className="font-medium text-gray-900">{accountToSwitch?.name}</p>
+                        <p className="text-xs text-gray-500">{accountToSwitch?.email}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end space-x-3 mt-6 pt-4 border-t border-gray-200">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSwitchConfirm(false);
+                        setAccountToSwitch(null);
+                      }}
+                      className="btn-secondary"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={confirmSwitchPrimary}
+                      disabled={setPriorityMutation.isLoading}
+                      className="btn-primary flex items-center space-x-2"
+                    >
+                      {setPriorityMutation.isLoading ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                          <span>Switching...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="h-4 w-4" />
+                          <span>Switch to Primary</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </Dialog.Panel>
               </Transition.Child>
             </div>
@@ -622,6 +834,8 @@ const Settings = () => {
                     onSubmit={(data) => updateSmtpMutation.mutate({ id: selectedSmtp.id, data })}
                     onCancel={() => setShowEditSmtpModal(false)}
                     loading={updateSmtpMutation.isLoading}
+                    canManageSystemAccount={isCeo}
+                    currentUser={user}
                   />
                 </Dialog.Panel>
               </Transition.Child>
@@ -633,24 +847,25 @@ const Settings = () => {
   );
 };
 
-  const SmtpForm = ({ onSubmit, onCancel, loading, initialData }) => {
-  const [formData, setFormData] = useState(mapAccountToFormData());
+const SmtpForm = ({ onSubmit, onCancel, loading, initialData, canManageSystemAccount, currentUser }) => {
+  const defaultOwnerId = currentUser?.id || '';
+  const [formData, setFormData] = useState(mapAccountToFormData(initialData || {}, defaultOwnerId));
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
   const [showImapPassword, setShowImapPassword] = useState(false);
 
   useEffect(() => {
     if (initialData) {
-      setFormData(mapAccountToFormData(initialData));
+      setFormData(mapAccountToFormData(initialData, defaultOwnerId));
     } else {
-      setFormData(mapAccountToFormData());
+      setFormData(mapAccountToFormData({}, defaultOwnerId));
     }
     setShowSmtpPassword(false);
     setShowImapPassword(false);
-  }, [initialData]);
+  }, [initialData, defaultOwnerId]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSubmit(mapFormDataToPayload(formData));
+    onSubmit(mapFormDataToPayload(formData, { canManageSystemAccount, defaultOwnerId }));
   };
 
   const handleChange = (e) => {
@@ -777,20 +992,23 @@ const Settings = () => {
           placeholder="your-email@gmail.com"
         />
       </div>
+      <input type="hidden" name="ownerId" value={formData.ownerId || defaultOwnerId} />
       
       <div className="space-y-3">
-        <div className="flex items-center">
-          <input
-            type="checkbox"
-            name="isSystem"
-            checked={Boolean(formData.isSystem)}
-            onChange={handleChange}
-            className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-          />
-          <label className="ml-2 block text-sm text-gray-900">
-            System Account (can be used by all users)
-          </label>
-        </div>
+        {canManageSystemAccount && (
+          <div className="flex items-center">
+            <input
+              type="checkbox"
+              name="isSystemAccount"
+              checked={Boolean(formData.isSystemAccount)}
+              onChange={handleChange}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+            />
+            <label className="ml-2 block text-sm text-gray-900">
+              System Account (shared with everyone)
+            </label>
+          </div>
+        )}
         
         <div className="flex items-center">
           <input

@@ -1,8 +1,8 @@
 # Quick Deployment Guide
 
-## ⚠️ IMPORTANT: After `git pull`, you MUST restart the frontend server!
+## ⚠️ IMPORTANT: After `git pull`, you MUST restart the frontend server and guard the database
 
-The React dev server (`npm start`) does NOT automatically detect changes from `git pull`. You must restart it.
+The React dev server (`npm start`) does NOT automatically detect changes from `git pull`, and the backend no longer auto-syncs schemas in production. Always restart both services and run migrations manually (if required) after taking a DB backup.
 
 ## Quick Steps:
 
@@ -16,7 +16,16 @@ git pull origin main
 - Press `Ctrl+C` in the frontend client window
 - Wait for both to stop
 
-### 3. Restart Application
+### 3. Safeguard the database
+- Take a fresh backup (pg_dump, cloud snapshot, etc.)
+- Apply pending migrations **only if needed**:
+  ```bash
+  cd server
+  NODE_ENV=production npm run migrate
+  cd ..
+  ```
+
+### 4. Restart Application
 ```bash
 # Windows
 start-windows.bat
@@ -27,7 +36,7 @@ cd server && node index.js
 cd client && npm start
 ```
 
-### 4. Clear Browser Cache (if UI doesn't update)
+### 5. Clear Browser Cache (if UI doesn't update)
 - Press `Ctrl+Shift+R` (hard refresh)
 - Or `Ctrl+Shift+Delete` → Clear "Cached images and files"
 
@@ -37,7 +46,7 @@ The webpack dev server (`npm start`) watches files for changes, but it only dete
 
 ## Automated Deployment
 
-Use the deployment script:
+Use the deployment script (it now prompts for backups/migrations before restarting):
 ```bash
 # Windows
 deploy-windows.bat
