@@ -313,6 +313,8 @@ const CampaignManagement = () => {
           templates={templates}
           smtpAccounts={smtpAccounts}
           conferences={conferences}
+          currentUserId={currentUserId}
+          isCeo={isCeo}
         />
       )}
 
@@ -442,7 +444,14 @@ const CampaignCard = ({ campaign, onAction, getStatusColor, getStatusIcon }) => 
 };
 
 // Enhanced Multi-Step Campaign Creation Modal
-const CreateCampaignModal = ({ onClose, templates, smtpAccounts, conferences }) => {
+const CreateCampaignModal = ({
+  onClose,
+  templates,
+  smtpAccounts = [],
+  conferences,
+  currentUserId = null,
+  isCeo = false
+}) => {
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState({
     // Step 1: Basic Information
@@ -519,6 +528,14 @@ const CreateCampaignModal = ({ onClose, templates, smtpAccounts, conferences }) 
       }
     }
   );
+
+  const groupedSmtpAccounts = React.useMemo(() => {
+    const accountsArray = Array.isArray(smtpAccounts) ? smtpAccounts : [];
+    const shared = accountsArray.filter(account => account.isSystemAccount);
+    const mine = accountsArray.filter(account => !account.isSystemAccount && account.ownerId === currentUserId);
+    const others = accountsArray.filter(account => !account.isSystemAccount && account.ownerId && account.ownerId !== currentUserId);
+    return { shared, mine, others };
+  }, [smtpAccounts, currentUserId]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
