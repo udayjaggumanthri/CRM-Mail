@@ -11,33 +11,16 @@ const initDatabase = async () => {
     console.log('📊 Database: crmdb');
     console.log('👤 User: root');
 
-    const isProduction = process.env.NODE_ENV === 'production';
-    const allowSchemaBootstrap =
-      !isProduction || process.env.ALLOW_SCHEMA_BOOTSTRAP === 'true';
-    const allowAutoSync =
-      !isProduction || process.env.AUTO_DB_SYNC === 'true';
-    const allowAutoSeed =
-      !isProduction || process.env.ALLOW_AUTO_SEED === 'true';
+    // Ensure legacy databases have the ownership columns before syncing models
+    await ensureEmailAccountOwnershipColumns(sequelize);
 
-    if (allowSchemaBootstrap) {
-      await ensureEmailAccountOwnershipColumns(sequelize);
-    } else {
-      console.log('ℹ️ Skipping automatic schema bootstrap (production safeguard). Run migrations manually if needed.');
-    }
+    // Sync all models (create tables if they don't exist, preserve existing data)
+    await sequelize.sync({ force: false }); // Set to false to preserve existing data
+    console.log('✅ Database synchronized successfully.');
 
-    if (allowAutoSync) {
-      await sequelize.sync({ force: false }); // Set to false to preserve existing data
-      console.log('✅ Database synchronized successfully.');
-    } else {
-      console.log('ℹ️ Skipping sequelize.sync. Apply migrations manually before starting the server.');
-    }
-
-    if (allowAutoSeed) {
-      await seedInitialData();
-      console.log('✅ Initial data seeded successfully.');
-    } else {
-      console.log('ℹ️ Auto-seed disabled. Run seed script manually if this is a brand-new environment.');
-    }
+    // Seed initial data
+    await seedInitialData();
+    console.log('✅ Initial data seeded successfully.');
 
     return true;
   } catch (error) {

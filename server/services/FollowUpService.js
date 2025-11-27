@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
+const { formatEmailHtml, logEmailHtmlPayload } = require('../utils/emailHtmlFormatter');
 
 class FollowUpService {
   constructor() {
@@ -307,11 +308,15 @@ class FollowUpService {
         }
       });
 
+      const formattedBodyHtml = formatEmailHtml(body);
+      logEmailHtmlPayload('legacy-follow-up', formattedBodyHtml);
+      const htmlPayload = formattedBodyHtml || body;
+
       const info = await transporter.sendMail({
         from: smtpAccount.fromEmail,
         to: to,
         subject: subject,
-        html: body
+        html: htmlPayload
       });
 
       return {

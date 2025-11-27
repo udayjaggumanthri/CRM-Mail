@@ -2,6 +2,7 @@ const { EmailAccount } = require('../models');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
+const { formatEmailHtml, logEmailHtmlPayload } = require('../utils/emailHtmlFormatter');
 
 class SMTPManagementService {
   constructor() {
@@ -324,12 +325,17 @@ class SMTPManagementService {
         const transporter = this.getTransporter(accountId);
       }
 
+      const formattedBodyHtml = formatEmailHtml(emailData.bodyHtml || emailData.bodyText || '');
+      logEmailHtmlPayload('smtp-management', formattedBodyHtml);
+      const htmlPayload = formattedBodyHtml || emailData.bodyHtml || '';
+      const textPayload = emailData.bodyText || (htmlPayload ? htmlPayload.replace(/<[^>]*>/g, '') : '');
+
       const mailOptions = {
         from: `${account.fromName} <${account.fromEmail}>`,
         to: emailData.to,
         subject: emailData.subject,
-        html: emailData.bodyHtml,
-        text: emailData.bodyText,
+        html: htmlPayload || textPayload,
+        text: textPayload,
         replyTo: account.replyTo
       };
 

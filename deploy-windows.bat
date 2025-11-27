@@ -7,14 +7,6 @@ echo ========================================
 echo   Conference CRM Deployment Script
 echo ========================================
 echo.
-echo ⚠️  Tip: Enable maintenance mode or notify users before deploying.
-echo.
-set /p BACKUP_CONFIRM=Have you created a fresh backup of the production database? (yes/no): 
-if /I not "%BACKUP_CONFIRM%"=="yes" (
-    echo Deployment aborted. Please back up the database first.
-    pause
-    exit /b 1
-)
 
 REM Step 1: Pull latest code
 echo [1/5] Pulling latest code from git...
@@ -48,40 +40,23 @@ if errorlevel 1 (
 )
 cd ..
 
-REM Step 3: Offer to run migrations
+REM Step 3: Clear build cache
 echo.
-set /p RUN_MIGRATIONS=Run pending database migrations now? (y/N): 
-if /I "%RUN_MIGRATIONS%"=="y" (
-    echo [3/6] Running migrations...
-    cd server
-    call npm run migrate
-    if errorlevel 1 (
-        echo ERROR: Migrations failed. Resolve issues before restarting.
-        pause
-        exit /b 1
-    )
-    cd ..
-) else (
-    echo Skipping migrations. Run "cd server && npm run migrate" manually if needed.
-)
-
-REM Step 4: Clear build cache
-echo.
-echo [4/6] Clearing build cache...
+echo [3/5] Clearing build cache...
 if exist client\build rmdir /s /q client\build
 if exist client\node_modules\.cache rmdir /s /q client\node_modules\.cache
 if exist server\node_modules\.cache rmdir /s /q server\node_modules\.cache
 
-REM Step 5: Clear browser cache markers
+REM Step 4: Clear browser cache markers
 echo.
-echo [5/6] Clearing cache markers...
+echo [4/5] Clearing cache markers...
 REM Touch index.html to trigger cache clear
 copy /b client\public\index.html +,,
 echo Cache cleared
 
-REM Step 6: Restart instructions
+REM Step 5: Restart instructions
 echo.
-echo [6/6] Deployment script complete!
+echo [5/5] Deployment script complete!
 echo.
 echo ========================================
 echo   IMPORTANT: Restart Required

@@ -1,10 +1,55 @@
 const cron = require('node-cron');
-const { FollowUpJob, Client, Conference, EmailTemplate, EmailAccount } = require('../models');
+const { FollowUpJob, Client, Conference, EmailTemplate, EmailAccount, Email } = require('../models');
 const EmailService = require('./EmailService');
 const TemplateEngine = require('./TemplateEngine');
 const { Op } = require('sequelize');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 const { normalizeEmailList } = require('../utils/emailListUtils');
+const { formatEmailHtml, logEmailHtmlPayload } = require('../utils/emailHtmlFormatter');
+const stripHtml = (input = '') => input.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+const formatDateForQuote = (dateInput) => {
+  const date = dateInput ? new Date(dateInput) : new Date();
+  return date.toLocaleString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+};
+
+const buildQuotedHtml = (email) => {
+  if (!email) {
+    return '';
+  }
+
+  const sentAt = formatDateForQuote(email.date || email.createdAt);
+  const fromLine = email.from || 'our team';
+  const previousHtml = email.bodyHtml || '';
+  const previousText = email.bodyText ? `<p style="margin:0;">${email.bodyText}</p>` : '';
+
+  return `
+    <div style="margin-top: 16px; padding-left: 16px; border-left: 3px solid #d1d5db; color: #4b5563; font-size: 14px;">
+      <p style="margin: 0 0 8px 0;">On ${sentAt}, ${fromLine} wrote:</p>
+      <div>${previousHtml || previousText}</div>
+    </div>
+  `;
+};
+
+const buildQuotedText = (email) => {
+  if (!email) {
+    return '';
+  }
+
+  const sentAt = formatDateForQuote(email.date || email.createdAt);
+  const fromLine = email.from || 'our team';
+  const previousText = email.bodyText || stripHtml(email.bodyHtml || '');
+
+  return `---- On ${sentAt}, ${fromLine} wrote ----\n${previousText}`;
+};
 
 const getTemplateIdForAttempt = (sequence, attemptIndex, fallbackId) => {
   if (!Array.isArray(sequence) || sequence.length === 0) {
@@ -129,6 +174,31 @@ class EmailJobScheduler {
 
   async sendFollowUpEmail(job) {
     try {
+      // CRITICAL: Reload job to get latest settings (threadRootMessageId from previous emails)
+      // Reload with associations to preserve template, client, and conference
+      // This ensures we have the most up-to-date threading information before processing
+      await job.reload({
+        include: [
+          { model: Client, as: 'client' },
+          { model: Conference, as: 'conference' },
+          { model: EmailTemplate, as: 'template' }
+        ]
+      });
+      
+      // Ensure settings is an object (handle JSONB parsing)
+      if (!job.settings || typeof job.settings !== 'object') {
+        job.settings = job.settings ? (typeof job.settings === 'string' ? JSON.parse(job.settings) : {}) : {};
+      }
+      
+      // Log current job settings for debugging
+      console.log(`🔍 [Threading Debug] Job ${job.id} (attempt ${job.currentAttempt + 1}) settings:`, {
+        threadRootMessageId: job.settings?.threadRootMessageId ? job.settings.threadRootMessageId.substring(0, 30) + '...' : 'null',
+        currentAttempt: job.currentAttempt,
+        stage: job.stage,
+        settingsType: typeof job.settings,
+        settingsKeys: Object.keys(job.settings || {})
+      });
+      
       // IMPORTANT: Reload client to get latest status (prevents race conditions with stale data)
       const freshClient = await Client.findByPk(job.clientId);
       if (!freshClient) {
@@ -136,8 +206,28 @@ class EmailJobScheduler {
         return;
       }
       
+      // CRITICAL: After reload, associations might be lost - reload them if needed
       const { conference } = job;
       let activeTemplate = job.template || null;
+      
+      // If template is not loaded after reload, load it explicitly
+      if (!activeTemplate && job.templateId) {
+        console.log(`⚠️  [Template] Template not loaded after reload, loading explicitly: ${job.templateId}`);
+        activeTemplate = await EmailTemplate.findByPk(job.templateId);
+        if (!activeTemplate) {
+          console.error(`❌ [Template] Template ${job.templateId} not found for job ${job.id}`);
+          throw new Error(`Template ${job.templateId} not found for job ${job.id}`);
+        }
+        console.log(`✅ [Template] Successfully loaded template: ${activeTemplate.name} (ID: ${activeTemplate.id})`);
+      }
+      
+      if (!activeTemplate) {
+        console.error(`❌ [Template] No template found for job ${job.id} (templateId: ${job.templateId || 'null'})`);
+        throw new Error(`No template found for job ${job.id} (templateId: ${job.templateId || 'null'})`);
+      }
+      
+      console.log(`✅ [Template] Using template: ${activeTemplate.name} (ID: ${activeTemplate.id}) for job ${job.id}`);
+      
       const attemptIndex = job.currentAttempt || 0;
 
       let conferenceContext = conference || null;
@@ -214,6 +304,15 @@ class EmailJobScheduler {
       // Diagnostic logging: Verify which SMTP account is being used
       console.log(`📧 [SMTP Selection] Using account: "${smtpAccount.name}" (${smtpAccount.email}) | Priority: ${smtpAccount.sendPriority} | Job ID: ${job.id}`);
 
+      // Ensure we have a template - try multiple sources
+      if (!activeTemplate && job.templateId) {
+        console.log(`📋 [Template] Loading template ${job.templateId} for job ${job.id}`);
+        activeTemplate = await EmailTemplate.findByPk(job.templateId);
+        if (activeTemplate) {
+          console.log(`✅ [Template] Loaded template: ${activeTemplate.name}`);
+        }
+      }
+
       const stageSequenceFromJob = Array.isArray(job.settings?.stageTemplateSequence)
         ? job.settings.stageTemplateSequence.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
         : [];
@@ -222,14 +321,25 @@ class EmailJobScheduler {
         : getConferenceStageSequence(conferenceContext || conference, job.stage);
       const desiredTemplateId = getTemplateIdForAttempt(stageSequence, attemptIndex, activeTemplate?.id);
       if (desiredTemplateId && (!activeTemplate || activeTemplate.id !== desiredTemplateId)) {
+        console.log(`📋 [Template] Resolving template for attempt ${attemptIndex}: ${desiredTemplateId}`);
         const resolvedTemplate = await EmailTemplate.findByPk(desiredTemplateId);
         if (resolvedTemplate) {
           activeTemplate = resolvedTemplate;
+          console.log(`✅ [Template] Resolved to template: ${resolvedTemplate.name}`);
+        } else {
+          console.warn(`⚠️  [Template] Template ${desiredTemplateId} not found`);
         }
       }
 
       if (!activeTemplate) {
-        console.warn(`⚠️  No template available for job ${job.id}. Skipping send.`);
+        console.error(`❌ [Template] No template available for job ${job.id}. Job details:`, {
+          jobId: job.id,
+          templateId: job.templateId,
+          stage: job.stage,
+          hasJobTemplate: !!job.template,
+          stageSequence: stageSequence,
+          desiredTemplateId: desiredTemplateId
+        });
         return;
       }
 
@@ -241,25 +351,31 @@ class EmailJobScheduler {
         conferenceContext?.id || conference?.id
       );
 
-      const renderedSubject = renderedTemplate.subject && renderedTemplate.subject.trim()
-        ? renderedTemplate.subject
-        : activeTemplate.subject;
+      // Use the exact subject from the template - no modifications or prefixes
+      let templateSubject = renderedTemplate.subject && renderedTemplate.subject.trim()
+        ? renderedTemplate.subject.trim()
+        : (activeTemplate.subject && activeTemplate.subject.trim() ? activeTemplate.subject.trim() : '');
 
-      let finalSubject = renderedSubject;
-      const storedThreadSubject = job.settings?.threadSubject;
-      if (storedThreadSubject && storedThreadSubject.trim()) {
-        finalSubject = storedThreadSubject.trim();
-      }
-
-      if (!finalSubject || !finalSubject.trim()) {
+      if (!templateSubject) {
         throw new Error(`Email subject cannot be empty for template ${activeTemplate.id}`);
       }
 
-      console.log(`📧 Sending follow-up with subject: "${finalSubject}"`);
+      // Get threading headers from previous emails
+      // NOTE: Job was already reloaded at the start of this function (line 136) to get latest settings
+      // Build proper threading chain: use most recent email's messageId as inReplyTo
+      // and build References chain with all previous message IDs
+      // Thread emails from the same job/stage together using threadRootMessageId
+      const threadRootMessageId = job.settings?.threadRootMessageId; // May be set from initial email when client was added
+
+      // USER REQUIREMENT: Each follow-up keeps the exact subject defined on its template
+      // We'll quote the previous email content inside the body so recipients can see the history
+      const finalSubject = templateSubject;
+      console.log(`📧 [Threading] Follow-up email #${job.currentAttempt + 1} - Using template subject: "${finalSubject}"`);
+
+      console.log(`📧 Sending follow-up with subject: "${finalSubject}" (Template: ${activeTemplate.name}, Stage: ${job.stage})`);
 
       // Send email using nodemailer directly
       const nodemailer = require('nodemailer');
-      const { Email } = require('../models');
       
       // Create transporter for this SMTP account
       const { decryptEmailPassword } = require('../utils/passwordUtils');
@@ -272,50 +388,86 @@ class EmailJobScheduler {
           pass: decryptEmailPassword(smtpAccount.smtpPassword)
         }
       });
-
-      // Get threading headers from previous emails
-      // Build proper threading chain: use most recent email's messageId as inReplyTo
-      // and build References chain with all previous message IDs
-      const threadRootMessageId = job.settings?.threadRootMessageId;
       const threadingHeaders = {};
       
+      // CRITICAL FIX: Build proper threading headers to ensure ALL follow-ups are in ONE thread
+      // Strategy:
+      // 1. If threadRootMessageId exists, find ALL emails in this thread from database
+      // 2. Set In-Reply-To to the most recent email in the thread
+      // 3. Set References to the full chain: root + all messageIds in chronological order
+      // 4. This ensures Gmail threads all emails together even with different subjects
+      
       if (threadRootMessageId) {
-        // Find the most recent email sent to this client (for inReplyTo)
-        // and build References chain with all emails in the thread
-        const previousEmails = await Email.findAll({
+        // This is a subsequent email - find ALL emails in this thread from database
+        // Query for emails that are part of this thread (by messageId, inReplyTo, or references)
+        const allThreadEmails = await Email.findAll({
           where: {
             clientId: freshClient.id,
             isSent: true,
-            status: 'sent'
+            status: 'sent',
+            [Op.or]: [
+              { messageId: threadRootMessageId },
+              { inReplyTo: threadRootMessageId },
+              { references: { [Op.like]: `%${threadRootMessageId}%` } }
+            ]
           },
           order: [['createdAt', 'ASC']],
-          attributes: ['messageId', 'inReplyTo', 'references'],
-          limit: 50 // Reasonable limit for thread chain
+          attributes: ['messageId', 'inReplyTo', 'references', 'createdAt'],
+          limit: 50
         });
 
-        if (previousEmails.length > 0) {
-          // Use the most recent email's messageId as inReplyTo
-          const mostRecentEmail = previousEmails[previousEmails.length - 1];
+        if (allThreadEmails.length > 0) {
+          // Find the most recent email in the thread (last in chronological order)
+          const mostRecentEmail = allThreadEmails[allThreadEmails.length - 1];
           threadingHeaders.inReplyTo = mostRecentEmail.messageId;
 
-          // Build References chain: start with root, then add all previous messageIds
+          // Build References chain: root + all messageIds in chronological order
           const referencesChain = [threadRootMessageId];
-          previousEmails.forEach(email => {
-            if (email.messageId && !referencesChain.includes(email.messageId)) {
+          allThreadEmails.forEach(email => {
+            if (email.messageId && email.messageId !== threadRootMessageId && !referencesChain.includes(email.messageId)) {
               referencesChain.push(email.messageId);
             }
           });
           threadingHeaders.references = referencesChain.join(' ');
 
-          console.log(`🔗 [Threading] Preserving thread - Root: ${threadRootMessageId.substring(0, 30)}... | InReplyTo: ${mostRecentEmail.messageId.substring(0, 30)}... | Chain length: ${referencesChain.length}`);
+          console.log(`🔗 [Threading] Subsequent email - Root: ${threadRootMessageId.substring(0, 30)}... | InReplyTo: ${mostRecentEmail.messageId.substring(0, 30)}... | Chain: ${referencesChain.length} emails`);
         } else {
-          // Fallback: use root messageId if no previous emails found
+          // Thread root exists but no emails found yet - this shouldn't happen, but handle it
+          // Reference the root email directly
           threadingHeaders.inReplyTo = threadRootMessageId;
           threadingHeaders.references = threadRootMessageId;
-          console.log(`🔗 [Threading] Using root messageId (no previous emails found): ${threadRootMessageId.substring(0, 50)}...`);
+          console.log(`🔗 [Threading] Thread root exists but no emails found - using root as InReplyTo`);
         }
       } else {
-        console.log(`⚠️  [Threading] No threadRootMessageId found in job settings - this is the first email in thread`);
+        // This is the FIRST follow-up email - no threading headers needed
+        // The threadRootMessageId will be set after this email is sent
+        console.log(`🔗 [Threading] First follow-up email - no threading headers (will set thread root after send)`);
+      }
+
+      const formattedBodyHtml = formatEmailHtml(renderedTemplate.bodyHtml || '');
+      logEmailHtmlPayload('follow-up', formattedBodyHtml);
+
+      const previousEmailForQuote = await Email.findOne({
+        where: {
+          clientId: freshClient.id,
+          isSent: true,
+          status: 'sent'
+        },
+        order: [['createdAt', 'DESC']]
+      });
+
+      let finalBodyHtml = formattedBodyHtml;
+      let finalBodyText = renderedTemplate.bodyText || stripHtml(renderedTemplate.bodyHtml || '');
+
+      if (previousEmailForQuote) {
+        const quotedHtml = buildQuotedHtml(previousEmailForQuote);
+        const quotedText = buildQuotedText(previousEmailForQuote);
+        if (quotedHtml) {
+          finalBodyHtml = `${formattedBodyHtml}<div style="margin: 20px 0;"></div>${quotedHtml}`;
+        }
+        if (quotedText) {
+          finalBodyText = `${finalBodyText}\n\n${quotedText}`;
+        }
       }
 
       // Send the email with threading headers
@@ -323,10 +475,17 @@ class EmailJobScheduler {
         from: `${smtpAccount.name || 'Conference CRM'} <${smtpAccount.email}>`,
         to: freshClient.email,
         subject: finalSubject,
-        text: renderedTemplate.bodyText,
-        html: renderedTemplate.bodyHtml,
+        text: finalBodyText,
+        html: finalBodyHtml,
         ...threadingHeaders
       };
+      
+      // CRITICAL DEBUG: Log the final subject being sent and verify it's correct
+      console.log(`📧 [Subject Debug] ==========================================`);
+      console.log(`📧 [Subject Debug] Final subject being sent: "${finalSubject}"`);
+      console.log(`📧 [Subject Debug] Template subject was: "${templateSubject}"`);
+      console.log(`📧 [Subject Debug] Thread root exists: ${!!threadRootMessageId}`);
+      console.log(`📧 [Subject Debug] ==========================================`);
 
       const conferenceFollowupCc = normalizeEmailList(conferenceContext?.settings?.followupCC);
       if (conferenceFollowupCc.length > 0) {
@@ -339,15 +498,34 @@ class EmailJobScheduler {
         mailOptions.attachments = normalizedAttachments;
       }
 
-      const mailResult = await transporter.sendMail(mailOptions);
+      // Log mail options (without sensitive data) for debugging
+      console.log(`📤 [Email Send] Preparing to send email:`, {
+        to: mailOptions.to,
+        subject: mailOptions.subject,
+        hasHtml: !!mailOptions.html,
+        hasText: !!mailOptions.text,
+        hasAttachments: normalizedAttachments.length > 0,
+        hasInReplyTo: !!mailOptions.inReplyTo,
+        hasReferences: !!mailOptions.references
+      });
+
+      let mailResult;
+      try {
+        mailResult = await transporter.sendMail(mailOptions);
+        console.log(`✅ [Email Send] Nodemailer accepted email: ${mailResult.messageId}`);
+      } catch (sendError) {
+        console.error(`❌ [Email Send] Nodemailer error:`, sendError.message);
+        console.error(`❌ [Email Send] Full error:`, sendError);
+        throw sendError; // Re-throw to be caught by outer try-catch
+      }
 
       // Create email record in database
       await Email.create({
         from: smtpAccount.email,
         to: freshClient.email,
         subject: finalSubject,
-        bodyHtml: renderedTemplate.bodyHtml,
-        bodyText: renderedTemplate.bodyText,
+        bodyHtml: finalBodyHtml,
+        bodyText: finalBodyText,
         date: new Date(),
         clientId: freshClient.id,
         conferenceId: conferenceContext?.id || conference?.id,
@@ -363,17 +541,42 @@ class EmailJobScheduler {
 
       console.log(`✅ Follow-up email sent: ${mailResult.messageId}`);
 
-      // Persist thread metadata (root + subject) if not already stored
-      if (!job.settings?.threadRootMessageId || !job.settings?.threadSubject) {
-        const updatedSettings = { ...(job.settings || {}) };
-        if (!updatedSettings.threadRootMessageId) {
-          updatedSettings.threadRootMessageId = mailResult.messageId;
-        }
-        if (!updatedSettings.threadSubject && finalSubject) {
-          updatedSettings.threadSubject = finalSubject;
-        }
-        await job.update({ settings: updatedSettings });
+      // Persist thread metadata (root) if not already stored
+      // Each follow-up email uses "Re: " + its own template subject, so we don't need to store threadSubject
+      // Threading is maintained via In-Reply-To and References headers, not subject matching
+      const updatedSettings = { ...(job.settings || {}) };
+      let needsUpdate = false;
+
+      // Store threadRootMessageId if this is the first follow-up email in the thread
+      // This is used for In-Reply-To and References headers to maintain threading
+      if (!updatedSettings.threadRootMessageId) {
+        // First follow-up email - store its messageId as the thread root
+        updatedSettings.threadRootMessageId = mailResult.messageId;
+        updatedSettings.stage = job.stage; // Store stage for reference
+        needsUpdate = true;
+        console.log(`🔗 [Threading] Setting thread root for ${job.stage}: ${mailResult.messageId.substring(0, 30)}... | Subject: "${finalSubject}"`);
+      }
+      
+      // Note: We don't store threadSubject anymore because each follow-up uses its own template subject with "Re:" prefix
+      // Threading is maintained via In-Reply-To and References headers, not subject matching
+
+      if (needsUpdate) {
+        // Save settings to database - Sequelize handles JSONB automatically
+        // Use explicit update to ensure JSONB is properly serialized
+        await job.update({ 
+          settings: updatedSettings 
+        });
+        // Update in-memory object immediately
         job.settings = updatedSettings;
+        console.log(`💾 [Threading] Saved job settings. threadRootMessageId: ${updatedSettings.threadRootMessageId ? updatedSettings.threadRootMessageId.substring(0, 30) + '...' : 'null'}"`);
+        
+        // Verify the save by reloading (for debugging)
+        await job.reload();
+        // Ensure settings is parsed correctly after reload
+        if (!job.settings || typeof job.settings !== 'object') {
+          job.settings = job.settings ? (typeof job.settings === 'string' ? JSON.parse(job.settings) : {}) : {};
+        }
+        console.log(`✅ [Threading] Verified settings saved. After reload - threadRootMessageId: ${job.settings?.threadRootMessageId ? 'set' : 'null'}"`);
       }
 
       // Update client engagement and manual-follow-up counters
@@ -472,9 +675,17 @@ class EmailJobScheduler {
       }
     } catch (error) {
       console.error(`❌ Error sending follow-up email for job ${job.id}:`, error);
+      console.error(`❌ Error details:`, {
+        message: error.message,
+        stack: error.stack,
+        jobId: job.id,
+        clientId: job.clientId,
+        stage: job.stage,
+        attempt: job.currentAttempt
+      });
       
-      // Don't update status to 'failed' since it's not in the enum
-      // Job will stay active and retry on next cron run
+      // Re-throw the error so the caller knows the email failed
+      throw error;
     }
   }
 

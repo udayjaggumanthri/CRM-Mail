@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client } = require('../models');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 const { decryptEmailPassword } = require('../utils/passwordUtils');
+const { formatEmailHtml, logEmailHtmlPayload } = require('../utils/emailHtmlFormatter');
 
 class EmailService {
   constructor() {
@@ -394,9 +395,17 @@ class EmailService {
         throw new Error('Email account not found');
       }
 
+      const formattedBodyHtml = formatEmailHtml(emailData.bodyHtml || emailData.bodyText || '');
+      logEmailHtmlPayload('email-service', formattedBodyHtml);
+      const htmlPayload = formattedBodyHtml || emailData.bodyHtml || '';
+      const textPayload = emailData.bodyText || (htmlPayload ? htmlPayload.replace(/<[^>]*>/g, '') : '');
+
       // Create email record
       const email = await Email.create({
         ...emailData,
+        body: textPayload || emailData.body || '',
+        bodyHtml: htmlPayload,
+        bodyText: textPayload,
         emailAccountId: accountId,
         isSent: true,
         status: 'sent',
@@ -412,8 +421,8 @@ class EmailService {
         cc: emailData.cc,
         bcc: emailData.bcc,
         subject: emailData.subject,
-        text: emailData.bodyText,
-        html: emailData.bodyHtml
+        text: textPayload,
+        html: htmlPayload || textPayload
       };
 
       if (normalizedAttachments.length > 0) {

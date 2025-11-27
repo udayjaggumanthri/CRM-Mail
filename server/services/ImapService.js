@@ -262,6 +262,22 @@ class ImapService {
               references = Array.isArray(references) ? references.join(' ') : String(references);
             }
             
+            // Extract body content properly
+            const bodyHtml = parsed.html || '';
+            const bodyText = parsed.text || '';
+            const body = bodyHtml || (bodyText ? `<pre>${bodyText}</pre>` : '');
+            
+            // For drafts, generate messageId if missing
+            let messageId = parsed.messageId;
+            if (!messageId && (msg.flags?.has('\\Draft') || folderType === 'drafts')) {
+              messageId = `draft-${msg.uid}-${account.id}-${Date.now()}`;
+            }
+            
+            // Log draft content for debugging
+            if (msg.flags?.has('\\Draft') || folderType === 'drafts') {
+              console.log(`📝 Draft detected in ImapService - Subject: "${parsed.subject}", HTML length: ${bodyHtml.length}, Text length: ${bodyText.length}, UID: ${msg.uid}`);
+            }
+            
             const email = {
               id: uuidv4(),
               uid: msg.uid,
@@ -270,11 +286,12 @@ class ImapService {
               cc: parsed.cc?.text || '',
               bcc: parsed.bcc?.text || '',
               subject: parsed.subject || '(no subject)',
-              body: parsed.html || `<pre>${parsed.text || ''}</pre>`,
-              bodyText: parsed.text || '',
+              body: body,
+              bodyHtml: bodyHtml, // Ensure bodyHtml is set
+              bodyText: bodyText, // Ensure bodyText is set
               isRead: msg.flags?.has('\\Seen') || false,
               isImportant: msg.flags?.has('\\Flagged') || false,
-              isDraft: msg.flags?.has('\\Draft') || false,
+              isDraft: msg.flags?.has('\\Draft') || folderType === 'drafts',
               isSent: folderType === 'sent',
               isDeleted: folderType === 'trash',
               folder: folderType,
@@ -293,8 +310,9 @@ class ImapService {
               userId: null,
               emailAccountId: account.id,
               flags: Array.from(msg.flags || []),
-              messageId: parsed.messageId,
-              references: references || null
+              messageId: messageId, // Use generated messageId for drafts if needed
+              references: references || null,
+              status: (msg.flags?.has('\\Draft') || folderType === 'drafts') ? 'draft' : 'sent' // Set status for drafts
             };
 
             emails.push(email);

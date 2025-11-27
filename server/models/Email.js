@@ -24,7 +24,7 @@ const Email = sequelize.define('Email', {
   },
   to: { 
     type: DataTypes.STRING, 
-    allowNull: false 
+    allowNull: true 
   },
   toName: {
     type: DataTypes.STRING

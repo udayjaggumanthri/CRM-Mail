@@ -392,7 +392,7 @@ router.get('/', authenticateToken, async (req, res) => {
       // Fetch conference data
       if (clientData.conferenceId) {
         const conference = await Conference.findByPk(clientData.conferenceId, {
-          attributes: ['id', 'name', 'startDate', 'endDate'],
+          attributes: ['id', 'name', 'shortName', 'startDate', 'endDate'],
           raw: true
         });
         clientData.conference = conference || null;
@@ -436,7 +436,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
         { 
           model: Conference, 
           as: 'conference', 
-          attributes: ['id', 'name', 'startDate', 'endDate'] 
+          attributes: ['id', 'name', 'shortName', 'startDate', 'endDate'] 
         }
       ]
     });
@@ -637,6 +637,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
     if (oldStatus !== newStatus) {
       console.log(`🔄 Client status changed: ${oldStatus} → ${newStatus}`);
       await handleStageProgression(client, oldStatus, newStatus);
+      // Reload client to get updated stage
+      await client.reload();
     }
 
     res.json({ message: 'Client updated successfully', client });
@@ -954,17 +956,39 @@ router.post('/bulk-status', authenticateToken, async (req, res) => {
     // Update each client and handle stage progression
     for (const client of clients) {
       const oldStatus = client.status;
+      console.log(`🔄 Updating client ${client.id} (${client.email}): status ${oldStatus} → ${status}`);
       await client.update({ status });
+      // Reload client to ensure status is updated in memory
+      await client.reload();
       
       // Handle stage progression for status changes
       if (oldStatus !== status) {
+        console.log(`📋 Handling stage progression for client ${client.id} (${client.email})`);
         await handleStageProgression(client, oldStatus, status);
+        // Reload client again to get updated stage after progression
+        await client.reload();
+        console.log(`✅ Client ${client.id} (${client.email}) - Status: ${client.status}, Stage: ${client.currentStage}`);
       }
     }
 
+    // Fetch updated clients fresh from database to ensure we have latest data
+    const updatedClients = await Client.findAll({
+      where: { id: ids },
+      attributes: ['id', 'status', 'currentStage', 'email']
+    });
+
+    // Log final state
+    updatedClients.forEach(client => {
+      console.log(`📊 Final state - Client ${client.id} (${client.email}): Status=${client.status}, Stage=${client.currentStage}`);
+    });
+
+    // Map backend status to display label for success message
+    const displayStatus = status === 'Unresponsive' ? 'Declined' : status;
+
     res.json({ 
-      message: `Successfully updated status for ${clients.length} client(s) to ${status}`,
-      updatedCount: clients.length
+      message: `Successfully updated status for ${clients.length} client(s) to ${displayStatus}`,
+      updatedCount: clients.length,
+      clients: updatedClients // Include updated client data
     });
   } catch (error) {
     console.error('Error bulk updating status:', error);
@@ -1115,6 +1139,34 @@ async function handleStageProgression(client, oldStatus, newStatus) {
       await client.update({ currentStage: 'stage2' });
     }
 
+    // Case 3: Client declined (Unresponsive) or rejected - Stop all follow-up jobs
+    if (newStatus === 'Unresponsive' || newStatus === 'Rejected') {
+      console.log(`⛔ Client ${newStatus === 'Unresponsive' ? 'declined' : 'rejected'} - stopping all follow-up jobs`);
+      
+      const activeJobs = await FollowUpJob.findAll({
+        where: {
+          clientId: client.id,
+          status: 'active'
+        }
+      });
+
+      for (const job of activeJobs) {
+        await job.update({
+          status: 'stopped',
+          completedAt: new Date()
+        });
+        console.log(`✅ Stopped job ${job.id} (Stage: ${job.stage}) - client ${newStatus === 'Unresponsive' ? 'declined' : 'rejected'}`);
+      }
+      
+      // Update client stage to completed
+      await client.update({ currentStage: 'completed' });
+      // Save explicitly to ensure persistence
+      await client.save();
+      // Reload client to ensure stage is persisted and reflected in memory
+      await client.reload();
+      console.log(`✅ Client ${client.email} stage updated to: ${client.currentStage}`);
+    }
+
     console.log(`✅ Stage progression completed for ${client.email}`);
   } catch (error) {
     console.error(`❌ Error handling stage progression:`, error);
@@ -1181,18 +1233,12 @@ async function createStage2FollowUpJobs(client, conference) {
 
     const manualStage2Progress = getStage2ManualProgress(client);
     const startingAttempt = Math.min(Math.max(0, manualStage2Progress), stage2MaxAttempts);
-    const shouldSendImmediately = startingAttempt === 0;
-    const firstFollowUpDate = shouldSendImmediately
-      ? new Date()
-      : calculateNextSendDate(stage2Interval, skipWeekends);
+    // Always schedule first follow-up using conference interval (no immediate send)
+    const firstFollowUpDate = calculateNextSendDate(stage2Interval, skipWeekends);
 
-    if (shouldSendImmediately) {
-      console.log(`🚀 Immediate Stage 2 follow-up scheduled for ${client.email} at ${firstFollowUpDate.toISOString()}`);
-    } else {
-      console.log(
-        `⏳ Stage 2 automation resumes at attempt ${startingAttempt + 1} for ${client.email} on ${firstFollowUpDate.toISOString()}`
-      );
-    }
+    console.log(
+      `⏳ Stage 2 first follow-up scheduled for ${client.email} on ${firstFollowUpDate.toISOString()} (${stage2Interval.value} ${stage2Interval.unit} from now)`
+    );
 
     if (startingAttempt > 0) {
       console.log(`⏭️  Skipping first ${startingAttempt} Stage 2 emails (already sent manually)`);
@@ -1228,10 +1274,8 @@ async function createStage2FollowUpJobs(client, conference) {
       }
     });
 
-    console.log(`✅ Created Stage 2 follow-up job ${followUpJob.id} for ${client.email}`);
-    if (shouldSendImmediately) {
-      await triggerImmediateFollowUpSend(followUpJob.id);
-    }
+    console.log(`✅ Created Stage 2 follow-up job ${followUpJob.id} for ${client.email} (scheduled for ${firstFollowUpDate.toISOString()})`);
+    console.log(`⏸️  [Scheduling] First follow-up will be sent after ${stage2Interval.value} ${stage2Interval.unit} (no immediate send)`);
   } catch (error) {
     console.error('❌ Error creating Stage 2 follow-up jobs:', error);
     throw error;
@@ -1343,18 +1387,12 @@ async function scheduleFollowUpEmails(client, conference) {
 
     const manualStage1Progress = getStage1ManualProgress(client);
     const startingAttempt = Math.min(Math.max(0, manualStage1Progress), stage1MaxAttempts);
-    const shouldSendImmediately = startingAttempt === 0;
-    const firstFollowUpDate = shouldSendImmediately
-      ? new Date()
-      : calculateNextSendDate(stage1Interval, skipWeekends);
+    // Always schedule first follow-up using conference interval (no immediate send)
+    const firstFollowUpDate = calculateNextSendDate(stage1Interval, skipWeekends);
 
-    if (shouldSendImmediately) {
-      console.log(`🚀 Immediate Stage 1 follow-up scheduled for ${client.email} at ${firstFollowUpDate.toISOString()}`);
-    } else {
-      console.log(
-        `⏳ Stage 1 automation resumes at attempt ${startingAttempt + 1} for ${client.email} on ${firstFollowUpDate.toISOString()}`
-      );
-    }
+    console.log(
+      `⏳ Stage 1 first follow-up scheduled for ${client.email} on ${firstFollowUpDate.toISOString()} (${stage1Interval.value} ${stage1Interval.unit} from now)`
+    );
     
     if (startingAttempt > 0) {
       console.log(`⏭️  Skipping first ${startingAttempt} Stage 1 emails (already sent manually)`);
@@ -1362,6 +1400,15 @@ async function scheduleFollowUpEmails(client, conference) {
 
     // Only create job if there are still emails to send
     if (startingAttempt < stage1MaxAttempts) {
+      console.log(`📝 [Job Creation] Creating follow-up job for client ${client.email}:`, {
+        templateId: stage1Template.id,
+        templateName: stage1Template.name,
+        stage: 'abstract_submission',
+        startingAttempt,
+        maxAttempts: stage1MaxAttempts,
+        scheduledDate: firstFollowUpDate.toISOString()
+      });
+
       // Create FollowUpJob for Stage 1 with initial email's messageId for threading
       const followUpJob = await FollowUpJob.create({
         clientId: client.id,
@@ -1385,11 +1432,8 @@ async function scheduleFollowUpEmails(client, conference) {
         }
       });
 
-      console.log(`✅ Created follow-up job ${followUpJob.id} for client ${client.email} (Stage 1, starting at attempt ${startingAttempt + 1})`);
-
-      if (shouldSendImmediately) {
-        await triggerImmediateFollowUpSend(followUpJob.id);
-      }
+      console.log(`✅ [Job Creation] Created follow-up job ${followUpJob.id} for client ${client.email} (Stage 1, starting at attempt ${startingAttempt + 1}, scheduled for ${firstFollowUpDate.toISOString()})`);
+      console.log(`⏸️  [Scheduling] First follow-up will be sent after ${stage1Interval.value} ${stage1Interval.unit} (no immediate send)`);
     } else {
       console.log(`⏭️  All Stage 1 emails already sent manually - no follow-up job created`);
     }
@@ -1569,6 +1613,7 @@ async function rescheduleConferenceFollowUps(conference) {
 
 async function triggerImmediateFollowUpSend(jobId) {
   try {
+    console.log(`📧 [Immediate Send] Loading job ${jobId}...`);
     const job = await FollowUpJob.findByPk(jobId, {
       include: [
         { model: Client, as: 'client' },
@@ -1578,13 +1623,63 @@ async function triggerImmediateFollowUpSend(jobId) {
     });
 
     if (!job) {
-      console.warn(`⚠️ Immediate send skipped: follow-up job ${jobId} not found`);
+      console.warn(`⚠️ [Immediate Send] Follow-up job ${jobId} not found`);
+      return;
+    }
+    
+    // CRITICAL: Ensure settings is properly parsed (handle JSONB)
+    if (!job.settings || typeof job.settings !== 'object') {
+      job.settings = job.settings ? (typeof job.settings === 'string' ? JSON.parse(job.settings) : {}) : {};
+    }
+    
+    // Log job state before sending
+    console.log(`🔍 [Immediate Send] Job ${jobId} state before send:`, {
+      threadRootMessageId: job.settings?.threadRootMessageId ? job.settings.threadRootMessageId.substring(0, 30) + '...' : 'null',
+      threadSubject: job.settings?.threadSubject || 'null',
+      currentAttempt: job.currentAttempt,
+      stage: job.stage
+    });
+
+    if (!job.client) {
+      console.error(`❌ [Immediate Send] Job ${jobId} has no client associated`);
       return;
     }
 
-    await immediateEmailScheduler.sendFollowUpEmail(job);
+    if (!job.template) {
+      console.error(`❌ [Immediate Send] Job ${jobId} has no template associated`);
+      return;
+    }
+
+    console.log(`📧 [Immediate Send] Sending email to ${job.client.email} using template "${job.template.name}"`);
+    
+    // Send the email immediately
+    try {
+      await immediateEmailScheduler.sendFollowUpEmail(job);
+      console.log(`✅ [Immediate Send] Email sent successfully for job ${jobId}`);
+    } catch (sendError) {
+      console.error(`❌ [Immediate Send] Failed to send email for job ${jobId}:`, sendError.message);
+      console.error(`❌ [Immediate Send] Error stack:`, sendError.stack);
+      // Re-throw to be caught by outer handler
+      throw sendError;
+    }
+    
+    // Reload job to get updated scheduledDate from sendFollowUpEmail
+    await job.reload();
+    
+    // If scheduledDate is still in the past (shouldn't happen, but safety check),
+    // update it to prevent duplicate sends from cron job
+    if (job.scheduledDate && job.scheduledDate <= new Date()) {
+      // Calculate next send date based on interval
+      const intervalConfig = job.settings?.intervalConfig || { value: 7, unit: 'days' };
+      const nextDate = immediateEmailScheduler.calculateNextSendDate(intervalConfig, job.skipWeekends);
+      await job.update({ scheduledDate: nextDate });
+      console.log(`🔄 [Immediate Send] Updated scheduledDate to prevent duplicate: ${nextDate.toISOString()}`);
+    }
   } catch (error) {
-    console.error(`❌ Failed immediate follow-up send for job ${jobId}:`, error.message);
+    console.error(`❌ [Immediate Send] Failed immediate follow-up send for job ${jobId}:`, error.message);
+    console.error(`❌ [Immediate Send] Full error:`, error);
+    console.error(`❌ [Immediate Send] Stack trace:`, error.stack);
+    throw error; // Re-throw to be caught by caller
   }
 }
 

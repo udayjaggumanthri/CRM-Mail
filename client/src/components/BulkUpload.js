@@ -241,7 +241,7 @@ function BulkUpload() {
           <div className="space-y-2 text-sm text-gray-700">
             <div className="flex items-start gap-2">
               <span className="font-medium min-w-[180px]">Lead + initial:</span>
-              <span>Full workflow (Stage 1 + Stage 2 emails)</span>
+              <span>Full workflow (invitation + Stage 1 + Stage 2 emails)</span>
             </div>
             <div className="flex items-start gap-2">
               <span className="font-medium min-w-[180px]">Abstract Submitted + stage2:</span>

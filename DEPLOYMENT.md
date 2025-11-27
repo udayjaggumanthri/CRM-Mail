@@ -2,11 +2,9 @@
 
 ## Quick Deployment Steps
 
-After pulling the latest code from git, follow these steps to ensure the UI updates properly **without touching the production database unexpectedly**:
+After pulling the latest code from git, follow these steps to ensure the UI updates properly:
 
 ### Option 1: Using Deployment Script (Recommended)
-
-Both scripts now pause to confirm a database backup and prompt you before running migrations.
 
 **Windows:**
 ```bash
@@ -34,16 +32,7 @@ chmod +x deploy.sh
    npm install
    ```
 
-3. **Confirm DB backup + run migrations (manual step):**
-   ```bash
-   # Back up the database using pg_dump / managed backup
-   # Then apply pending migrations:
-   cd server
-   npm run migrate -- --env production
-   cd ..
-   ```
-
-4. **Clear build cache:**
+3. **Clear build cache:**
    ```bash
    # Windows
    rmdir /s /q client\build
@@ -56,7 +45,7 @@ chmod +x deploy.sh
    rm -rf server/node_modules/.cache
    ```
 
-5. **Restart servers:**
+4. **Restart servers:**
    - Stop current servers (Ctrl+C)
    - Restart using `start-windows.bat` or `start.sh`
 
@@ -131,35 +120,14 @@ If changes aren't reflected even after clearing browser cache:
 
 ## Production Deployment
 
-### Required order of operations
-
-1. (Optional) Put the site in maintenance mode or notify users.
-2. Pull latest code: `git pull origin main`.
-3. Take a fresh database backup (`pg_dump`, cloud snapshot, etc.).
-4. Install dependencies in `server/` and `client/`.
-5. Apply migrations manually:
-   ```bash
-   cd server
-   NODE_ENV=production npm run migrate
-   cd ..
-   ```
-6. Restart backend + frontend (PM2 or manual `node index.js` / `npm start`).
-7. Remove maintenance mode and monitor logs.
-
-### React build
+For production deployments, build the React app:
 
 ```bash
 cd client
 npm run build
 ```
 
-Serve the `client/build` folder with nginx/Apache/S3/etc.
-
-### Environment checklist
-
-- Production `.env` must set `NODE_ENV=production`.
-- Leave `AUTO_DB_SYNC`, `ALLOW_SCHEMA_BOOTSTRAP`, and `ALLOW_AUTO_SEED` unset (defaults to safe/disabled).
-- Only set those flags to `true` temporarily when you intentionally need bootstrap behavior, then revert.
+Then serve the `build` folder with a web server (nginx, Apache, etc.).
 
 ## Cache-Busting Features
 
@@ -174,11 +142,10 @@ The application includes automatic cache-busting:
 ## Best Practices
 
 1. **Always clear cache after deployment**
-2. **Use deployment script** to automate the process (it now enforces DB backup prompts)
+2. **Use deployment script** to automate the process
 3. **Notify users** to clear cache after major updates
 4. **Test in incognito mode** to verify changes
 5. **Check browser console** for any errors
-6. **Never rely on automatic `sequelize.sync` in production** – use migrations only.
 
 ## Support
 

@@ -5,13 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "migrate": "npx sequelize-cli db:migrate --config config/config.js",
-    "migrate:status": "npx sequelize-cli db:migrate:status --config config/config.js",
-    "migrate:undo": "npx sequelize-cli db:migrate:undo --config config/config.js"
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",

@@ -4,15 +4,166 @@ const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client, EmailTe
 const { Op } = require('sequelize');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
+const crypto = require('crypto');
+const MailComposer = require('nodemailer/lib/mail-composer');
+const { ImapFlow } = require('imapflow');
 const { decryptEmailPassword } = require('../utils/passwordUtils');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 const { normalizeEmailList, mergeEmailLists } = require('../utils/emailListUtils');
+const { formatEmailHtml, logEmailHtmlPayload } = require('../utils/emailHtmlFormatter');
 
 // Configure multer for file uploads - use any() to handle both files and fields
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
+
+const FALLBACK_DRAFT_FOLDER = '[Gmail]/Drafts';
+const GENERIC_DRAFT_FOLDER = 'Drafts';
+
+const generateDraftMessageId = (fromEmail = '') => {
+  const domain = (fromEmail.split('@')[1] || 'mail-crm.local').trim();
+  const randomPart = crypto.randomBytes(8).toString('hex');
+  return `<draft-${Date.now()}-${randomPart}@${domain}>`;
+};
+
+const resolveDraftFolderName = (account = {}) => {
+  if (account?.settings?.draftFolder) {
+    return account.settings.draftFolder;
+  }
+  if (account?.imapHost?.toLowerCase().includes('gmail')) {
+    return FALLBACK_DRAFT_FOLDER;
+  }
+  return GENERIC_DRAFT_FOLDER;
+};
+
+const normalizeDraftAttachments = (attachments) => {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return [];
+  }
+
+  return attachments
+    .filter(Boolean)
+    .map((attachment) => ({
+      filename: attachment.filename,
+      content: attachment.content ? attachment.content : attachment.buffer,
+      contentType: attachment.contentType,
+      encoding: attachment.content ? 'base64' : undefined
+    }))
+    .filter(att => att.filename && att.content);
+};
+
+const buildDraftMime = async (emailPayload, account) => {
+  const composer = new MailComposer({
+    messageId: emailPayload.messageId,
+    from: emailPayload.fromName
+      ? `"${emailPayload.fromName}" <${emailPayload.from}>`
+      : emailPayload.from,
+    to: emailPayload.to || undefined,
+    cc: emailPayload.cc || undefined,
+    bcc: emailPayload.bcc || undefined,
+    subject: emailPayload.subject || '(No Subject)',
+    html: emailPayload.bodyHtml || undefined,
+    text: emailPayload.bodyText || undefined,
+    attachments: normalizeDraftAttachments(emailPayload.attachments),
+    headers: {
+      'X-Mail-CRM-Draft': 'true'
+    }
+  });
+
+  return composer.compile().build();
+};
+
+const syncDraftToMailbox = async (emailRecord, account, { replaceUid = null } = {}) => {
+  if (!account?.imapHost || !account?.imapUsername || !account?.imapPassword) {
+    console.warn(`Skipping IMAP draft sync for ${account?.email} - IMAP credentials missing`);
+    return null;
+  }
+
+  const client = new ImapFlow({
+    host: account.imapHost,
+    port: Number(account.imapPort) || 993,
+    secure: account.imapSecure !== false,
+    auth: {
+      user: account.imapUsername,
+      pass: decryptEmailPassword(account.imapPassword)
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    logger: false
+  });
+
+  const preferredFolder = resolveDraftFolderName(account);
+  const fallbackFolder = preferredFolder === FALLBACK_DRAFT_FOLDER ? GENERIC_DRAFT_FOLDER : FALLBACK_DRAFT_FOLDER;
+
+  const uploadToFolder = async (folderName) => {
+    const mime = await buildDraftMime(emailRecord, account);
+    const response = await client.append(folderName, mime, ['\\Draft'], emailRecord.date || new Date());
+    return { response, folderName };
+  };
+
+  const deleteExistingDraft = async (folderName, uid) => {
+    if (!uid) return;
+    const lock = await client.getMailboxLock(folderName);
+    try {
+      await client.messageDelete(uid, { uid: true });
+    } finally {
+      lock.release();
+    }
+  };
+
+  try {
+    await client.connect();
+
+    if (replaceUid) {
+      const deleteTargets = [preferredFolder];
+      if (fallbackFolder && fallbackFolder !== preferredFolder) {
+        deleteTargets.push(fallbackFolder);
+      }
+
+      for (const folderTarget of deleteTargets) {
+        try {
+          await deleteExistingDraft(folderTarget, replaceUid);
+          break;
+        } catch (deleteError) {
+          console.warn(`Failed to delete previous draft UID ${replaceUid} from ${folderTarget}:`, deleteError.message);
+        }
+      }
+    }
+
+    let appendResult;
+    try {
+      appendResult = await uploadToFolder(preferredFolder);
+    } catch (primaryError) {
+      console.warn(`Draft upload failed for folder ${preferredFolder}, retrying with ${fallbackFolder}:`, primaryError.message);
+      appendResult = await uploadToFolder(fallbackFolder);
+    }
+
+    const uid = appendResult?.response?.uid || null;
+    if (uid) {
+      await emailRecord.update({
+        uid,
+        folder: 'drafts',
+        status: 'draft'
+      });
+    }
+
+    return {
+      uid,
+      folder: appendResult?.response?.destination || appendResult?.folderName
+    };
+  } catch (error) {
+    console.error('Failed to sync draft to mailbox:', error.message);
+    throw error;
+  } finally {
+    try {
+      await client.logout();
+    } catch (logoutError) {
+      // Ignore logout errors
+    }
+  }
+};
 
 // Get email suggestions for autocomplete
 router.get('/suggestions', async (req, res) => {
@@ -142,11 +293,15 @@ router.get('/', async (req, res) => {
         ]
       };
     } else if (folder === 'drafts') {
-      // Drafts: only emails explicitly marked as drafts (isDraft=true), not sent, not deleted
-      // Note: We don't check status='draft' because it's incorrectly set for received emails
+      // Drafts: emails marked as drafts OR in drafts folder, not sent, not deleted
       folderCondition = {
         [Op.and]: [
-          { isDraft: true },
+          {
+            [Op.or]: [
+              { isDraft: true },
+              { folder: 'drafts' }
+            ]
+          },
           { [Op.or]: [{ isSent: false }, { isSent: null }] },
           { [Op.or]: [{ isDeleted: false }, { isDeleted: null }] }
         ]
@@ -498,6 +653,11 @@ router.post('/send', upload.any(), async (req, res) => {
       console.log(`📎 [Follow-up CC] Applying ${conferenceFollowupCc.length} conference-level CC recipient(s) to this email.`);
     }
 
+    const formattedBodyHtml = formatEmailHtml(bodyHtml || body || '');
+    logEmailHtmlPayload('manual-compose', formattedBodyHtml);
+    const finalHtmlPayload = formattedBodyHtml || bodyHtml || body || bodyText || '';
+    const finalTextPayload = bodyText || body || (finalHtmlPayload ? finalHtmlPayload.replace(/<[^>]*>/g, '') : '');
+
     // Create email record
     const email = await Email.create({
       emailAccountId: accountId,
@@ -507,9 +667,9 @@ router.post('/send', upload.any(), async (req, res) => {
       cc: ccHeaderValue,
       bcc: bccHeaderValue,
       subject,
-      body: body || bodyText || '',
-      bodyHtml: bodyHtml || '',
-      bodyText: bodyText || '',
+      body: finalTextPayload,
+      bodyHtml: finalHtmlPayload,
+      bodyText: finalTextPayload,
       attachments: attachments.length > 0 ? attachments : null,
       parentId,
       parentType,
@@ -562,8 +722,8 @@ router.post('/send', upload.any(), async (req, res) => {
         from: `${account.name} <${account.email}>`,
         to: to,
         subject: subject,
-        text: bodyText || body || (bodyHtml ? bodyHtml.replace(/<[^>]*>/g, '') : ''),
-        html: bodyHtml || body || bodyText,
+        text: finalTextPayload,
+        html: finalHtmlPayload,
         ...threadingHeaders
       };
 
@@ -683,6 +843,8 @@ router.post('/draft', upload.any(), async (req, res) => {
       size: file.size
     }));
 
+    const messageId = generateDraftMessageId(account.email);
+
     // Create draft email record
     const email = await Email.create({
       emailAccountId: accountId,
@@ -696,6 +858,7 @@ router.post('/draft', upload.any(), async (req, res) => {
       bodyHtml: bodyHtml || '',
       bodyText: bodyText || '',
       attachments: attachments.length > 0 ? attachments : null,
+      hasAttachments: attachments.length > 0,
       parentId,
       parentType,
       isTracked,
@@ -703,8 +866,15 @@ router.post('/draft', upload.any(), async (req, res) => {
       isDraft: true,
       status: 'draft',
       folder: 'drafts',
-      date: new Date()
+      date: new Date(),
+      messageId
     });
+
+    try {
+      await syncDraftToMailbox(email, account);
+    } catch (syncError) {
+      console.error('Draft saved locally but failed to sync with mailbox:', syncError.message);
+    }
 
     res.status(201).json({
       ...email.toJSON(),
@@ -784,6 +954,10 @@ router.put('/draft/:id', upload.any(), async (req, res) => {
       size: file.size
     }));
 
+    const finalAttachments = attachments.length > 0 ? attachments : (draft.attachments || null);
+    const hasAttachments = Array.isArray(finalAttachments) ? finalAttachments.length > 0 : !!finalAttachments;
+    const existingUid = draft.uid || null;
+
     // Update draft email record
     await draft.update({
       emailAccountId: accountId,
@@ -796,15 +970,23 @@ router.put('/draft/:id', upload.any(), async (req, res) => {
       body: bodyHtml || bodyText || '',
       bodyHtml: bodyHtml || '',
       bodyText: bodyText || '',
-      attachments: attachments.length > 0 ? attachments : (draft.attachments || null), // Keep existing if no new attachments
+      attachments: finalAttachments,
+      hasAttachments,
       parentId,
       parentType,
       isTracked,
-      date: new Date() // Update timestamp
+      date: new Date(), // Update timestamp
+      messageId: draft.messageId || generateDraftMessageId(account.email)
     });
 
     // Reload to get updated data
     await draft.reload();
+
+    try {
+      await syncDraftToMailbox(draft, account, { replaceUid: existingUid });
+    } catch (syncError) {
+      console.error('Draft updated locally but failed to sync with mailbox:', syncError.message);
+    }
 
     res.status(200).json({
       ...draft.toJSON(),
@@ -1068,48 +1250,76 @@ router.post('/sync', async (req, res) => {
           // Save emails to database with auto-created threads
           for (const emailData of result.emails) {
             try {
-              // Check if email already exists (by messageId)
-              const existingEmail = await Email.findOne({
-                where: { 
-                  messageId: emailData.messageId,
-                  emailAccountId: account.id
-                }
-              });
-
-              if (!existingEmail) {
-                // Auto-create or find thread for this email
-                const threadSubject = emailData.subject || 'no-subject';
-                
-                let thread = await EmailThread.findOne({
+              // For drafts, check by UID and folder instead of messageId (drafts might not have messageId)
+              let existingEmail = null;
+              if (emailData.isDraft && emailData.uid) {
+                existingEmail = await Email.findOne({
                   where: { 
+                    uid: emailData.uid,
                     emailAccountId: account.id,
-                    subject: threadSubject
+                    folder: 'drafts'
                   }
                 });
-                
-                if (!thread) {
-                  const { v4: uuidv4 } = require('uuid');
-                  thread = await EmailThread.create({
-                    id: uuidv4(),
-                    subject: threadSubject,
-                    participants: [emailData.from, emailData.to].filter(Boolean).join(', '),
-                    emailAccountId: account.id,
-                    lastMessageAt: emailData.date || new Date()
+              } else if (emailData.messageId) {
+                existingEmail = await Email.findOne({
+                  where: { 
+                    messageId: emailData.messageId,
+                    emailAccountId: account.id
+                  }
+                });
+              }
+
+              if (!existingEmail) {
+                // For drafts, skip thread creation (drafts don't need threads)
+                let thread = null;
+                if (!emailData.isDraft) {
+                  // Auto-create or find thread for this email
+                  const threadSubject = emailData.subject || 'no-subject';
+                  
+                  thread = await EmailThread.findOne({
+                    where: { 
+                      emailAccountId: account.id,
+                      subject: threadSubject
+                    }
                   });
-                  console.log(`📝 Created thread for: ${threadSubject}`);
+                  
+                  if (!thread) {
+                    const { v4: uuidv4 } = require('uuid');
+                    thread = await EmailThread.create({
+                      id: uuidv4(),
+                      subject: threadSubject,
+                      participants: [emailData.from, emailData.to].filter(Boolean).join(', '),
+                      emailAccountId: account.id,
+                      lastMessageAt: emailData.date || new Date()
+                    });
+                    console.log(`📝 Created thread for: ${threadSubject}`);
+                  }
+                }
+                
+                // For drafts, generate messageId if missing
+                if (emailData.isDraft && !emailData.messageId) {
+                  const { v4: uuidv4 } = require('uuid');
+                  emailData.messageId = `draft-${emailData.uid}-${account.id}-${Date.now()}`;
                 }
                 
                 // Create email with thread - preserve folder from sync (spam, drafts, sent, etc.)
                 // Set status correctly: draft if isDraft, sent if isSent (or received), otherwise 'sent'
                 const emailStatus = emailData.isDraft ? 'draft' : (emailData.isSent ? 'sent' : 'sent');
                 
-                await Email.create({
+                // Ensure bodyHtml is set for drafts
+                const emailToSave = {
                   ...emailData,
-                  threadId: thread.id,
+                  threadId: thread?.id || null,
                   emailAccountId: account.id,
                   folder: emailData.folder || 'inbox', // Preserve folder from sync instead of forcing 'inbox'
-                  status: emailStatus // Set status correctly to avoid 'draft' default
-                });
+                  status: emailStatus, // Set status correctly to avoid 'draft' default
+                  bodyHtml: emailData.bodyHtml || emailData.body || '', // Ensure bodyHtml is set
+                  bodyText: emailData.bodyText || (emailData.body ? emailData.body.replace(/<[^>]*>/g, '') : '') || '' // Ensure bodyText is set
+                };
+                
+                console.log(`💾 Saving ${emailData.isDraft ? 'draft' : 'email'}: ${emailData.subject} (folder: ${emailData.folder}, bodyHtml length: ${emailToSave.bodyHtml?.length || 0})`);
+                
+                await Email.create(emailToSave);
                 totalSynced++;
               }
             } catch (saveError) {

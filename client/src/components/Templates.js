@@ -171,9 +171,6 @@ const TEMPLATE_EDITOR_STYLES = `
   *[class*="ql-font-palatinolinotype"] {
     font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
   }
-  .template-editor .ql-editor [style*="font-family:"] {
-    font-family: inherit !important;
-  }
   .template-editor .ql-picker.ql-font .ql-picker-label[data-value="arial"]::before,
   .template-editor .ql-picker.ql-font .ql-picker-item[data-value="arial"]::before { content: 'Arial' !important; }
   .template-editor .ql-picker.ql-font .ql-picker-label[data-value="timesnewroman"]::before,

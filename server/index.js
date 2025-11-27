@@ -31,6 +31,7 @@ const { router: imapRoutes, realTimeImapService } = require('./routes/imapRoutes
 const templateDraftRoutes = require('./routes/templateDraftRoutes');
 const { sanitizeAttachmentsForStorage } = require('./utils/attachmentUtils');
 const { normalizeEmailList } = require('./utils/emailListUtils');
+const { formatEmailHtml, logEmailHtmlPayload } = require('./utils/emailHtmlFormatter');
 const { requireRole, requireConferenceAccess, requireUserManagement, requireClientAccess } = require('./middleware/rbac');
 require('dotenv').config();
 
@@ -327,37 +328,19 @@ async function initializeDatabase() {
       console.log('ℹ️ Preflight adjustments skipped:', e.message);
     }
     
-    const isProduction = process.env.NODE_ENV === 'production';
-    const allowSchemaBootstrap =
-      !isProduction || process.env.ALLOW_SCHEMA_BOOTSTRAP === 'true';
-    const allowAutoSync =
-      !isProduction || process.env.AUTO_DB_SYNC === 'true';
-    const allowAutoSeed =
-      !isProduction || process.env.ALLOW_AUTO_SEED === 'true';
+    // Ensure legacy databases have ownership columns for SMTP accounts before syncing
+    await ensureEmailAccountOwnershipColumns(sequelize);
 
-    if (allowSchemaBootstrap) {
-      await ensureEmailAccountOwnershipColumns(sequelize);
-    } else {
-      console.log('ℹ️ Skipping automatic schema bootstrap (production safeguard). Run migrations manually if needed.');
-    }
-
-    if (allowAutoSync) {
-      await sequelize.sync({ force: false });
-      console.log('✅ Database connected and synced');
-    } else {
-      console.log('ℹ️ Skipping sequelize.sync in production – apply migrations manually before restart.');
-    }
+    // Sync database - create tables if they don't exist
+    await sequelize.sync({ force: false });
+    console.log('✅ Database connected and synced');
     
     // Check if we have users, if not seed the database
     const userCount = await User.count();
     if (userCount === 0) {
-      if (!allowAutoSeed) {
-        console.log('⚠️  Database is empty but auto-seed is disabled in production. Run seed script manually if this is intentional.');
-      } else {
       console.log('🌱 Seeding database with initial data...');
       await seedCleanData();
       console.log('✅ Database seeded successfully');
-      }
     } else {
       console.log(`📊 Database already has ${userCount} users, preserving existing data`);
     }
@@ -586,14 +569,8 @@ app.use('/api/emails', emailRoutes);
 app.use('/api/email-accounts', emailAccountRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/clients', clientRoutes);
-app.use('/api/inbound', imapRoutes);
-app.use('/api/analytics', analyticsRoutes);
-app.use('/api/notifications', notificationRoutes);
-app.use('/api/tasks', taskRoutes);
-app.use('/api/search', searchRoutes);
 
-// Get clients for email compose
+// Get clients for email compose (must be BEFORE /api/clients route)
 app.get('/api/clients/for-email', authenticateToken, async (req, res) => {
   try {
     if (!dbInitialized) {
@@ -641,7 +618,12 @@ app.get('/api/clients/for-email', authenticateToken, async (req, res) => {
 
     const clients = await Client.findAll({
       where: whereClause,
-      attributes: ['id', 'name', 'email', 'organization'],
+      attributes: [
+        'id',
+        'name',
+        'email',
+        [Sequelize.literal('NULL'), 'organization']
+      ],
       limit: 100,
       order: [['createdAt', 'DESC']]
     });
@@ -653,6 +635,14 @@ app.get('/api/clients/for-email', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Register client routes AFTER the specific /for-email route to avoid route conflicts
+app.use('/api/clients', clientRoutes);
+app.use('/api/inbound', imapRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/search', searchRoutes);
 
 // Direct email sending function
 async function sendDirectEmail(client, emailType, conferenceName = 'Conference') {
@@ -748,12 +738,15 @@ async function sendDirectEmail(client, emailType, conferenceName = 'Conference')
     }
 
     // Send email
+    const formattedHtmlContent = formatEmailHtml(htmlContent);
+    logEmailHtmlPayload('system-template', formattedHtmlContent);
+
     const mailOptions = {
       from: smtpAccount.fromEmail || smtpAccount.email,
       to: client.email,
       subject: subject,
       text: textContent,
-      html: htmlContent
+      html: formattedHtmlContent || htmlContent
     };
 
     const info = await transporter.sendMail(mailOptions);

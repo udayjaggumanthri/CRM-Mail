@@ -84,13 +84,49 @@ class RealTimeImapService {
    * Start monitoring a specific account with IDLE support
    */
   async startAccountMonitoring(account) {
-    let client = null;
-    try {
-      // Determine account name for logging
-      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-      console.log(`🔄 Setting up real-time monitoring for ${accountName}...`);
+    const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+    console.log(`🔄 Setting up real-time monitoring for ${accountName}...`);
 
-      // Create IMAP connection with IDLE support and timeout configuration
+    const folderConfigs = this.getFolderConfigs(account);
+
+    for (const folderConfig of folderConfigs) {
+      await this.startFolderConnection(account, folderConfig);
+    }
+  }
+
+  /**
+   * Build folder configuration for monitoring
+   */
+  getFolderConfigs(account) {
+    const folderConfigs = [{ name: 'INBOX', type: 'inbox' }];
+    const host = (account?.imapHost || '').toLowerCase();
+    const accountEmail = (account?.email || '').toLowerCase();
+    const gmailFolders = this.getGmailFolderNames();
+    const isGmailHost = host.includes('gmail') || host.includes('googlemail');
+    const isGmailEmail = accountEmail.endsWith('@gmail.com') || accountEmail.endsWith('@googlemail.com');
+
+    if ((isGmailHost || isGmailEmail) && gmailFolders.drafts.length) {
+      folderConfigs.push({ name: gmailFolders.drafts[0], type: 'drafts' });
+    } else {
+      folderConfigs.push({ name: 'Drafts', type: 'drafts' });
+      folderConfigs.push({ name: 'drafts', type: 'drafts' });
+    }
+
+    return folderConfigs;
+  }
+
+  /**
+   * Start monitoring a specific folder with its own connection
+   */
+  async startFolderConnection(account, folderConfig) {
+    const { name: folderName, type: folderType } = folderConfig;
+    const connectionKey = `${account.id}:${folderName}`;
+    let client = null;
+
+    try {
+      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+      console.log(`🔄 Establishing connection for ${accountName} - Folder: ${folderName} (${folderType})`);
+
       client = new ImapFlow({
         host: account.imapHost,
         port: account.imapPort || 993,
@@ -100,106 +136,106 @@ class RealTimeImapService {
           pass: decryptEmailPassword(account.imapPassword)
         },
         logger: false,
-        idling: true, // Enable IDLE support
-        // Timeout configuration to prevent socket timeouts
-        socketTimeout: 300000, // 5 minutes (300000ms) - increased from default
-        greetingTimeout: 30000, // 30 seconds for initial greeting
-        connectionTimeout: 60000, // 60 seconds for connection establishment
-        // TLS options
+        idling: true,
+        socketTimeout: 300000,
+        greetingTimeout: 30000,
+        connectionTimeout: 60000,
         tls: {
-          rejectUnauthorized: false // Allow self-signed certificates
+          rejectUnauthorized: false
         }
       });
 
-      // Set up error handlers BEFORE connecting to catch all errors
       client.on('error', async (error) => {
         const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-        console.error(`❌ IMAP client error for ${accountName}:`, error.message, error.code);
-        
-        // Remove connection from map if it exists
-        if (this.connections.has(account.id)) {
-          this.connections.delete(account.id);
+        console.error(`❌ IMAP client error for ${accountName} [${folderName}]:`, error.message, error.code);
+
+        if (this.connections.has(connectionKey)) {
+          this.connections.delete(connectionKey);
         }
-        
-        // Handle timeout errors specifically
+
         if (error.code === 'ETIMEOUT' || error.message.includes('timeout')) {
-          console.warn(`⏱️ Socket timeout for ${accountName}, will retry connection...`);
-          // Don't increment retry count for timeouts - they're network issues, not auth failures
-          await this.handleConnectionError(account, error, false);
+          console.warn(`⏱️ Socket timeout for ${accountName} [${folderName}], will retry connection...`);
+          await this.handleConnectionError(account, error, false, folderName, folderType);
         } else {
-          // For other errors, use normal retry logic
-          await this.handleConnectionError(account, error);
+          await this.handleConnectionError(account, error, true, folderName, folderType);
         }
       });
 
-      // Handle connection close events
       client.on('close', () => {
         const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-        console.log(`🔌 IMAP connection closed for ${accountName}`);
-        if (this.connections.has(account.id)) {
-          this.connections.delete(account.id);
+        console.log(`🔌 IMAP connection closed for ${accountName} [${folderName}]`);
+        if (this.connections.has(connectionKey)) {
+          this.connections.delete(connectionKey);
         }
       });
 
-      // Connect with timeout handling
       try {
         await Promise.race([
           client.connect(),
-          new Promise((_, reject) => 
+          new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Connection timeout')), 60000)
           )
         ]);
-        console.log(`✅ Connected to ${accountName} (${account.imapHost})`);
+        console.log(`✅ Connected to ${accountName} (${account.imapHost}) [${folderName}]`);
       } catch (connectError) {
-        // Clean up client if connection fails
         try {
           if (client && client.connected) {
             await client.logout();
           }
         } catch (logoutError) {
-          // Ignore logout errors during failed connection
+          // ignore
         }
         throw connectError;
       }
 
-      // Store connection only after successful connection
-      this.connections.set(account.id, client);
-      
-      // Update database sync status
-      try {
-        await EmailAccount.update(
-          { 
-            syncStatus: 'active',
-            lastSyncAt: new Date(),
-            errorMessage: null
-          },
-          { where: { id: account.id } }
-        );
-      } catch (error) {
-        console.error(`⚠️ Failed to update database status for ${accountName}:`, error.message);
+      this.connections.set(connectionKey, client);
+
+      if (folderType === 'inbox') {
+        try {
+          await EmailAccount.update(
+            {
+              syncStatus: 'active',
+              lastSyncAt: new Date(),
+              errorMessage: null
+            },
+            { where: { id: account.id } }
+          );
+        } catch (error) {
+          console.error(`⚠️ Failed to update database status for ${accountName}:`, error.message);
+        }
       }
 
-      // Start IDLE monitoring
-      await this.startIdleMonitoring(account, client);
-
+      await this.startIdleMonitoring(account, client, folderName, folderType, connectionKey);
     } catch (error) {
       const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-      console.error(`❌ Failed to setup monitoring for ${accountName}:`, error.message);
-      await this.handleConnectionError(account, error);
+      console.error(`❌ Failed to setup monitoring for ${accountName} [${folderName}]:`, error.message);
+      await this.handleConnectionError(account, error, true, folderName, folderType);
     }
   }
 
   /**
-   * Start IDLE monitoring for real-time email detection
+   * Get Gmail folder names (helper method)
    */
-  async startIdleMonitoring(account, client) {
+  getGmailFolderNames() {
+    return {
+      inbox: ['INBOX'],
+      drafts: ['[Gmail]/Drafts', 'Drafts']
+    };
+  }
+
+  /**
+   * Start IDLE monitoring for real-time email detection (monitors INBOX and Drafts)
+   */
+  async startIdleMonitoring(account, client, folderName, folderType, connectionKey) {
     try {
       // Determine account name for logging
       const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-      
-      // Open INBOX
-      await client.mailboxOpen('INBOX');
-      console.log(`📬 Monitoring INBOX for ${accountName}`);
+      this.monitoredFolders = this.monitoredFolders || new Map();
+      this.monitoredFolders.set(connectionKey, { type: folderType, name: folderName });
+
+      // Open requested folder
+      await client.mailboxOpen(folderName);
+      console.log(`📬 Monitoring ${folderName} (${folderType}) for ${accountName}`);
 
       // Get initial message count safely
       let initialCount = 0;
@@ -208,9 +244,19 @@ class RealTimeImapService {
           initialCount = client.mailbox.messages.total || 0;
         }
       } catch (error) {
-        console.warn(`⚠️ Could not get initial message count for ${accountName}:`, error.message);
+        console.warn(`⚠️ Could not get initial message count for ${folderName}:`, error.message);
       }
-      console.log(`📊 Initial message count for ${accountName}: ${initialCount}`);
+      console.log(`📊 Initial message count for ${folderName}: ${initialCount}`);
+
+      this.lastMessageCounts = this.lastMessageCounts || new Map();
+      if (!this.lastMessageCounts.has(connectionKey)) {
+        const initialValue = folderType === 'drafts' ? 0 : initialCount;
+        this.lastMessageCounts.set(connectionKey, initialValue);
+      }
+
+      if (folderType === 'drafts') {
+        await this.checkForNewEmails(account, client, folderName, folderType, connectionKey);
+      }
 
       // Start IDLE monitoring
       let idlePromise;
@@ -218,20 +264,21 @@ class RealTimeImapService {
         idlePromise = client.idle();
         console.log(`🔄 IDLE monitoring started for ${accountName}`);
       } catch (error) {
-        console.warn(`⚠️ IDLE not supported for ${accountName}, falling back to polling:`, error.message);
-        // Fallback to polling if IDLE is not supported
-        this.startPollingFallback(account, client);
+        console.warn(`⚠️ IDLE not supported for ${accountName} [${folderName}], falling back to polling:`, error.message);
+        this.startPollingFallback(account, client, folderName, folderType, connectionKey);
         return;
       }
       
-      // Handle IDLE events
+      // Handle IDLE events - detect which folder was updated
       client.on('mailboxUpdate', async (update) => {
-        console.log(`📧 New email detected for ${accountName}:`, update);
+        console.log(`📧 Mailbox update detected for ${accountName} [${folderName}]:`, update);
         try {
-          await this.handleNewEmails(account, client, update);
+          if (folderType === 'drafts') {
+            await this.syncDeletedDrafts(account, client, folderName);
+          }
+          await this.handleNewEmails(account, client, update, folderType, folderName);
         } catch (error) {
-          console.error(`❌ Error handling mailbox update for ${accountName}:`, error.message);
-          // Don't throw - just log the error to prevent unhandled promise rejection
+          console.error(`❌ Error handling mailbox update for ${accountName} [${folderName}]:`, error.message);
         }
       });
 
@@ -249,21 +296,21 @@ class RealTimeImapService {
           } else {
             // Connection lost, clear interval
             clearInterval(keepAliveInterval);
-            console.warn(`⚠️ Connection lost for ${accountName}, stopping keep-alive`);
+            console.warn(`⚠️ Connection lost for ${accountName} [${folderName}], stopping keep-alive`);
           }
         } catch (error) {
-          console.error(`❌ Keep-alive failed for ${accountName}:`, error.message);
+          console.error(`❌ Keep-alive failed for ${accountName} [${folderName}]:`, error.message);
           // If keep-alive fails, the connection might be dead - trigger reconnection
           if (error.code === 'ETIMEOUT' || error.message.includes('timeout')) {
             clearInterval(keepAliveInterval);
-            await this.handleConnectionError(account, error, false);
+            await this.handleConnectionError(account, error, false, folderName, folderType);
           }
         }
       }, 30000); // Every 30 seconds
       
       // Store interval for cleanup
-      this.keepAliveIntervals = this.keepAliveIntervals || new Map();
-      this.keepAliveIntervals.set(account.id, keepAliveInterval);
+        this.keepAliveIntervals = this.keepAliveIntervals || new Map();
+        this.keepAliveIntervals.set(connectionKey, keepAliveInterval);
 
       console.log(`✅ IDLE monitoring started for ${accountName}`);
 
@@ -277,58 +324,68 @@ class RealTimeImapService {
   /**
    * Fallback polling method when IDLE is not supported
    */
-  startPollingFallback(account, client) {
+  startPollingFallback(account, client, folderName, folderType, connectionKey) {
     const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-    console.log(`🔄 Starting polling fallback for ${accountName} (every 30 seconds)`);
+    console.log(`🔄 Starting polling fallback for ${accountName} [${folderName}] (every 30 seconds)`);
     
     const pollInterval = setInterval(async () => {
       try {
         if (!client.connected) {
-          console.log(`❌ Client disconnected for ${accountName}, stopping polling`);
+          console.log(`❌ Client disconnected for ${accountName} [${folderName}], stopping polling`);
           clearInterval(pollInterval);
           return;
         }
         
         // Check for new emails
-        await this.checkForNewEmails(account, client);
+        await this.checkForNewEmails(account, client, folderName, folderType, connectionKey);
       } catch (error) {
-        console.error(`❌ Polling error for ${accountName}:`, error.message);
+        console.error(`❌ Polling error for ${accountName} [${folderName}]:`, error.message);
       }
     }, 30000); // Poll every 30 seconds
     
     // Store the interval for cleanup
     this.pollingIntervals = this.pollingIntervals || new Map();
-    this.pollingIntervals.set(account.id, pollInterval);
+    this.pollingIntervals.set(connectionKey, pollInterval);
   }
 
   /**
-   * Check for new emails (polling method)
+   * Check for new emails (polling method) - checks both INBOX and Drafts
    */
-  async checkForNewEmails(account, client) {
+  async checkForNewEmails(account, client, folderName, folderType, connectionKey) {
     try {
-      // Get current message count
-      const status = await client.status('INBOX', { messages: true });
+      this.lastMessageCounts = this.lastMessageCounts || new Map();
+      const lastCount = this.lastMessageCounts.get(connectionKey) || 0;
+
+      const status = await client.status(folderName, { messages: true });
       const currentCount = status.messages || 0;
-      
-      // Compare with stored count
-      const lastCount = this.lastMessageCounts?.get(account.id) || 0;
-      
+
       if (currentCount > lastCount) {
-        console.log(`📧 New emails detected for ${account.name}: ${currentCount - lastCount} new`);
+        console.log(`📧 New emails detected in ${folderName} for ${account.name}: ${currentCount - lastCount} new`);
         
-        // Fetch new emails
-        const newEmails = await this.fetchNewEmails(account, client, lastCount + 1, currentCount);
-        
-        // Process new emails
+        await client.mailboxOpen(folderName);
+
+        const newEmails = await this.fetchNewEmails(account, client, lastCount + 1, currentCount, folderType, folderName);
+
         for (const email of newEmails) {
           await this.processNewEmail(account, email);
         }
+
+        this.lastMessageCounts.set(connectionKey, currentCount);
+      }
+      
+      if (currentCount < lastCount) {
+        console.log(`🗑️ Message count decreased in ${folderName} for ${account.name}: ${lastCount - currentCount} removed`);
+        this.lastMessageCounts.set(connectionKey, currentCount);
+      } else if (currentCount === lastCount && !this.lastMessageCounts.has(connectionKey)) {
+        this.lastMessageCounts.set(connectionKey, currentCount);
+      }
+
+      if (folderType === 'drafts') {
+        await this.syncDeletedDrafts(account, client, folderName);
+      }
         
-        // Update stored count
-        this.lastMessageCounts = this.lastMessageCounts || new Map();
-        this.lastMessageCounts.set(account.id, currentCount);
-        
-        // Update database lastSyncAt when emails are fetched
+      // Update database lastSyncAt when emails are fetched
+      if (folderType === 'inbox') {
         try {
           await EmailAccount.update(
             { 
@@ -349,13 +406,13 @@ class RealTimeImapService {
   /**
    * Handle new emails detected via IDLE
    */
-  async handleNewEmails(account, client, update) {
+  async handleNewEmails(account, client, update, folderType = 'inbox', folderName = 'INBOX') {
     try {
-      console.log(`📬 Processing new emails for ${account.name}...`);
+      console.log(`📬 Processing new emails for ${account.name} in folder ${folderName} (${folderType})...`);
 
       // Get current message count
-      const currentCount = client.mailbox.messages.total;
-      console.log(`📊 Current message count: ${currentCount}`);
+      const currentCount = client.mailbox?.messages?.total || 0;
+      console.log(`📊 Current message count for ${folderName}: ${currentCount}`);
 
       // Fetch recent messages (last 10)
       const messages = await client.fetch({
@@ -380,6 +437,24 @@ class RealTimeImapService {
             references = Array.isArray(references) ? references.join(' ') : String(references);
           }
           
+          // Determine if email is a draft (check folder type first, then IMAP flag)
+          const isDraft = folderType === 'drafts' || msg.flags?.has('\\Draft') || false;
+          
+          // Extract body content - drafts need special handling
+          const bodyHtml = parsed.html || '';
+          const bodyText = parsed.text || '';
+          const body = bodyHtml || (bodyText ? `<pre>${bodyText}</pre>` : '');
+          
+          // For drafts, messageId might not exist - generate one if missing
+          const messageId = isDraft
+            ? `draft-${msg.uid}-${account.id}-${Date.now()}`
+            : (parsed.messageId || `msg-${msg.uid}-${account.id}-${Date.now()}`);
+          
+          // Log draft content for debugging
+          if (isDraft) {
+            console.log(`📝 Draft detected in handleNewEmails - Folder: ${folderName} (${folderType}), Subject: "${parsed.subject}", HTML length: ${bodyHtml.length}, Text length: ${bodyText.length}, UID: ${msg.uid}, MessageId: ${messageId}`);
+          }
+          
           const email = {
             id: uuidv4(),
             uid: msg.uid,
@@ -388,14 +463,15 @@ class RealTimeImapService {
             cc: parsed.cc?.text || '',
             bcc: parsed.bcc?.text || '',
             subject: parsed.subject || '(no subject)',
-            body: parsed.html || `<pre>${parsed.text || ''}</pre>`,
-            bodyText: parsed.text || '',
+            body: body,
+            bodyHtml: bodyHtml, // Ensure bodyHtml is set
+            bodyText: bodyText, // Ensure bodyText is set
             isRead: msg.flags?.has('\\Seen') || false,
             isImportant: msg.flags?.has('\\Flagged') || false,
-            isDraft: msg.flags?.has('\\Draft') || false,
+            isDraft: isDraft, // Use determined draft status
             isSent: false,
             isDeleted: false,
-            folder: 'inbox',
+            folder: folderType, // Use detected folder type (inbox, drafts, etc.)
             threadId: null,
             inReplyTo: parsed.headers.get('in-reply-to') || null,
             attachments: JSON.stringify((parsed.attachments || []).map(a => ({ 
@@ -411,8 +487,9 @@ class RealTimeImapService {
             userId: null,
             emailAccountId: account.id,
             flags: Array.from(msg.flags || []),
-            messageId: parsed.messageId,
-            references: references || null
+            messageId: messageId, // Use generated messageId for drafts if needed
+            references: references || null,
+            status: (folderType === 'drafts' || msg.flags?.has('\\Draft')) ? 'draft' : 'sent' // Set status for drafts
           };
 
           // Process email (auto-creates thread and saves properly)
@@ -455,22 +532,118 @@ class RealTimeImapService {
   }
 
   /**
+   * Reconcile deleted drafts between Gmail and CRM
+   */
+  async syncDeletedDrafts(account, client, folderName = '[Gmail]/Drafts') {
+    if (!Email) {
+      console.warn('⚠️ Email model not initialized, skipping draft deletion sync');
+      return;
+    }
+
+    try {
+      const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
+      const remoteUids = new Set();
+      const remoteMessageIds = new Set();
+
+      let lock;
+      try {
+        lock = await client.getMailboxLock(folderName);
+        const fetcher = await client.fetch('1:*', { uid: true, envelope: true });
+        for await (const msg of fetcher) {
+          if (msg?.uid) {
+            remoteUids.add(msg.uid);
+          }
+          if (msg?.envelope?.messageId) {
+            remoteMessageIds.add(msg.envelope.messageId.trim());
+          }
+        }
+      } catch (mailboxError) {
+        console.error(`❌ Unable to inspect ${folderName} for ${accountName}:`, mailboxError.message);
+        return;
+      } finally {
+        if (lock) {
+          lock.release();
+        }
+      }
+
+      const localDrafts = await Email.findAll({
+        where: {
+          emailAccountId: account.id,
+          folder: 'drafts',
+          isDraft: true,
+          [Op.or]: [
+            { isDeleted: false },
+            { isDeleted: null }
+          ]
+        }
+      });
+
+      if (!localDrafts.length) {
+        return;
+      }
+
+      const draftsToRemove = [];
+      for (const draft of localDrafts) {
+        const hasUid = Boolean(draft.uid);
+        const hasMessageId = Boolean(draft.messageId);
+        const uidMissing = hasUid && !remoteUids.has(draft.uid);
+        const messageMissing = !hasUid && hasMessageId && !remoteMessageIds.has(draft.messageId);
+
+        if (uidMissing || messageMissing) {
+          draftsToRemove.push(draft);
+        }
+      }
+
+      if (!draftsToRemove.length) {
+        return;
+      }
+
+      for (const draft of draftsToRemove) {
+        await draft.update({
+          isDeleted: true,
+          folder: 'trash',
+          updatedAt: new Date()
+        });
+      }
+
+      console.log(`🧹 Removed ${draftsToRemove.length} deleted draft(s) from CRM for ${accountName}`);
+
+      if (this.io) {
+        this.io.emit('emailsDeleted', {
+          accountId: account.id,
+          emailIds: draftsToRemove.map((draft) => draft.id),
+          folder: 'drafts'
+        });
+      }
+    } catch (error) {
+      console.error(`❌ Failed to sync deleted drafts for ${account.name}:`, error.message);
+    }
+  }
+
+  /**
    * Handle connection errors with retry logic
    * @param {Object} account - Email account
    * @param {Error} error - Connection error
    * @param {boolean} incrementRetry - Whether to increment retry count (default: true)
    */
-  async handleConnectionError(account, error, incrementRetry = true) {
+  async handleConnectionError(account, error, incrementRetry = true, folderName = 'INBOX', folderType = 'inbox') {
     const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-    const retryCount = this.retryAttempts.get(account.id) || 0;
+    const connectionKey = `${account.id}:${folderName}`;
+    const retryCount = this.retryAttempts.get(connectionKey) || 0;
     
     // Remove connection from map
-    this.connections.delete(account.id);
+    this.connections.delete(connectionKey);
     
     // Clear keep-alive interval if it exists
-    if (this.keepAliveIntervals && this.keepAliveIntervals.has(account.id)) {
-      clearInterval(this.keepAliveIntervals.get(account.id));
-      this.keepAliveIntervals.delete(account.id);
+    if (this.keepAliveIntervals && this.keepAliveIntervals.has(connectionKey)) {
+      clearInterval(this.keepAliveIntervals.get(connectionKey));
+      this.keepAliveIntervals.delete(connectionKey);
+    }
+    
+    // Clear polling interval if it exists
+    if (this.pollingIntervals && this.pollingIntervals.has(connectionKey)) {
+      clearInterval(this.pollingIntervals.get(connectionKey));
+      this.pollingIntervals.delete(connectionKey);
     }
     
     // Determine error type and message
@@ -480,16 +653,18 @@ class RealTimeImapService {
       : error.message || 'Connection error';
     
     // Update database with error status
-    try {
-      await EmailAccount.update(
-        { 
-          syncStatus: retryCount < this.maxRetries ? 'error' : 'disconnected',
-          errorMessage: errorMessage
-        },
-        { where: { id: account.id } }
-      );
-    } catch (dbError) {
-      console.error(`⚠️ Failed to update database error status for ${accountName}:`, dbError.message);
+    if (folderType === 'inbox') {
+      try {
+        await EmailAccount.update(
+          { 
+            syncStatus: retryCount < this.maxRetries ? 'error' : 'disconnected',
+            errorMessage: errorMessage
+          },
+          { where: { id: account.id } }
+        );
+      } catch (dbError) {
+        console.error(`⚠️ Failed to update database error status for ${accountName}:`, dbError.message);
+      }
     }
     
     // For timeout errors, use longer retry delay (network issues take longer to resolve)
@@ -497,38 +672,40 @@ class RealTimeImapService {
     
     if (retryCount < this.maxRetries) {
       const newRetryCount = incrementRetry ? retryCount + 1 : retryCount;
-      console.log(`🔄 Retrying connection for ${accountName} (attempt ${newRetryCount}/${this.maxRetries}) - ${isTimeout ? 'timeout' : 'error'}`);
+      console.log(`🔄 Retrying connection for ${accountName} [${folderName}] (attempt ${newRetryCount}/${this.maxRetries}) - ${isTimeout ? 'timeout' : 'error'}`);
       
       if (incrementRetry) {
-        this.retryAttempts.set(account.id, newRetryCount);
+        this.retryAttempts.set(connectionKey, newRetryCount);
       }
       
       setTimeout(async () => {
         try {
-          await this.startAccountMonitoring(account);
+          await this.startFolderConnection(account, { name: folderName, type: folderType });
         } catch (retryError) {
-          console.error(`❌ Retry failed for ${accountName}:`, retryError.message);
+          console.error(`❌ Retry failed for ${accountName} [${folderName}]:`, retryError.message);
           // Continue retry loop if not max retries
           if (newRetryCount < this.maxRetries) {
-            await this.handleConnectionError(account, retryError);
+            await this.handleConnectionError(account, retryError, incrementRetry, folderName, folderType);
           }
         }
       }, retryDelay);
     } else {
-      console.error(`❌ Max retries exceeded for ${accountName}. Stopping monitoring.`);
-      this.retryAttempts.delete(account.id);
+      console.error(`❌ Max retries exceeded for ${accountName} [${folderName}]. Stopping monitoring.`);
+      this.retryAttempts.delete(connectionKey);
       
       // Update database with final disconnected status
-      try {
-        await EmailAccount.update(
-          { 
-            syncStatus: 'disconnected',
-            errorMessage: `Max retries reached: ${errorMessage}`
-          },
-          { where: { id: account.id } }
-        );
-      } catch (dbError) {
-        console.error(`⚠️ Failed to update database disconnected status for ${accountName}:`, dbError.message);
+      if (folderType === 'inbox') {
+        try {
+          await EmailAccount.update(
+            { 
+              syncStatus: 'disconnected',
+              errorMessage: `Max retries reached: ${errorMessage}`
+            },
+            { where: { id: account.id } }
+          );
+        } catch (dbError) {
+          console.error(`⚠️ Failed to update database disconnected status for ${accountName}:`, dbError.message);
+        }
       }
     }
   }
@@ -543,7 +720,7 @@ class RealTimeImapService {
     
     // Clear all keep-alive intervals
     if (this.keepAliveIntervals) {
-      for (const [accountId, interval] of this.keepAliveIntervals) {
+      for (const [connectionKey, interval] of this.keepAliveIntervals) {
         clearInterval(interval);
       }
       this.keepAliveIntervals.clear();
@@ -551,7 +728,7 @@ class RealTimeImapService {
     
     // Clear all polling intervals
     if (this.pollingIntervals) {
-      for (const [accountId, interval] of this.pollingIntervals) {
+      for (const [connectionKey, interval] of this.pollingIntervals) {
         clearInterval(interval);
       }
       this.pollingIntervals.clear();
@@ -559,7 +736,7 @@ class RealTimeImapService {
     
     // Close all connections with timeout protection
     const closePromises = [];
-    for (const [accountId, client] of this.connections) {
+    for (const [connectionKey, client] of this.connections) {
       closePromises.push(
         Promise.race([
           (async () => {
@@ -568,12 +745,12 @@ class RealTimeImapService {
                 await client.logout();
               }
             } catch (error) {
-              console.error(`❌ Error closing connection for account ${accountId}:`, error.message);
+              console.error(`❌ Error closing connection for ${connectionKey}:`, error.message);
             }
           })(),
           new Promise((resolve) => 
             setTimeout(() => {
-              console.warn(`⏱️ Timeout closing connection for account ${accountId}`);
+              console.warn(`⏱️ Timeout closing connection for ${connectionKey}`);
               resolve();
             }, 5000)
           )
@@ -604,7 +781,7 @@ class RealTimeImapService {
   /**
    * Fetch new emails from a range
    */
-  async fetchNewEmails(account, client, startSeq, endSeq) {
+  async fetchNewEmails(account, client, startSeq, endSeq, folderType = 'inbox', folderName = 'INBOX') {
     try {
       const emails = [];
       const messageSet = `${startSeq}:${endSeq}`;
@@ -627,6 +804,24 @@ class RealTimeImapService {
             references = Array.isArray(references) ? references.join(' ') : String(references);
           }
           
+          // Determine if email is a draft (either from folder type or IMAP flag)
+          const isDraft = folderType === 'drafts' || msg.flags?.has('\\Draft') || false;
+          
+          // Extract body content - drafts need special handling
+          const bodyHtml = parsed.html || '';
+          const bodyText = parsed.text || '';
+          const body = bodyHtml || (bodyText ? `<pre>${bodyText}</pre>` : '');
+          
+          // For drafts, messageId might not exist - generate one if missing
+          const messageId = isDraft
+            ? `draft-${msg.uid}-${account.id}-${Date.now()}`
+            : (parsed.messageId || `msg-${msg.uid}-${account.id}-${Date.now()}`);
+          
+          // Log draft content for debugging
+          if (isDraft) {
+            console.log(`📝 Draft detected in fetchNewEmails - Subject: "${parsed.subject}", HTML length: ${bodyHtml.length}, Text length: ${bodyText.length}`);
+          }
+          
           const email = {
             id: uuidv4(),
             uid: msg.uid,
@@ -635,13 +830,15 @@ class RealTimeImapService {
             cc: parsed.cc?.text || '',
             bcc: parsed.bcc?.text || '',
             subject: parsed.subject || '(no subject)',
-            body: parsed.html || `<pre>${parsed.text || ''}</pre>`,
-            bodyText: parsed.text || '',
+            body: body,
+            bodyHtml: bodyHtml, // Ensure bodyHtml is set
+            bodyText: bodyText, // Ensure bodyText is set
             isRead: msg.flags?.has('\\Seen') || false,
             isImportant: msg.flags?.has('\\Flagged') || false,
-            isDraft: msg.flags?.has('\\Draft') || false,
+            isDraft: isDraft, // Use folder-based detection
             isSent: false,
             isDeleted: false,
+            folder: folderType, // Use detected folder type
             threadId: null,
             inReplyTo: parsed.headers.get('in-reply-to') || null,
             attachments: JSON.stringify((parsed.attachments || []).map(a => ({
@@ -656,10 +853,10 @@ class RealTimeImapService {
             clientId: null,
             userId: account.userId,
             flags: Array.from(msg.flags || []),
-            messageId: parsed.messageId,
+            messageId: messageId, // Use generated messageId for drafts if needed
             references: references || null,
             emailAccountId: account.id,
-            folder: 'inbox'
+            status: isDraft ? 'draft' : 'sent' // Set status for drafts
           };
           
           emails.push(email);
@@ -680,49 +877,70 @@ class RealTimeImapService {
    */
   async processNewEmail(account, email) {
     try {
-      // Check if email already exists
-      const existingEmail = await Email.findOne({
-        where: { messageId: email.messageId }
-      });
-
-      if (!existingEmail) {
-        // Auto-create or find thread for this email
-        const threadIdentifier = email.inReplyTo || email.references || email.subject || 'no-subject';
-        
-        let thread = await EmailThread.findOne({
+      // For drafts, check by UID and emailAccountId instead of just messageId
+      // (drafts might not have a stable messageId)
+      let existingEmail = null;
+      if (email.isDraft && email.uid) {
+        existingEmail = await Email.findOne({
           where: { 
+            uid: email.uid,
             emailAccountId: account.id,
-            subject: email.subject || 'no-subject'
+            folder: 'drafts'
           }
         });
 
-        if (!thread) {
-          // Create new thread
-          thread = await EmailThread.create({
-            id: uuidv4(),
-            subject: email.subject || 'no-subject',
-            participants: JSON.stringify([email.from, email.to]),
-            lastMessageId: email.messageId,
-            lastMessageAt: email.date,
-            messageCount: 1,
-            isRead: email.isRead,
-            isImportant: email.isImportant,
-            emailAccountId: account.id,
-            clientId: email.clientId,
-            status: 'active'
-          });
-        } else {
-          // Update existing thread
-          await thread.update({
-            lastMessageId: email.messageId,
-            lastMessageAt: email.date,
-            messageCount: thread.messageCount + 1,
-            isRead: email.isRead
+        if (!existingEmail && email.messageId) {
+          existingEmail = await Email.findOne({
+            where: { messageId: email.messageId }
           });
         }
+      } else if (email.messageId) {
+        existingEmail = await Email.findOne({
+          where: { messageId: email.messageId }
+        });
+      }
 
-        // Set threadId for the email
-        email.threadId = thread.id;
+      if (!existingEmail) {
+        // Auto-create or find thread for this email (skip for drafts)
+        const threadIdentifier = email.inReplyTo || email.references || email.subject || 'no-subject';
+        
+        let thread = null;
+        if (!email.isDraft) {
+          thread = await EmailThread.findOne({
+            where: { 
+              emailAccountId: account.id,
+              subject: email.subject || 'no-subject'
+            }
+          });
+
+          if (!thread) {
+            // Create new thread
+            thread = await EmailThread.create({
+              id: uuidv4(),
+              subject: email.subject || 'no-subject',
+              participants: JSON.stringify([email.from, email.to]),
+              lastMessageId: email.messageId,
+              lastMessageAt: email.date,
+              messageCount: 1,
+              isRead: email.isRead,
+              isImportant: email.isImportant,
+              emailAccountId: account.id,
+              clientId: email.clientId,
+              status: 'active'
+            });
+          } else {
+            // Update existing thread
+            await thread.update({
+              lastMessageId: email.messageId,
+              lastMessageAt: email.date,
+              messageCount: thread.messageCount + 1,
+              isRead: email.isRead
+            });
+          }
+
+          // Set threadId for the email
+          email.threadId = thread.id;
+        }
 
         // Ensure references is a string (not array/object)
         if (email.references && typeof email.references !== 'string') {
@@ -734,27 +952,42 @@ class RealTimeImapService {
         // Store new email
         const savedEmail = await Email.create(email);
         
-        // Create email log
-        await EmailLog.create({
-          id: uuidv4(),
-          emailId: savedEmail.id,
-          clientId: email.clientId,
-          from: email.from,
-          to: email.to,
-          subject: email.subject,
-          bodyPreview: (email.bodyText || '').substring(0, 100),
-          status: 'received',
-          smtpAccountId: account.id,
-          messageId: email.messageId,
-          in_reply_to: email.inReplyTo,
-          thread_id: thread.id,
-          receivedAt: email.receivedAt,
-          attempts: 1,
-          errorText: null,
-          action: 'received'
-        });
+        // Log draft details for debugging
+        if (email.isDraft) {
+          console.log(`📝 Draft saved successfully:`, {
+            id: savedEmail.id,
+            subject: email.subject,
+            folder: email.folder,
+            isDraft: email.isDraft,
+            bodyHtmlLength: (email.bodyHtml || '').length,
+            bodyTextLength: (email.bodyText || '').length,
+            messageId: email.messageId
+          });
+        }
         
-        console.log(`📧 New email processed: ${email.subject}`);
+        // Create email log (skip for drafts as they're not "received")
+        if (!email.isDraft) {
+          await EmailLog.create({
+            id: uuidv4(),
+            emailId: savedEmail.id,
+            clientId: email.clientId,
+            from: email.from,
+            to: email.to,
+            subject: email.subject,
+            bodyPreview: (email.bodyText || '').substring(0, 100),
+            status: 'received',
+            smtpAccountId: account.id,
+            messageId: email.messageId,
+            in_reply_to: email.inReplyTo,
+            thread_id: thread?.id || null,
+            receivedAt: email.receivedAt,
+            attempts: 1,
+            errorText: null,
+            action: 'received'
+          });
+        }
+        
+        console.log(`📧 New email processed: ${email.subject}${email.isDraft ? ' (DRAFT)' : ''}`);
         
         // Emit real-time update
         if (this.io) {
@@ -765,7 +998,10 @@ class RealTimeImapService {
         }
       }
     } catch (error) {
-      console.error(`Error saving email:`, error.message);
+      const validationDetails = Array.isArray(error?.errors)
+        ? error.errors.map(e => `${e.path}: ${e.message}`).join('; ')
+        : '';
+      console.error(`Error saving email:`, error.message, validationDetails);
     }
   }
 }

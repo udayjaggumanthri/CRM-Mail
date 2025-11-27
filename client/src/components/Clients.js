@@ -197,11 +197,17 @@ const Clients = () => {
     'Lead',
     'Abstract Submitted',
     'Registered',
-    'Unresponsive',
+    'Unresponsive', // Backend value - displayed as "Declined" in UI
     'Registration Unresponsive',
     'Rejected',
     'Completed'
   ];
+
+  // Helper function to map backend status to display label
+  const getStatusDisplayLabel = (status) => {
+    if (status === 'Unresponsive') return 'Declined';
+    return status;
+  };
 
   // Sort options
   const sortOptions = [
@@ -451,6 +457,36 @@ const Clients = () => {
     bulkConferenceMutation.mutate({ ids: selectedClients, conferenceId: bulkConferenceId });
   };
 
+  // Helper function to get conference display name (shortName preferred, fallback to name)
+  const getConferenceDisplayName = (conference) => {
+    if (!conference) return null;
+    return conference.shortName || conference.name || null;
+  };
+
+  // Helper component for truncated conference name with tooltip
+  const ConferenceNameDisplay = ({ conference, maxLength = 30, className = '' }) => {
+    const displayName = getConferenceDisplayName(conference);
+    const fullName = conference?.name || '';
+    
+    if (!displayName) {
+      return <span className={`text-gray-400 italic ${className}`}>No Conference</span>;
+    }
+
+    const needsTruncation = displayName.length > maxLength;
+    const truncatedName = needsTruncation ? `${displayName.substring(0, maxLength)}...` : displayName;
+    const tooltipText = fullName && fullName !== displayName ? `${displayName}\n${fullName}` : displayName;
+
+    return (
+      <span
+        className={`${className} ${needsTruncation ? 'cursor-help' : ''}`}
+        title={tooltipText}
+        style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
+        {truncatedName}
+      </span>
+    );
+  };
+
   const handleExport = () => {
     const csvContent = [
       ['Name', 'Email', 'Country', 'Status', 'Conference', 'Date Added'],
@@ -459,7 +495,7 @@ const Clients = () => {
         client.email,
         client.country || '',
         client.status,
-        client.conference?.name || '',
+        getConferenceDisplayName(client.conference) || '',
         new Date(client.createdAt).toLocaleDateString()
       ])
     ].map(row => row.map(field => `"${field}"`).join(',')).join('\n');
@@ -648,7 +684,7 @@ const getInitialsFromName = (name) => {
                   <XMarkIcon className="w-6 h-6 text-red-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Unresponsive</p>
+                  <p className="text-sm font-medium text-gray-600">Declined</p>
                   <p className="text-2xl font-bold text-gray-900">
                     {clients.filter(c => c.status === 'Unresponsive').length}
                   </p>
@@ -680,7 +716,9 @@ const getInitialsFromName = (name) => {
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             >
               {statusOptions.map(status => (
-                <option key={status} value={status}>{status}</option>
+                <option key={status} value={status}>
+                  {status === 'All Statuses' ? status : getStatusDisplayLabel(status)}
+                </option>
               ))}
             </select>
 
@@ -901,9 +939,7 @@ const getInitialsFromName = (name) => {
                         </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {client.conference?.name || (
-                          <span className="text-gray-400 italic">No Conference</span>
-                        )}
+                        <ConferenceNameDisplay conference={client.conference} maxLength={30} />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         <div className="flex items-center">
@@ -995,15 +1031,13 @@ const getInitialsFromName = (name) => {
                   </div>
                   <div className="flex items-center text-sm text-gray-600">
                     <GlobeAltIcon className="w-4 h-4 mr-2" />
-                    {client.conference?.name || (
-                      <span className="text-gray-400 italic">No Conference</span>
-                    )}
+                    <ConferenceNameDisplay conference={client.conference} maxLength={25} />
                   </div>
                 </div>
 
                 <div className="flex items-center justify-between">
                   <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(client.status)}`}>
-                    {client.status}
+                    {getStatusDisplayLabel(client.status)}
                   </span>
                   <div className="flex items-center space-x-2">
                     <button
@@ -1187,7 +1221,7 @@ const getInitialsFromName = (name) => {
               <option value="Lead">Lead - New contact</option>
               <option value="Abstract Submitted">Abstract Submitted - Paper submitted</option>
               <option value="Registered">Registered - Confirmed attendance</option>
-              <option value="Unresponsive">Unresponsive - No response to Stage 1</option>
+              <option value="Unresponsive">Declined - No response to Stage 1</option>
               <option value="Registration Unresponsive">Registration Unresponsive - No response to Stage 2</option>
               <option value="Rejected">Rejected - Declined</option>
               <option value="Completed">Completed - Conference done</option>
@@ -1289,7 +1323,7 @@ const getInitialsFromName = (name) => {
                   <strong>Registered + Completed:</strong> Client already registered → No automated emails are sent.
                 </li>
                 <li className="text-orange-700">
-                  <strong>Auto-Unresponsive Marking:</strong> If Stage 1 max reached and status still "Lead" → marked "Unresponsive". If Stage 2 max reached and status still "Abstract Submitted" → marked "Registration Unresponsive"
+                  <strong>Auto-Declined Marking:</strong> If Stage 1 max reached and status still "Lead" → marked "Declined". If Stage 2 max reached and status still "Abstract Submitted" → marked "Registration Unresponsive"
                 </li>
               </ul>
             </div>
@@ -1351,7 +1385,7 @@ const getInitialsFromName = (name) => {
                       </h3>
                       <p className="text-gray-600">{selectedClient.organization}</p>
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(selectedClient.status)}`}>
-                        {selectedClient.status}
+                        {getStatusDisplayLabel(selectedClient.status)}
                       </span>
                     </div>
                   </div>
@@ -1378,9 +1412,7 @@ const getInitialsFromName = (name) => {
                         <div>
                           <span className="text-sm font-medium text-gray-500">Conference:</span>
                           <span className="text-sm text-gray-600 ml-2">
-                            {selectedClient.conference?.name || (
-                              <span className="text-gray-400 italic">No Conference</span>
-                            )}
+                            <ConferenceNameDisplay conference={selectedClient.conference} maxLength={40} />
                           </span>
                         </div>
                         <div>
@@ -1455,7 +1487,7 @@ const getInitialsFromName = (name) => {
                   >
                     <option value="">Select Status</option>
                     {statusOptions.slice(1).map(status => (
-                      <option key={status} value={status}>{status}</option>
+                      <option key={status} value={status}>{getStatusDisplayLabel(status)}</option>
                     ))}
                   </select>
                 </div>
