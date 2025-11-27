@@ -15,6 +15,7 @@ class RealTimeImapService {
     this.retryAttempts = new Map();
     this.maxRetries = 3;
     this.retryDelay = 5000;
+    this.unsupportedDraftFolders = new Set();
   }
 
   /**
@@ -316,7 +317,13 @@ class RealTimeImapService {
 
     } catch (error) {
       const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
-      console.error(`❌ Failed to start IDLE monitoring for ${accountName}:`, error.message);
+      const errorMsg = error?.message || '';
+      if (errorMsg.includes('Command failed') || errorMsg.includes('BAD') || errorMsg.includes('NO')) {
+        console.warn(`⚠️ IDLE unsupported for ${accountName} [${folderName}] - falling back to polling`, errorMsg);
+        this.startPollingFallback(account, client, folderName, folderType, connectionKey);
+        return;
+      }
+      console.error(`❌ Failed to start IDLE monitoring for ${accountName}:`, errorMsg);
       await this.handleConnectionError(account, error);
     }
   }
@@ -545,6 +552,10 @@ class RealTimeImapService {
       const remoteUids = new Set();
       const remoteMessageIds = new Set();
 
+      if (this.unsupportedDraftFolders.has(`${account.id}:${folderName}`)) {
+        return;
+      }
+
       let lock;
       try {
         lock = await client.getMailboxLock(folderName);
@@ -558,7 +569,14 @@ class RealTimeImapService {
           }
         }
       } catch (mailboxError) {
-        console.error(`❌ Unable to inspect ${folderName} for ${accountName}:`, mailboxError.message);
+        const key = `${account.id}:${folderName}`;
+        if (!this.unsupportedDraftFolders.has(key)) {
+          console.error(`❌ Unable to inspect ${folderName} for ${accountName}:`, mailboxError.message);
+          if (mailboxError.message?.includes('Command failed') || mailboxError.code === 'ALREADYEXISTS' || mailboxError.message?.includes('does not exist')) {
+            this.unsupportedDraftFolders.add(key);
+            console.warn(`⚠️ Disabling draft deletion sync for ${accountName} [${folderName}] due to unsupported mailbox`);
+          }
+        }
         return;
       } finally {
         if (lock) {
