@@ -8,6 +8,78 @@ const { Op } = require('sequelize');
 // JWT Secret from environment or default
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
+// Helper function to handle Sequelize validation errors and return proper error responses
+const handleSequelizeError = (error, res, defaultMessage = 'An error occurred') => {
+  console.error('Database error:', error);
+  
+  // Handle Sequelize validation errors
+  if (error.name === 'SequelizeValidationError') {
+    const validationErrors = error.errors.map(err => ({
+      field: err.path,
+      message: err.message,
+      value: err.value
+    }));
+    
+    // Create user-friendly error message
+    const errorMessages = validationErrors.map(err => {
+      const fieldName = err.field.charAt(0).toUpperCase() + err.field.slice(1).replace(/([A-Z])/g, ' $1');
+      return `${fieldName}: ${err.message}`;
+    });
+    
+    return res.status(400).json({
+      error: 'Validation failed',
+      message: errorMessages.join(', '),
+      details: validationErrors
+    });
+  }
+  
+  // Handle unique constraint errors
+  if (error.name === 'SequelizeUniqueConstraintError') {
+    const field = error.errors?.[0]?.path || 'field';
+    const fieldName = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return res.status(400).json({
+      error: 'Duplicate entry',
+      message: `${fieldName} already exists. Please use a different value.`,
+      field: field
+    });
+  }
+  
+  // Handle foreign key constraint errors
+  if (error.name === 'SequelizeForeignKeyConstraintError') {
+    return res.status(400).json({
+      error: 'Invalid reference',
+      message: 'The referenced record does not exist. Please check your input.'
+    });
+  }
+  
+  // Handle database connection errors
+  if (error.name === 'SequelizeConnectionError') {
+    return res.status(503).json({
+      error: 'Database connection error',
+      message: 'Unable to connect to the database. Please try again later.'
+    });
+  }
+  
+  // Handle not null constraint errors
+  if (error.name === 'SequelizeDatabaseError' && error.message?.includes('NOT NULL')) {
+    const fieldMatch = error.message.match(/column "(\w+)"/);
+    const field = fieldMatch ? fieldMatch[1] : 'field';
+    const fieldName = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return res.status(400).json({
+      error: 'Required field missing',
+      message: `${fieldName} is required. Please provide a value.`,
+      field: field
+    });
+  }
+  
+  // Default error response
+  return res.status(500).json({
+    error: 'Internal server error',
+    message: defaultMessage,
+    details: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
+};
+
 // Middleware to check authentication
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -123,14 +195,64 @@ router.post('/', authenticateToken, async (req, res) => {
     }
     
     // Validate required fields
-    if (!name || !email || !password || !role) {
-      return res.status(400).json({ error: 'Name, email, password, and role are required' });
+    if (!name || !name.trim()) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Name is required',
+        field: 'name'
+      });
+    }
+    
+    if (!email || !email.trim()) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Email is required',
+        field: 'email'
+      });
+    }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Please enter a valid email address',
+        field: 'email'
+      });
+    }
+    
+    if (!password || !password.trim()) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Password is required',
+        field: 'password'
+      });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Password must be at least 6 characters long',
+        field: 'password'
+      });
+    }
+    
+    if (!role) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Role is required',
+        field: 'role'
+      });
     }
     
     // Check if user already exists
-    const existingUser = await User.findOne({ where: { email } });
+    const existingUser = await User.findOne({ where: { email: email.trim() } });
     if (existingUser) {
-      return res.status(400).json({ error: 'User with this email already exists' });
+      return res.status(400).json({ 
+        error: 'Duplicate entry',
+        message: 'A user with this email already exists',
+        field: 'email'
+      });
     }
     
     // Hash password
@@ -168,8 +290,7 @@ router.post('/', authenticateToken, async (req, res) => {
       user: userResponse
     });
   } catch (error) {
-    console.error('Error creating user:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    return handleSequelizeError(error, res, 'Failed to create user');
   }
 });
 
@@ -187,6 +308,50 @@ router.put('/:id', authenticateToken, async (req, res) => {
     // Access control
     if (req.user.role !== 'CEO' && req.user.id !== id) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    // Validate fields if they are being updated
+    if (name !== undefined && (!name || !name.trim())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Name is required',
+        field: 'name'
+      });
+    }
+    
+    if (email !== undefined) {
+      if (!email || !email.trim()) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          message: 'Email is required',
+          field: 'email'
+        });
+      }
+      
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          message: 'Please enter a valid email address',
+          field: 'email'
+        });
+      }
+      
+      // Check if email is already taken by another user
+      const existingUser = await User.findOne({ 
+        where: { 
+          email: email.trim(),
+          id: { [Op.ne]: id }
+        } 
+      });
+      if (existingUser) {
+        return res.status(400).json({
+          error: 'Duplicate entry',
+          message: 'A user with this email already exists',
+          field: 'email'
+        });
+      }
     }
     
     // Update user
@@ -218,8 +383,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
       user: userResponse
     });
   } catch (error) {
-    console.error('Error updating user:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    return handleSequelizeError(error, res, 'Failed to update user');
   }
 });
 

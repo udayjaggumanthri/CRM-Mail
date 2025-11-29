@@ -332,15 +332,6 @@ const Login = () => {
               Forgot your password?
             </button>
           </div>
-
-          <div className="mt-6 p-4 bg-blue-50 rounded-lg">
-            <h3 className="text-sm font-medium text-blue-800 mb-2">Demo Accounts:</h3>
-            <div className="text-xs text-blue-700 space-y-1">
-              <div><strong>CEO:</strong> admin@crm.com / admin123</div>
-              <div><strong>Manager:</strong> manager@crm.com / manager123</div>
-              <div><strong>Agent:</strong> agent@crm.com / agent123</div>
-            </div>
-          </div>
         </form>
       </div>
     </div>

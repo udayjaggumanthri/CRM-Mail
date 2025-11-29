@@ -130,7 +130,7 @@ const Clients = () => {
         if (conferenceFilter) params.append('conferenceId', conferenceFilter);
         if (statusFilter && statusFilter !== 'All Statuses') params.append('status', statusFilter);
         if (countryFilter && countryFilter !== 'All Countries') params.append('country', countryFilter);
-        if (searchTerm) params.append('search', searchTerm);
+        if (searchTerm) params.append('search', searchTerm.trim().substring(0, 200)); // Sanitize search
         params.append('sortBy', sortBy);
         params.append('sortOrder', sortOrder);
         if (emailActivityFilter === 'today') params.append('emailFilter', 'today');
@@ -148,6 +148,10 @@ const Clients = () => {
     {
       retry: 1, // Only retry once
       staleTime: 2 * 60 * 1000, // Consider data fresh for 2 minutes
+      onError: (error) => {
+        console.error('Client query error:', error);
+        toast.error('Failed to load clients. Please try again.');
+      },
       cacheTime: 5 * 60 * 1000, // Keep in cache for 5 minutes
       // For Members, enable focus refetch for immediate updates when switching back to browser
       refetchOnWindowFocus: user?.role === 'Member',
@@ -255,7 +259,8 @@ const Clients = () => {
         resetForm();
     },
     onError: (error) => {
-        toast.error(error.response?.data?.message || 'Failed to update client');
+        const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to update client';
+        toast.error(errorMessage);
       }
     }
   );

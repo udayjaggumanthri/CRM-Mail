@@ -74,6 +74,154 @@ const buildDraftMime = async (emailPayload, account) => {
   return composer.compile().build();
 };
 
+// Helper function to get IMAP client for an account
+const getImapClient = async (account) => {
+  if (!account?.imapHost || !account?.imapUsername || !account?.imapPassword) {
+    return null;
+  }
+
+  const client = new ImapFlow({
+    host: account.imapHost,
+    port: Number(account.imapPort) || 993,
+    secure: account.imapSecure !== false,
+    auth: {
+      user: account.imapUsername,
+      pass: decryptEmailPassword(account.imapPassword)
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    logger: false
+  });
+
+  await client.connect();
+  return client;
+};
+
+// Helper function to resolve folder name for IMAP operations
+const resolveImapFolderName = (folderName, account) => {
+  if (!folderName) return 'INBOX';
+  
+  const isGmail = account?.imapHost?.toLowerCase().includes('gmail') || 
+                  account?.email?.toLowerCase().includes('gmail');
+  
+  // Map common folder names to IMAP folder names
+  const folderMap = {
+    'inbox': 'INBOX',
+    'sent': isGmail ? '[Gmail]/Sent Mail' : 'Sent',
+    'drafts': isGmail ? '[Gmail]/Drafts' : 'Drafts',
+    'trash': isGmail ? '[Gmail]/Trash' : 'Trash',
+    'archive': isGmail ? '[Gmail]/All Mail' : 'Archive',
+    'spam': isGmail ? '[Gmail]/Spam' : 'Spam',
+    'all mail': isGmail ? '[Gmail]/All Mail' : 'All Mail'
+  };
+
+  return folderMap[folderName?.toLowerCase()] || folderName;
+};
+
+// Helper function to sync email operations with IMAP server
+const syncEmailOperationToImap = async (email, account, operation, options = {}) => {
+  if (!account?.imapHost || !account?.imapUsername || !account?.imapPassword) {
+    console.warn(`Skipping IMAP sync for ${account?.email} - IMAP credentials missing`);
+    return null;
+  }
+
+  if (!email.uid) {
+    console.warn(`Skipping IMAP sync for email ${email.id} - no UID available`);
+    return null;
+  }
+
+  let client = null;
+  try {
+    client = await getImapClient(account);
+    if (!client) return null;
+
+    const currentFolder = resolveImapFolderName(email.folder || 'inbox', account);
+    const lock = await client.getMailboxLock(currentFolder);
+
+    try {
+      if (operation === 'delete') {
+        // Move to trash or delete
+        const trashFolder = resolveImapFolderName('trash', account);
+        try {
+          await client.messageMove(email.uid, trashFolder, { uid: true });
+          console.log(`✅ Moved email ${email.id} (UID: ${email.uid}) to trash on IMAP`);
+        } catch (moveError) {
+          // If move fails, try to delete directly
+          try {
+            await client.messageDelete(email.uid, { uid: true });
+            console.log(`✅ Deleted email ${email.id} (UID: ${email.uid}) from IMAP`);
+          } catch (deleteError) {
+            console.warn(`⚠️ Failed to delete email ${email.id} from IMAP:`, deleteError.message);
+          }
+        }
+      } else if (operation === 'archive') {
+        // For Gmail, archive means moving to All Mail (or removing \Inbox flag)
+        // For other providers, move to Archive folder
+        const archiveFolder = resolveImapFolderName('archive', account);
+        try {
+          // Try to move to archive folder
+          await client.messageMove(email.uid, archiveFolder, { uid: true });
+          console.log(`✅ Moved email ${email.id} (UID: ${email.uid}) to archive on IMAP`);
+        } catch (error) {
+          // If move fails, try to remove \Inbox flag (Gmail archive behavior)
+          try {
+            await client.messageFlagsRemove(email.uid, ['\\Inbox'], { uid: true });
+            console.log(`✅ Archived email ${email.id} (UID: ${email.uid}) by removing \\Inbox flag`);
+          } catch (flagError) {
+            console.warn(`⚠️ Failed to archive email ${email.id} on IMAP:`, error.message);
+          }
+        }
+      } else if (operation === 'star') {
+        // Set or remove starred flag
+        const flags = options.isStarred ? ['\\Flagged'] : [];
+        try {
+          await client.messageFlagsSet(email.uid, flags, { uid: true });
+          console.log(`✅ ${options.isStarred ? 'Starred' : 'Unstarred'} email ${email.id} (UID: ${email.uid}) on IMAP`);
+        } catch (error) {
+          console.warn(`⚠️ Failed to ${options.isStarred ? 'star' : 'unstar'} email ${email.id} on IMAP:`, error.message);
+        }
+      } else if (operation === 'move') {
+        // Move to a different folder
+        const targetFolder = resolveImapFolderName(options.targetFolder, account);
+        try {
+          await client.messageMove(email.uid, targetFolder, { uid: true });
+          console.log(`✅ Moved email ${email.id} (UID: ${email.uid}) to ${targetFolder} on IMAP`);
+        } catch (error) {
+          console.warn(`⚠️ Failed to move email ${email.id} to ${options.targetFolder} on IMAP:`, error.message);
+        }
+      } else if (operation === 'read') {
+        // Set or remove read flag (\Seen)
+        const flags = options.isRead ? ['\\Seen'] : [];
+        try {
+          if (options.isRead) {
+            await client.messageFlagsAdd(email.uid, flags, { uid: true });
+            console.log(`✅ Marked email ${email.id} (UID: ${email.uid}) as read on IMAP`);
+          } else {
+            await client.messageFlagsRemove(email.uid, ['\\Seen'], { uid: true });
+            console.log(`✅ Marked email ${email.id} (UID: ${email.uid}) as unread on IMAP`);
+          }
+        } catch (error) {
+          console.warn(`⚠️ Failed to ${options.isRead ? 'mark as read' : 'mark as unread'} email ${email.id} on IMAP:`, error.message);
+        }
+      }
+    } finally {
+      lock.release();
+    }
+  } catch (error) {
+    console.error(`❌ IMAP sync error for email ${email.id}:`, error.message);
+    // Don't throw - allow operation to continue even if IMAP sync fails
+  } finally {
+    if (client) {
+      try {
+        await client.logout();
+      } catch (logoutError) {
+        // Ignore logout errors
+      }
+    }
+  }
+};
+
 const syncDraftToMailbox = async (emailRecord, account, { replaceUid = null } = {}) => {
   if (!account?.imapHost || !account?.imapUsername || !account?.imapPassword) {
     console.warn(`Skipping IMAP draft sync for ${account?.email} - IMAP credentials missing`);
@@ -250,7 +398,8 @@ router.get('/suggestions', async (req, res) => {
 // Get emails with advanced filtering
 router.get('/', async (req, res) => {
   try {
-    const {
+    // Validate and sanitize filter parameters
+    let {
       folder = 'inbox',
       search = '',
       filter = 'all',
@@ -264,6 +413,89 @@ router.get('/', async (req, res) => {
       startDate,
       endDate
     } = req.query;
+    
+    // Validate folder
+    const validFolders = ['inbox', 'sent', 'drafts', 'trash', 'spam', 'all', 'all-mail', 'archive'];
+    if (!validFolders.includes(folder)) {
+      folder = 'inbox';
+    }
+    
+    // Validate sortBy
+    const validSortBy = ['date', 'subject', 'from', 'to'];
+    if (!validSortBy.includes(sortBy)) {
+      sortBy = 'date';
+    }
+    
+    // Validate sortOrder
+    if (sortOrder !== 'asc' && sortOrder !== 'desc') {
+      sortOrder = 'desc';
+    }
+    
+    // Validate pagination
+    page = Math.max(1, parseInt(page) || 1);
+    limit = Math.min(100, Math.max(1, parseInt(limit) || 50));
+    
+    // Sanitize search string
+    if (search && typeof search === 'string') {
+      search = search.trim().substring(0, 200); // Limit search length
+    } else {
+      search = '';
+    }
+    
+    // Sanitize email filters
+    if (fromEmail && typeof fromEmail === 'string') {
+      fromEmail = fromEmail.trim().substring(0, 200);
+    } else {
+      fromEmail = null;
+    }
+    
+    if (toEmail && typeof toEmail === 'string') {
+      toEmail = toEmail.trim().substring(0, 200);
+    } else {
+      toEmail = null;
+    }
+    
+    // Validate dates
+    let validStartDate = null;
+    let validEndDate = null;
+    
+    if (startDate) {
+      try {
+        const parsedStartDate = new Date(startDate);
+        if (!isNaN(parsedStartDate.getTime())) {
+          validStartDate = parsedStartDate;
+        }
+      } catch (dateError) {
+        console.error('Invalid startDate:', dateError);
+      }
+    }
+    
+    if (endDate) {
+      try {
+        const parsedEndDate = new Date(endDate);
+        if (!isNaN(parsedEndDate.getTime())) {
+          validEndDate = parsedEndDate;
+          validEndDate.setHours(23, 59, 59, 999); // End of day
+        }
+      } catch (dateError) {
+        console.error('Invalid endDate:', dateError);
+      }
+    }
+    
+    // Validate accountId if provided
+    if (accountId && accountId !== 'all') {
+      try {
+        const account = await EmailAccount.findByPk(accountId);
+        if (!account) {
+          accountId = null; // Reset if account doesn't exist
+        }
+      } catch (accountError) {
+        console.error('Error validating accountId:', accountError);
+        accountId = null;
+      }
+    } else {
+      accountId = null;
+    }
 
     // Enhanced folder filtering logic to properly separate inbox from sent emails
     const whereClause = {};
@@ -343,60 +575,80 @@ router.get('/', async (req, res) => {
       conditions.push({ emailAccountId: accountId });
     }
 
-    // Add email address filters
+    // Add email address filters (only if valid)
     if (fromEmail) {
-      conditions.push({ from: { [Op.iLike]: `%${fromEmail}%` } });
+      try {
+        conditions.push({ from: { [Op.iLike]: `%${fromEmail}%` } });
+      } catch (fromError) {
+        console.error('Error applying fromEmail filter:', fromError);
+      }
     }
     if (toEmail) {
-      conditions.push({ to: { [Op.iLike]: `%${toEmail}%` } });
+      try {
+        conditions.push({ to: { [Op.iLike]: `%${toEmail}%` } });
+      } catch (toError) {
+        console.error('Error applying toEmail filter:', toError);
+      }
     }
 
-    // Add date range filters
-    if (startDate || endDate) {
-      const dateCondition = {};
-      if (startDate) {
-        dateCondition[Op.gte] = new Date(startDate);
+    // Add date range filters (only if valid dates)
+    if (validStartDate || validEndDate) {
+      try {
+        const dateCondition = {};
+        if (validStartDate) {
+          dateCondition[Op.gte] = validStartDate;
+        }
+        if (validEndDate) {
+          dateCondition[Op.lte] = validEndDate;
+        }
+        if (Object.keys(dateCondition).length > 0) {
+          conditions.push({ date: dateCondition });
+        }
+      } catch (dateError) {
+        console.error('Error applying date filters:', dateError);
       }
-      if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        dateCondition[Op.lte] = end;
-      }
-      conditions.push({ date: dateCondition });
     }
 
-    // Add general search filter
+    // Add general search filter (only if valid)
     if (search) {
-      conditions.push({
-        [Op.or]: [
-        { subject: { [Op.iLike]: `%${search}%` } },
-        { from: { [Op.iLike]: `%${search}%` } },
-        { to: { [Op.iLike]: `%${search}%` } },
-        { body: { [Op.iLike]: `%${search}%` } }
-        ]
-      });
+      try {
+        conditions.push({
+          [Op.or]: [
+            { subject: { [Op.iLike]: `%${search}%` } },
+            { from: { [Op.iLike]: `%${search}%` } },
+            { to: { [Op.iLike]: `%${search}%` } },
+            { body: { [Op.iLike]: `%${search}%` } }
+          ]
+        });
+      } catch (searchError) {
+        console.error('Error applying search filter:', searchError);
+      }
     }
 
     // Add additional filters
-    switch (filter) {
-      case 'unread':
-        conditions.push({ isRead: false });
-        break;
-      case 'important':
-        conditions.push({ isImportant: true });
-        break;
-      case 'starred':
-        conditions.push({ isStarred: true });
-        break;
-      case 'attachments':
-        conditions.push({ hasAttachments: true });
-        break;
-      case 'sent':
-        conditions.push({ isSent: true });
-        break;
-      case 'drafts':
-        conditions.push({ isDraft: true });
-        break;
+    try {
+      switch (filter) {
+        case 'unread':
+          conditions.push({ isRead: false });
+          break;
+        case 'important':
+          conditions.push({ isImportant: true });
+          break;
+        case 'starred':
+          conditions.push({ isStarred: true });
+          break;
+        case 'attachments':
+          conditions.push({ hasAttachments: true });
+          break;
+        case 'sent':
+          conditions.push({ isSent: true });
+          break;
+        case 'drafts':
+          conditions.push({ isDraft: true });
+          break;
+      }
+    } catch (filterError) {
+      console.error('Error applying filter:', filterError);
     }
 
     // Combine all conditions with AND
@@ -427,24 +679,38 @@ router.get('/', async (req, res) => {
     const offset = (page - 1) * limit;
     const parsedLimit = parseInt(limit);
 
-    const { count, rows: emails } = await Email.findAndCountAll({
-      where: whereClause,
-      include: [
-        { model: EmailAccount, as: 'emailAccount', attributes: ['id', 'name', 'email'] },
-        { model: EmailFolder, as: 'emailFolder', attributes: ['id', 'name', 'type'] },
-        { model: EmailThread, as: 'thread', attributes: ['id', 'subject'] },
-        { model: Client, as: 'client', attributes: ['id', 'name', 'email'] }
-      ],
-      order: orderClause,
-      limit: parsedLimit,
-      offset: parseInt(offset),
-      distinct: true
-    });
+    // Execute query with error handling
+    let count = 0;
+    let emails = [];
+    
+    try {
+      const result = await Email.findAndCountAll({
+        where: whereClause,
+        include: [
+          { model: EmailAccount, as: 'emailAccount', attributes: ['id', 'name', 'email'], required: false },
+          { model: EmailFolder, as: 'emailFolder', attributes: ['id', 'name', 'type'], required: false },
+          { model: EmailThread, as: 'thread', attributes: ['id', 'subject'], required: false },
+          { model: Client, as: 'client', attributes: ['id', 'name', 'email'], required: false }
+        ],
+        order: orderClause,
+        limit: parsedLimit,
+        offset: parseInt(offset),
+        distinct: true
+      });
+      
+      count = result.count || 0;
+      emails = Array.isArray(result.rows) ? result.rows : [];
+    } catch (queryError) {
+      console.error('Error executing email query:', queryError);
+      // Return empty result instead of error
+      count = 0;
+      emails = [];
+    }
 
     res.json({
-      emails,
+      emails: emails || [],
       pagination: {
-        total: count,
+        total: count || 0,
         page: parseInt(page),
         limit: parsedLimit,
         pages: Math.ceil(count / parsedLimit),
@@ -453,7 +719,19 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('Get emails error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    // Return safe default response instead of error
+    res.status(500).json({ 
+      error: 'Failed to fetch emails',
+      message: error.message || 'Internal server error',
+      emails: [],
+      pagination: {
+        total: 0,
+        page: 1,
+        limit: 50,
+        pages: 0,
+        hasMore: false
+      }
+    });
   }
 });
 
@@ -485,24 +763,78 @@ router.get('/:id', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { folder, isStarred, isImportant, isRead } = req.body;
-    const email = await Email.findByPk(req.params.id);
+    const email = await Email.findByPk(req.params.id, {
+      include: [{
+        model: EmailAccount,
+        as: 'emailAccount'
+      }]
+    });
 
     if (!email) {
       return res.status(404).json({ error: 'Email not found' });
     }
 
     const updateData = {};
-    if (folder !== undefined) updateData.folder = folder;
-    if (isStarred !== undefined) updateData.isStarred = isStarred;
+    const needsImapSync = {};
+    
+    if (folder !== undefined) {
+      updateData.folder = folder;
+      needsImapSync.move = folder !== email.folder;
+      needsImapSync.targetFolder = folder;
+    }
+    if (isStarred !== undefined) {
+      updateData.isStarred = isStarred;
+      needsImapSync.star = isStarred !== email.isStarred;
+    }
     if (isImportant !== undefined) updateData.isImportant = isImportant;
-    if (isRead !== undefined) updateData.isRead = isRead;
+    if (isRead !== undefined) {
+      updateData.isRead = isRead;
+      needsImapSync.read = isRead !== email.isRead;
+    }
 
+    // Update database immediately (don't wait for IMAP sync)
     await email.update(updateData);
+    await email.reload();
 
+    // Perform IMAP sync asynchronously in the background (non-blocking)
+    if (email.emailAccount && (needsImapSync.move || needsImapSync.star || needsImapSync.read)) {
+      setImmediate(async () => {
+        try {
+          // Reload email to get current state before syncing
+          const emailForSync = await Email.findByPk(req.params.id, {
+            include: [{
+              model: EmailAccount,
+              as: 'emailAccount'
+            }]
+          });
+
+          if (emailForSync && emailForSync.emailAccount) {
+            if (needsImapSync.move && folder === 'archive') {
+              await syncEmailOperationToImap(emailForSync, emailForSync.emailAccount, 'archive');
+            } else if (needsImapSync.move) {
+              await syncEmailOperationToImap(emailForSync, emailForSync.emailAccount, 'move', { targetFolder: folder });
+            }
+            
+            if (needsImapSync.star) {
+              await syncEmailOperationToImap(emailForSync, emailForSync.emailAccount, 'star', { isStarred });
+            }
+            
+            if (needsImapSync.read) {
+              await syncEmailOperationToImap(emailForSync, emailForSync.emailAccount, 'read', { isRead });
+            }
+          }
+        } catch (syncError) {
+          console.error(`Failed to sync email ${email.id} with IMAP:`, syncError.message);
+          // Don't fail the request if IMAP sync fails
+        }
+      });
+    }
+
+    // Return response immediately
     res.json(email);
   } catch (error) {
     console.error('Update email error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -1007,12 +1339,36 @@ router.put('/mark-read', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email IDs' });
     }
 
+    // Update database immediately
     await Email.update(
       { isRead: true },
       { where: { id: { [Op.in]: emailIds } } }
     );
 
+    // Return response immediately
     res.json({ success: true });
+
+    // Perform IMAP sync asynchronously in the background
+    setImmediate(async () => {
+      try {
+        const emails = await Email.findAll({
+          where: { id: { [Op.in]: emailIds } },
+          include: [{
+            model: EmailAccount,
+            as: 'emailAccount'
+          }]
+        });
+
+        for (const email of emails) {
+          if (email.emailAccount && email.uid) {
+            await syncEmailOperationToImap(email, email.emailAccount, 'read', { isRead: true });
+          }
+        }
+      } catch (syncError) {
+        console.error('Failed to sync mark-as-read with IMAP:', syncError.message);
+        // Don't fail the request if IMAP sync fails
+      }
+    });
   } catch (error) {
     console.error('Mark as read error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -1028,12 +1384,36 @@ router.put('/mark-unread', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email IDs' });
     }
 
+    // Update database immediately
     await Email.update(
       { isRead: false },
       { where: { id: { [Op.in]: emailIds } } }
     );
 
+    // Return response immediately
     res.json({ success: true });
+
+    // Perform IMAP sync asynchronously in the background
+    setImmediate(async () => {
+      try {
+        const emails = await Email.findAll({
+          where: { id: { [Op.in]: emailIds } },
+          include: [{
+            model: EmailAccount,
+            as: 'emailAccount'
+          }]
+        });
+
+        for (const email of emails) {
+          if (email.emailAccount && email.uid) {
+            await syncEmailOperationToImap(email, email.emailAccount, 'read', { isRead: false });
+          }
+        }
+      } catch (syncError) {
+        console.error('Failed to sync mark-as-unread with IMAP:', syncError.message);
+        // Don't fail the request if IMAP sync fails
+      }
+    });
   } catch (error) {
     console.error('Mark as unread error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -1070,15 +1450,41 @@ router.put('/mark-starred', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email IDs' });
     }
 
+    // Get emails with their accounts for IMAP sync
+    const emails = await Email.findAll({
+      where: { id: { [Op.in]: emailIds } },
+      include: [{
+        model: EmailAccount,
+        as: 'emailAccount',
+        required: false
+      }]
+    });
+
+    // Update database immediately (don't wait for IMAP sync)
     await Email.update(
       { isStarred: true },
       { where: { id: { [Op.in]: emailIds } } }
     );
 
+    // Return response immediately
     res.json({ success: true });
+
+    // Perform IMAP sync asynchronously in the background (non-blocking)
+    setImmediate(async () => {
+      for (const email of emails) {
+        if (email.emailAccount) {
+          try {
+            await syncEmailOperationToImap(email, email.emailAccount, 'star', { isStarred: true });
+          } catch (syncError) {
+            console.error(`Failed to sync star for email ${email.id}:`, syncError.message);
+            // Continue with other emails even if one fails
+          }
+        }
+      }
+    });
   } catch (error) {
     console.error('Mark as starred error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -1096,15 +1502,41 @@ router.put('/move', async (req, res) => {
       return res.status(404).json({ error: 'Folder not found' });
     }
 
+    // Get emails with their accounts for IMAP sync (before update)
+    const emails = await Email.findAll({
+      where: { id: { [Op.in]: emailIds } },
+      include: [{
+        model: EmailAccount,
+        as: 'emailAccount',
+        required: false
+      }]
+    });
+
+    // Update database immediately (don't wait for IMAP sync)
     await Email.update(
       { folderId, folder: folder.type },
       { where: { id: { [Op.in]: emailIds } } }
     );
 
+    // Return response immediately
     res.json({ success: true });
+
+    // Perform IMAP sync asynchronously in the background (non-blocking)
+    setImmediate(async () => {
+      for (const email of emails) {
+        if (email.emailAccount) {
+          try {
+            await syncEmailOperationToImap(email, email.emailAccount, 'move', { targetFolder: folder.type });
+          } catch (syncError) {
+            console.error(`Failed to sync move for email ${email.id}:`, syncError.message);
+            // Continue with other emails even if one fails
+          }
+        }
+      }
+    });
   } catch (error) {
     console.error('Move emails error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -1117,16 +1549,41 @@ router.delete('/', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email IDs' });
     }
 
-    // Soft delete - move to trash
+    // Get emails with their accounts for IMAP sync (before update)
+    const emails = await Email.findAll({
+      where: { id: { [Op.in]: emailIds } },
+      include: [{
+        model: EmailAccount,
+        as: 'emailAccount',
+        required: false
+      }]
+    });
+
+    // Update database immediately (don't wait for IMAP sync)
     await Email.update(
-      { folder: 'trash', status: 'deleted' },
+      { folder: 'trash', isDeleted: true },
       { where: { id: { [Op.in]: emailIds } } }
     );
 
+    // Return response immediately
     res.json({ success: true });
+
+    // Perform IMAP sync asynchronously in the background (non-blocking)
+    setImmediate(async () => {
+      for (const email of emails) {
+        if (email.emailAccount) {
+          try {
+            await syncEmailOperationToImap(email, email.emailAccount, 'delete');
+          } catch (syncError) {
+            console.error(`Failed to sync delete for email ${email.id}:`, syncError.message);
+            // Continue with other emails even if one fails
+          }
+        }
+      }
+    });
   } catch (error) {
     console.error('Delete emails error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 

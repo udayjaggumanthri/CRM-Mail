@@ -1,342 +1,643 @@
-# Conference CRM - Bulk Emails, Follow-up & SMTP Integration
+# Conference CRM
 
-A comprehensive CRM system for managing conference clients with automated email follow-ups, bulk email capabilities, and SMTP integration.
+A comprehensive Customer Relationship Management (CRM) system designed for conference management, email automation, and client communication. This application provides real-time email synchronization with Gmail/IMAP, automated follow-up sequences, template management, and advanced analytics.
 
-## Features
+## 🚀 Features
 
-### Core Features
-- **Bulk Email System**: Send emails in bulk to clients/leads with attachment support
-- **Automated Follow-up Workflow**: 
-  - Stage 1: Abstract submission (7-day intervals, up to 6 follow-ups)
-  - Stage 2: Registration (3-day intervals, up to 6 follow-ups)
-- **Email Templates**: Central repository with merge fields support
-- **Client Management**: Complete client profiles with status tracking
-  - Single unified name field for simplicity
-  - Searchable country dropdown with full country list
-  - Email activity filters (sent today, upcoming)
-  - Bulk upload with Excel templates
-- **SMTP Integration**: Multiple SMTP accounts with system/user permissions
-- **Role-Based Access Control**: CEO, TeamLead, and Member roles with granular permissions
+- **Email Management**
+  - Real-time IMAP/Gmail synchronization
+  - Compose, send, and manage emails
+  - Draft management with auto-save
+  - Email threading and conversation view
+  - Attachment support
 
-### Dashboard & Analytics
-- **Role-Based Dashboards**:
-  - **CEO**: Full system visibility with organization-wide KPIs
-  - **TeamLead**: Conference-assigned data with team metrics  
-  - **Member**: Personal client metrics and assigned conferences
-- **Real-time KPIs**: Conversion rates, revenue tracking, email performance
-- **Conference Overview**: Grid view with dates, venue, and contact info
-- **Email Health Metrics**: Delivery rate, bounce rate, reply rate
-- **Needs Attention**: Bounced emails and unanswered replies monitoring
-- **Client Overview**: Filter, sort, and export capabilities
+- **Client Management**
+  - Comprehensive client profiles
+  - Client status tracking
+  - Bulk client import/export
+  - Client notes and task management
+  - Advanced filtering and search
 
-### Email Management
-- **Gmail-Style Interface**: Modern full-page email view
-- **Email Threading**: Organized conversations by client/conference
-- **Rich Text Editor**: Bold, italic, font size, formatting options
-- **File Attachments**: Upload and attach files to emails
-- **Email Suggestions**: Autocomplete from past interactions
-- **Reply/Forward/Star/Archive**: Complete email management
-- **CEO Communication Oversight**: Global communications page with reply/intervention
-- **Email Logs**: Complete communication history with threaded view
+- **Conference Management**
+  - Create and manage conferences
+  - Conference-specific client assignments
+  - Revenue tracking
+  - Conference analytics
 
-### Security & Compliance
-- **Authentication**: JWT-based authentication
-- **RBAC**: Role-based access control with hierarchy support
-- **Email Security**: SSL/TLS encryption
-- **Audit Logging**: Complete action tracking
-- **Opt-out Management**: Unsubscribe link support
-- **Data Privacy**: GDPR compliance features
+- **Email Templates**
+  - Rich text email templates
+  - Variable substitution
+  - Template sequences
+  - Draft auto-save
 
-### Deployment & Infrastructure
-- **Database Migrations**: Safe, reversible schema evolution
-- **PowerShell Scripts**: Windows deployment automation
-- **Cross-Platform**: Works on Windows, Linux, and Mac
+- **Follow-up Automation**
+  - Automated email sequences
+  - Smart scheduling
+  - Custom intervals and working hours
+  - Follow-up tracking
 
-## Tech Stack
+- **User Management**
+  - Role-based access control (CEO, TeamLead, Member)
+  - User authentication and authorization
+  - Password management
+  - Activity tracking
 
-### Backend
-- **Node.js** with Express.js
-- **PostgreSQL** database (production) / In-memory (development)
-- **Sequelize ORM** for database management
-- **JWT Authentication** with role-based tokens
-- **Nodemailer** for SMTP integration
-- **Node-cron** for scheduled tasks
-- **xlsx** for Excel file handling
+- **Dashboard & Analytics**
+  - Real-time metrics
+  - Email statistics
+  - Client conversion tracking
+  - Revenue reports
+
+- **Real-time Updates**
+  - WebSocket integration
+  - Live email synchronization
+  - Real-time notifications
+
+## 🛠️ Tech Stack
 
 ### Frontend
-- **React.js** with functional components and hooks
-- **React Router** for navigation
-- **React Query** for data fetching and caching
-- **Tailwind CSS** for styling
-- **Lucide React** for icons
-- **React Hot Toast** for notifications
-- **ReactQuill** for rich text editing
-- **Headless UI** for accessible components
+- **React 18** - UI framework
+- **React Router** - Routing
+- **React Query** - Data fetching and caching
+- **Tailwind CSS** - Styling
+- **Socket.io Client** - Real-time communication
+- **React Quill** - Rich text editor
+- **Axios** - HTTP client
 
-## Quick Start
+### Backend
+- **Node.js** - Runtime environment
+- **Express.js** - Web framework
+- **PostgreSQL** - Database
+- **Sequelize** - ORM
+- **Socket.io** - WebSocket server
+- **IMAPflow** - IMAP client
+- **Nodemailer** - Email sending
+- **JWT** - Authentication
+- **Bcrypt** - Password hashing
 
-### Prerequisites
-- Node.js (v14 or higher)
-- npm or yarn
-- PostgreSQL database (for production)
+## 📋 Prerequisites
 
-### Installation
+Before you begin, ensure you have the following installed:
 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd crm1
-   ```
+- **Node.js** (v16 or higher)
+- **npm** (v8 or higher) or **yarn**
+- **PostgreSQL** (v12 or higher)
+- **Git**
 
-2. **Set up environment**:
-   ```bash
-   cp env.example .env
-   # Edit .env file with your configuration
-   ```
+## 📦 Installation
 
-3. **Install dependencies**:
-   ```bash
-   npm run install-all
-   ```
+### Step 1: Clone the Repository
 
-4. **Start the development servers**:
-   ```bash
-   # On Windows
-   npm start
-   # Or use the Windows script
-   .\start-windows.bat
-   
-   # On Linux/Mac
-   npm start
-   # Or use the shell script
-   ./start.sh
-   ```
+```bash
+git clone https://github.com/yourusername/conference-crm.git
+cd conference-crm/crm1
+```
 
-5. **Access the application**:
-   - Frontend: http://localhost:5000
-   - Backend API: http://localhost:3001
+### Step 2: Install Dependencies
 
-### Demo Accounts
+Install dependencies for root, server, and client:
 
-The system comes with pre-configured demo accounts:
+```bash
+npm run install-all
+```
 
-- **CEO**: `admin@crm.com` / `admin123` (Full system access)
-- **TeamLead**: `manager@crm.com` / `manager123` (Conference management)
-- **Member**: `agent@crm.com` / `agent123` (Client management)
+Or install them separately:
 
-## Usage Guide
+```bash
+# Install root dependencies
+npm install
 
-### 1. Adding Clients
-- Navigate to the Clients page
-- Click "Add Client" to create new leads with single name field
-- Use searchable country dropdown for international clients
-- Bulk upload via Excel template for multiple clients
-- Clients automatically enter Stage 1 follow-up workflow
+# Install server dependencies
+cd server
+npm install
+cd ..
 
-### 2. Managing Email Templates
-- Go to Templates page
-- Create templates for different stages (Abstract Invitation, Follow-up, Registration)
-- Use merge fields: `{name}`, `{email}`, `{country}`, `{conferenceName}`
-- Preview templates with sample data
+# Install client dependencies
+cd client
+npm install
+cd ..
+```
 
-### 3. SMTP Configuration
-- Access Settings (CEO only)
-- Add SMTP accounts for email sending
-- Configure system vs user-specific accounts
-- Test connections before deployment
+### Step 3: Database Setup
 
-### 4. Automated Workflows
-- **Stage 1**: Abstract submission follow-ups (7-day intervals)
-- **Stage 2**: Registration follow-ups (3-day intervals)
-- Automatic status transitions based on client actions
-- Email threading for organized conversations
+1. Create a PostgreSQL database:
 
-### 5. Monitoring & Analytics
-- **Role-Based Dashboards**: See data relevant to your role
-- **Real-time KPIs**: Conversion rates, revenue, email performance
-- **Conference Overview**: Track conference progress and contacts
-- **Needs Attention**: Monitor bounced emails and pending replies
-- **Email Logs**: Complete communication history with threading
+```sql
+CREATE DATABASE conference_crm;
+```
 
-### 6. Email Management
-- **Gmail-Style View**: Modern full-page email interface
-- **Rich Text Compose**: Format emails with bold, italic, font sizes
-- **Attachments**: Upload files and documents
-- **Thread View**: All conversations organized by client
-- **Reply/Forward**: Complete email management
-- **CEO Oversight**: Global communications for CEO role
+2. Update database configuration in `server/config/database.js` or use environment variables.
 
-## API Endpoints
+### Step 4: Environment Configuration
 
-### Authentication
-- `POST /api/auth/login` - User login
-- `GET /api/auth/me` - Get current user
+1. Copy the example environment file:
 
-### Clients
-- `GET /api/clients` - List clients (with filters)
-- `POST /api/clients` - Create new client
-- `PUT /api/clients/:id` - Update client
-- `POST /api/clients/:id/submit-abstract` - Move to Stage 2
-- `POST /api/clients/:id/register` - Mark as registered
+```bash
+cp env.example .env
+```
 
-### Templates
-- `GET /api/templates` - List templates
-- `POST /api/templates` - Create template
-- `PUT /api/templates/:id` - Update template
-
-### SMTP Accounts
-- `GET /api/smtp-accounts` - List SMTP accounts
-- `POST /api/smtp-accounts` - Add SMTP account
-- `POST /api/smtp-accounts/:id/test` - Test connection
-
-### Follow-ups
-- `GET /api/followups` - List follow-up jobs
-- `POST /api/followups/:id/pause` - Pause follow-up
-- `POST /api/followups/:id/resume` - Resume follow-up
-- `POST /api/followups/:id/stop` - Stop follow-up
-
-### Email Logs
-- `GET /api/email-logs` - List email logs
-- `GET /api/email-logs/:id` - Get email details
-
-### Dashboard
-- `GET /api/dashboard/stats` - Get dashboard statistics
-
-## Configuration
-
-### Environment Variables
-Create a `.env` file in the server directory:
+2. Update the `.env` file with your configuration:
 
 ```env
-PORT=5000
-JWT_SECRET=your-secret-key
+# Server Configuration
+PORT=3001
 NODE_ENV=development
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=conference_crm
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+
+# JWT Secret
+JWT_SECRET=your_jwt_secret_key_here
+
+# Email Configuration (for SMTP)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_app_password
+
+# IMAP Configuration (for email sync)
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_SECURE=true
+
+# Frontend URL
+REACT_APP_API_URL=http://localhost:3001
 ```
 
-### SMTP Setup
-1. Configure SMTP accounts in the Settings page
-2. For Gmail, use App Passwords instead of regular passwords
-3. Test connections before using in production
+**Important:** For Gmail, you'll need to:
+- Enable 2-factor authentication
+- Generate an App Password for SMTP/IMAP access
+- Use the App Password in your `.env` file
 
-## Development
+### Step 5: Database Migration
 
-### Project Structure
+Run database migrations to set up the schema:
+
+```bash
+cd server
+npx sequelize-cli db:migrate
+```
+
+### Step 6: (Optional) Seed Initial Data
+
+If you have seed files, run them:
+
+```bash
+npx sequelize-cli db:seed:all
+```
+
+## 🚀 Running the Application
+
+### Development Mode
+
+Run both server and client concurrently:
+
+```bash
+npm start
+```
+
+Or run them separately:
+
+**Terminal 1 - Server:**
+```bash
+cd server
+npm start
+```
+
+**Terminal 2 - Client:**
+```bash
+cd client
+npm start
+```
+
+The application will be available at:
+- **Frontend:** http://localhost:5000
+- **Backend API:** http://localhost:3001
+
+### Production Mode
+
+1. Build the client:
+
+```bash
+cd client
+npm run build
+```
+
+2. Start the server (which will serve the built client):
+
+```bash
+cd server
+npm start
+```
+
+## 📁 Project Structure
+
 ```
 crm1/
-├── client/                 # React frontend
+├── client/                 # React frontend application
+│   ├── public/            # Static files
 │   ├── src/
-│   │   ├── components/     # React components
-│   │   ├── contexts/       # React contexts
-│   │   └── ...
-│   ├── package.json
-│   └── public/             # Static files
-├── server/                 # Node.js backend
-│   ├── index.js           # Main server file
-│   ├── config/            # Configuration files
-│   ├── models/            # Database models
-│   ├── routes/            # API routes
-│   ├── services/          # Business logic
-│   ├── database/          # Migrations and seeds
+│   │   ├── components/   # React components
+│   │   ├── contexts/     # React contexts
+│   │   ├── hooks/        # Custom React hooks
+│   │   └── index.js      # Entry point
+│   ├── build/            # Production build output
 │   └── package.json
-├── scripts/                # Utility scripts
-├── env.example             # Environment variables example
-├── start.sh                # Linux/Mac startup script
-├── start-windows.bat      # Windows startup script
-└── package.json           # Root package.json
+│
+├── server/                # Node.js backend application
+│   ├── config/           # Configuration files
+│   ├── database/        # Database migrations and seeds
+│   ├── middleware/      # Express middleware
+│   ├── models/          # Sequelize models
+│   ├── routes/          # API routes
+│   ├── services/        # Business logic services
+│   ├── utils/           # Utility functions
+│   └── index.js         # Server entry point
+│
+├── scripts/              # Deployment and utility scripts
+├── .env                  # Environment variables (not in git)
+├── env.example           # Example environment file
+└── package.json          # Root package.json
 ```
 
-### Adding New Features
-1. Backend: Add routes in `server/index.js`
-2. Frontend: Create components in `client/src/components/`
-3. Update navigation in `Layout.js` if needed
+## 🔐 Default Login Credentials
 
-## Production Deployment
+After initial setup, you may need to create a user. If you have seed data, check the seed files for default credentials.
 
-### Traditional Deployment
-1. Set production environment variables
-2. Use a proper database (PostgreSQL recommended)
-3. Set up Redis for job queues
-4. Configure proper SMTP credentials
-5. Build the React app: `npm run build`
-6. Serve static files with a web server
-7. Configure API endpoints for production
+**Note:** Change default passwords immediately in production!
+
+## 📝 API Documentation
+
+API endpoints are documented in:
+- `Conference_CRM_API_Collection.postman_collection.json` - Postman collection
+
+### Key API Endpoints
+
+- `POST /api/auth/login` - User authentication
+- `GET /api/dashboard` - Dashboard data
+- `GET /api/clients` - Get clients
+- `POST /api/clients` - Create client
+- `GET /api/emails` - Get emails
+- `POST /api/emails/send` - Send email
+- `GET /api/conferences` - Get conferences
+- `POST /api/conferences` - Create conference
+
+## 🚢 Deployment
+
+### Deploying to GitHub
+
+#### Step 1: Initialize Git Repository
+
+If not already initialized:
+
+```bash
+git init
+```
+
+#### Step 2: Create .gitignore
+
+Ensure you have a `.gitignore` file (create if missing):
+
+```gitignore
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build outputs
+client/build/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database
+*.sqlite
+*.db
+
+# Temporary files
+*.tmp
+*.temp
+```
+
+#### Step 3: Add Files to Git
+
+```bash
+# Add all files
+git add .
+
+# Commit changes
+git commit -m "Initial commit: Conference CRM application"
+```
+
+#### Step 4: Create GitHub Repository
+
+1. Go to [GitHub](https://github.com) and sign in
+2. Click the "+" icon in the top right
+3. Select "New repository"
+4. Name your repository (e.g., `conference-crm`)
+5. Choose visibility (Public or Private)
+6. **Do NOT** initialize with README, .gitignore, or license (we already have these)
+7. Click "Create repository"
+
+#### Step 5: Connect Local Repository to GitHub
+
+```bash
+# Add remote repository (replace with your GitHub username and repo name)
+git remote add origin https://github.com/yourusername/conference-crm.git
+
+# Verify remote
+git remote -v
+```
+
+#### Step 6: Push to GitHub
+
+```bash
+# Push to main branch
+git branch -M main
+git push -u origin main
+```
+
+#### Step 7: Set Up GitHub Actions (Optional)
+
+Create `.github/workflows/ci.yml` for continuous integration:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      run: |
+        npm install
+        cd server && npm install
+        cd ../client && npm install
+    
+    - name: Run tests (if available)
+      run: npm test --if-present
+```
+
+### Deploying to Production
+
+#### Option 1: Using PM2 (Recommended)
+
+1. Install PM2 globally:
+
+```bash
+npm install -g pm2
+```
+
+2. Create `ecosystem.config.js` in the root:
+
+```javascript
+module.exports = {
+  apps: [
+    {
+      name: 'crm-server',
+      script: './server/index.js',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 3001
+      }
+    },
+    {
+      name: 'crm-client',
+      script: './client/serve-build.js',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 5000
+      }
+    }
+  ]
+};
+```
+
+3. Build and start:
+
+```bash
+# Build client
+cd client
+npm run build
+cd ..
+
+# Start with PM2
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+#### Option 2: Using Docker (Optional)
+
+Create `Dockerfile` in the root:
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY server/package*.json ./server/
+COPY client/package*.json ./client/
+
+RUN npm run install-all
+
+COPY . .
+
+RUN cd client && npm run build
+
+EXPOSE 3001 5000
+
+CMD ["npm", "start"]
+```
+
+#### Option 3: Deploy to Cloud Platforms
+
+**Heroku:**
+1. Install Heroku CLI
+2. Create `Procfile`:
+```
+web: cd server && npm start
+```
+3. Deploy:
+```bash
+heroku create your-app-name
+git push heroku main
+```
+
+**Vercel/Netlify (Frontend only):**
+- Build the React app
+- Deploy the `client/build` folder
+- Set API URL in environment variables
+
+**AWS/DigitalOcean:**
+- Use PM2 or Docker
+- Set up reverse proxy (Nginx)
+- Configure SSL certificates
+
+## 🔧 Configuration
+
+### Database Configuration
+
+Update `server/config/database.js` or use environment variables:
+
+```javascript
+module.exports = {
+  development: {
+    username: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    dialect: 'postgres'
+  }
+};
+```
+
+### Email Account Setup
+
+1. Go to Settings > Email Accounts
+2. Add your SMTP account
+3. Configure IMAP settings for email sync
+4. Test the connection
 
 ### Security Considerations
-- Use HTTPS in production
-- Encrypt SMTP passwords
-- Implement rate limiting
-- Set up proper CORS policies
+
+- Change default JWT secret
+- Use strong database passwords
+- Enable HTTPS in production
+- Set up CORS properly
 - Use environment variables for secrets
+- Regularly update dependencies
 
-## Troubleshooting
+## 🧪 Testing
 
-### Common Issues
+Run tests (if available):
 
-1. **SMTP Connection Failed**
-   - Check SMTP credentials
-   - Verify port and security settings
-   - Use App Passwords for Gmail
+```bash
+# Server tests
+cd server
+npm test
 
-2. **Follow-ups Not Sending**
-   - Check if cron job is running
-   - Verify SMTP configuration
-   - Check email logs for errors
+# Client tests
+cd client
+npm test
+```
 
-3. **Authentication Issues**
-   - Clear browser storage
-   - Check JWT secret configuration
-   - Verify user credentials
+## 📚 Additional Documentation
 
-## Contributing
+- `DEPLOYMENT.md` - Detailed deployment guide
+- `QUICK_DEPLOY.md` - Quick deployment instructions
+- `ENTERPRISE_ARCHITECTURE.md` - Architecture documentation
 
-Contributions are welcome! Please follow these steps:
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Test thoroughly
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-### Development Guidelines
+### Code Style
+
 - Follow existing code style
-- Write meaningful commit messages
-- Add tests for new features
-- Update documentation as needed
-- Ensure backward compatibility
+- Use meaningful variable names
+- Add comments for complex logic
+- Write descriptive commit messages
 
-## Recent Updates
+## 🐛 Troubleshooting
 
-### Major Features (2025)
-- ✅ Role-based dashboards with KPIs and analytics
-- ✅ Email threading for organized conversations
-- ✅ CEO global communications oversight
-- ✅ Simplified client model with unified name field
-- ✅ Searchable country dropdown
-- ✅ Email activity filters
-- ✅ Gmail-style email interface
-- ✅ Rich text editor with attachments
-- ✅ Simplified deployment process
-- ✅ Database migrations for schema evolution
+### Common Issues
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed change history.
+**Database Connection Error:**
+- Check PostgreSQL is running
+- Verify database credentials in `.env`
+- Ensure database exists
 
-## Support
+**Email Sync Not Working:**
+- Verify IMAP credentials
+- Check firewall settings
+- Ensure App Password is used for Gmail
 
-For support and questions, please create an issue in the repository.
+**Port Already in Use:**
+- Change PORT in `.env`
+- Kill process using the port:
+  ```bash
+  # Windows
+  netstat -ano | findstr :3001
+  taskkill /PID <PID> /F
+  
+  # Linux/Mac
+  lsof -ti:3001 | xargs kill
+  ```
 
-## License
+**Build Errors:**
+- Clear node_modules and reinstall
+- Check Node.js version compatibility
+- Verify all dependencies are installed
 
-MIT License - see LICENSE file for details.
+## 📄 License
 
-## Acknowledgments
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-- Built with React and Node.js
-- Styled with Tailwind CSS
-- Email processing with Nodemailer
-- Database management with Sequelize
+## 👥 Authors
+
+- Your Name - Initial work
+
+## 🙏 Acknowledgments
+
+- React team for the amazing framework
+- Express.js for the robust backend framework
+- All open-source contributors
+
+## 📞 Support
+
+For support, email support@yourdomain.com or create an issue in the GitHub repository.
+
+## 🔄 Changelog
+
+See `CHANGELOG.md` for detailed changelog.
 
 ---
 
-**Last Updated**: January 2025
+**Made with ❤️ for conference management**
+

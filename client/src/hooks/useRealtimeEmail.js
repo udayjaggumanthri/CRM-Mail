@@ -16,11 +16,19 @@ const useRealtimeEmail = (userId) => {
     const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:3001';
     const newSocket = io(apiUrl, {
       transports: ['websocket', 'polling'],
-      autoConnect: true
+      autoConnect: true,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 5,
+      timeout: 20000
     });
+
+    let isMounted = true;
 
     // Connection event handlers
     newSocket.on('connect', () => {
+      if (!isMounted) return;
       console.log('🔌 Connected to real-time email server');
       setIsConnected(true);
       
@@ -28,13 +36,36 @@ const useRealtimeEmail = (userId) => {
       newSocket.emit('joinEmailRoom', userId);
     });
 
-    newSocket.on('disconnect', () => {
-      console.log('🔌 Disconnected from real-time email server');
+    newSocket.on('disconnect', (reason) => {
+      if (!isMounted) return;
+      console.log('🔌 Disconnected from real-time email server:', reason);
       setIsConnected(false);
     });
 
     newSocket.on('connect_error', (error) => {
-      console.error('❌ Socket connection error:', error);
+      if (!isMounted) return;
+      // Only log if it's not a normal disconnection
+      if (error.message && !error.message.includes('xhr poll error')) {
+        console.error('❌ Socket connection error:', error);
+      }
+      setIsConnected(false);
+    });
+
+    newSocket.on('reconnect', (attemptNumber) => {
+      if (!isMounted) return;
+      console.log(`🔌 Reconnected to real-time email server after ${attemptNumber} attempts`);
+      setIsConnected(true);
+      newSocket.emit('joinEmailRoom', userId);
+    });
+
+    newSocket.on('reconnect_attempt', () => {
+      if (!isMounted) return;
+      console.log('🔄 Attempting to reconnect to real-time email server...');
+    });
+
+    newSocket.on('reconnect_failed', () => {
+      if (!isMounted) return;
+      console.warn('⚠️ Failed to reconnect to real-time email server');
       setIsConnected(false);
     });
 
@@ -75,8 +106,14 @@ const useRealtimeEmail = (userId) => {
 
     // Cleanup on unmount
     return () => {
+      isMounted = false;
       if (newSocket) {
-        newSocket.disconnect();
+        // Remove all listeners to prevent memory leaks
+        newSocket.removeAllListeners();
+        // Disconnect gracefully
+        if (newSocket.connected) {
+          newSocket.disconnect();
+        }
       }
     };
   }, [userId, queryClient]);

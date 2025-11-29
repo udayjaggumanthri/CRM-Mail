@@ -21,6 +21,78 @@ const VALID_INTERVAL_UNITS = new Set(['minutes', 'hours', 'days']);
 
 const immediateEmailScheduler = new EmailJobScheduler();
 
+// Helper function to handle Sequelize validation errors and return proper error responses
+const handleSequelizeError = (error, res, defaultMessage = 'An error occurred') => {
+  console.error('Database error:', error);
+  
+  // Handle Sequelize validation errors
+  if (error.name === 'SequelizeValidationError') {
+    const validationErrors = error.errors.map(err => ({
+      field: err.path,
+      message: err.message,
+      value: err.value
+    }));
+    
+    // Create user-friendly error message
+    const errorMessages = validationErrors.map(err => {
+      const fieldName = err.field.charAt(0).toUpperCase() + err.field.slice(1).replace(/([A-Z])/g, ' $1');
+      return `${fieldName}: ${err.message}`;
+    });
+    
+    return res.status(400).json({
+      error: 'Validation failed',
+      message: errorMessages.join(', '),
+      details: validationErrors
+    });
+  }
+  
+  // Handle unique constraint errors
+  if (error.name === 'SequelizeUniqueConstraintError') {
+    const field = error.errors?.[0]?.path || 'field';
+    const fieldName = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return res.status(400).json({
+      error: 'Duplicate entry',
+      message: `${fieldName} already exists. Please use a different value.`,
+      field: field
+    });
+  }
+  
+  // Handle foreign key constraint errors
+  if (error.name === 'SequelizeForeignKeyConstraintError') {
+    return res.status(400).json({
+      error: 'Invalid reference',
+      message: 'The referenced record does not exist. Please check your input.'
+    });
+  }
+  
+  // Handle database connection errors
+  if (error.name === 'SequelizeConnectionError') {
+    return res.status(503).json({
+      error: 'Database connection error',
+      message: 'Unable to connect to the database. Please try again later.'
+    });
+  }
+  
+  // Handle not null constraint errors
+  if (error.name === 'SequelizeDatabaseError' && error.message?.includes('NOT NULL')) {
+    const fieldMatch = error.message.match(/column "(\w+)"/);
+    const field = fieldMatch ? fieldMatch[1] : 'field';
+    const fieldName = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return res.status(400).json({
+      error: 'Required field missing',
+      message: `${fieldName} is required. Please provide a value.`,
+      field: field
+    });
+  }
+  
+  // Default error response
+  return res.status(500).json({
+    error: 'Internal server error',
+    message: defaultMessage,
+    details: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
+};
+
 const sanitizeNonNegativeInt = (value, defaultValue = 0) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) {
@@ -240,7 +312,8 @@ const authenticateToken = (req, res, next) => {
 // GET /api/clients - Get all clients
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { 
+    // Validate and sanitize filter parameters
+    let { 
       conferenceId, 
       status, 
       country, 
@@ -253,27 +326,96 @@ router.get('/', authenticateToken, async (req, res) => {
       limit = 50
     } = req.query;
 
+    // Validate pagination
+    page = Math.max(1, parseInt(page) || 1);
+    limit = Math.min(100, Math.max(1, parseInt(limit) || 50));
+
+    // Validate sortBy
+    const validSortBy = ['name', 'email', 'status', 'country', 'createdAt', 'updatedAt'];
+    if (!validSortBy.includes(sortBy)) {
+      sortBy = 'createdAt';
+    }
+
+    // Validate sortOrder
+    if (sortOrder !== 'ASC' && sortOrder !== 'DESC') {
+      sortOrder = 'DESC';
+    }
+
+    // Sanitize search string
+    if (search && typeof search === 'string') {
+      search = search.trim().substring(0, 200); // Limit search length
+    } else {
+      search = null;
+    }
+
+    // Sanitize status
+    if (status && typeof status === 'string') {
+      status = status.trim();
+      if (status === 'All Statuses') {
+        status = null;
+      }
+    } else {
+      status = null;
+    }
+
+    // Sanitize country
+    if (country && typeof country === 'string') {
+      country = country.trim();
+      if (country === 'All Countries') {
+        country = null;
+      }
+    } else {
+      country = null;
+    }
+
+    // Validate conferenceId if provided
+    if (conferenceId) {
+      try {
+        const conference = await Conference.findByPk(conferenceId);
+        if (!conference) {
+          conferenceId = null; // Reset if conference doesn't exist
+        }
+      } catch (confError) {
+        console.error('Error validating conferenceId:', confError);
+        conferenceId = null;
+      }
+    }
+
+    // Validate ownerUserId if provided
+    if (ownerUserId) {
+      try {
+        const owner = await User.findByPk(ownerUserId);
+        if (!owner) {
+          ownerUserId = null; // Reset if user doesn't exist
+        }
+      } catch (ownerError) {
+        console.error('Error validating ownerUserId:', ownerError);
+        ownerUserId = null;
+      }
+    }
+
     // Build where clause
     const whereClause = {};
     
     // Role-based filtering: TeamLeads and Members only see clients from their assigned conferences
-    if (req.user.role === 'TeamLead') {
-      // Get conferences assigned to this TeamLead
-      const assignedConferences = await Conference.findAll({
-        where: { assignedTeamLeadId: req.user.id },
-        attributes: ['id']
-      });
-      const conferenceIds = assignedConferences.map(c => c.id);
-      
-      if (conferenceIds.length === 0) {
-        // TeamLead has no assigned conferences, return empty list
-        console.log(`🔒 TeamLead ${req.user.email} has no assigned conferences`);
-        return res.json({ clients: [], total: 0, page: 1, limit: parseInt(limit), totalPages: 0 });
-      }
-      
-      whereClause.conferenceId = { [Op.in]: conferenceIds };
-      console.log(`🔒 TeamLead ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s)`);
-    } else if (req.user.role === 'Member') {
+    try {
+      if (req.user.role === 'TeamLead') {
+        // Get conferences assigned to this TeamLead
+        const assignedConferences = await Conference.findAll({
+          where: { assignedTeamLeadId: req.user.id },
+          attributes: ['id']
+        }).catch(() => []);
+        const conferenceIds = assignedConferences.map(c => c.id);
+        
+        if (conferenceIds.length === 0) {
+          // TeamLead has no assigned conferences, return empty list
+          console.log(`🔒 TeamLead ${req.user.email} has no assigned conferences`);
+          return res.json({ clients: [], total: 0, page: 1, limit: parseInt(limit), totalPages: 0 });
+        }
+        
+        whereClause.conferenceId = { [Op.in]: conferenceIds };
+        console.log(`🔒 TeamLead ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s)`);
+      } else if (req.user.role === 'Member') {
       // Get conferences where this Member is in assignedMemberIds (JSON column)
       // Handle both string and numeric storage of member IDs
       const memberIdStr = String(req.user.id);
@@ -296,37 +438,42 @@ router.get('/', authenticateToken, async (req, res) => {
         );
       }
 
-      const assignedConferences = await Conference.findAll({
-        where: { [Op.or]: orConditions },
-        attributes: ['id']
-      });
-      const conferenceIds = assignedConferences.map(c => c.id);
-      
-      if (conferenceIds.length === 0) {
-        // If no assigned conferences were detected, still allow showing owned clients
-        console.log(`🔒 Member ${req.user.email} has no detected assigned conferences. Falling back to owned clients.`);
-        whereClause.ownerUserId = req.user.id;
-      } else {
-        // Members see clients from assigned conferences OR clients they own
-        whereClause[Op.or] = [
-          { conferenceId: { [Op.in]: conferenceIds } },
-          { ownerUserId: req.user.id }
-        ];
-        console.log(`🔒 Member ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s) or owned by the member`);
+        const assignedConferences = await Conference.findAll({
+          where: { [Op.or]: orConditions },
+          attributes: ['id']
+        }).catch(() => []);
+        const conferenceIds = assignedConferences.map(c => c.id);
+        
+        if (conferenceIds.length === 0) {
+          // If no assigned conferences were detected, still allow showing owned clients
+          console.log(`🔒 Member ${req.user.email} has no detected assigned conferences. Falling back to owned clients.`);
+          whereClause.ownerUserId = req.user.id;
+        } else {
+          // Members see clients from assigned conferences OR clients they own
+          whereClause[Op.or] = [
+            { conferenceId: { [Op.in]: conferenceIds } },
+            { ownerUserId: req.user.id }
+          ];
+          console.log(`🔒 Member ${req.user.email} - Filtering clients from ${conferenceIds.length} assigned conference(s) or owned by the member`);
+        }
+      } else if (req.user.role === 'CEO') {
+        console.log(`👑 CEO ${req.user.email} - Showing all clients`);
       }
-    } else if (req.user.role === 'CEO') {
-      console.log(`👑 CEO ${req.user.email} - Showing all clients`);
+    } catch (roleError) {
+      console.error('Error in role-based filtering:', roleError);
+      // Continue with empty filters if role filtering fails
     }
     
+    // Apply filters (only if valid)
     if (conferenceId) {
       whereClause.conferenceId = conferenceId;
     }
     
-    if (status && status !== 'All Statuses') {
+    if (status) {
       whereClause.status = status;
     }
     
-    if (country && country !== 'All Countries') {
+    if (country) {
       whereClause.country = country;
     }
 
@@ -343,75 +490,125 @@ router.get('/', authenticateToken, async (req, res) => {
     }
     
     if (search) {
-      whereClause[Op.or] = [
-        { name: { [Op.like]: `%${search}%` } },
-        { email: { [Op.like]: `%${search}%` } }
-      ];
+      try {
+        whereClause[Op.or] = [
+          { name: { [Op.like]: `%${search}%` } },
+          { email: { [Op.like]: `%${search}%` } }
+        ];
+      } catch (searchError) {
+        console.error('Error applying search filter:', searchError);
+      }
     }
 
     // Additive email activity filters
     if (req.query && req.query.emailFilter) {
-      const emailFilter = req.query.emailFilter;
-      if (emailFilter === 'today') {
-        const start = new Date(); start.setHours(0,0,0,0);
-        const end = new Date(); end.setHours(23,59,59,999);
-        const { EmailLog } = require('../models');
-        const logs = await EmailLog.findAll({ where: { status: 'sent', sentAt: { [Op.between]: [start, end] } }, attributes: ['clientId'] });
-        const ids = Array.from(new Set(logs.map(l => l.clientId).filter(Boolean)));
-        if (ids.length === 0) {
-          return res.json({ clients: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 });
+      try {
+        const emailFilter = req.query.emailFilter;
+        if (emailFilter === 'today') {
+          const start = new Date(); 
+          start.setHours(0,0,0,0);
+          const end = new Date(); 
+          end.setHours(23,59,59,999);
+          const { EmailLog } = require('../models');
+          const logs = await EmailLog.findAll({ 
+            where: { status: 'sent', sentAt: { [Op.between]: [start, end] } }, 
+            attributes: ['clientId'] 
+          }).catch(() => []);
+          const ids = Array.from(new Set(logs.map(l => l.clientId).filter(Boolean)));
+          if (ids.length === 0) {
+            return res.json({ clients: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 });
+          }
+          whereClause.id = { [Op.in]: ids };
+        } else if (emailFilter === 'upcoming') {
+          const next7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+          const { FollowUpJob } = require('../models');
+          const jobs = await FollowUpJob.findAll({ 
+            where: { status: 'active', nextSendAt: { [Op.lte]: next7 } }, 
+            attributes: ['clientId'] 
+          }).catch(() => []);
+          const ids = Array.from(new Set(jobs.map(j => j.clientId).filter(Boolean)));
+          if (ids.length === 0) {
+            return res.json({ clients: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 });
+          }
+          whereClause.id = { [Op.in]: ids };
         }
-        whereClause.id = { [Op.in]: ids };
-      } else if (emailFilter === 'upcoming') {
-        const next7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        const { FollowUpJob } = require('../models');
-        const jobs = await FollowUpJob.findAll({ where: { status: 'active', nextSendAt: { [Op.lte]: next7 } }, attributes: ['clientId'] });
-        const ids = Array.from(new Set(jobs.map(j => j.clientId).filter(Boolean)));
-        if (ids.length === 0) {
-          return res.json({ clients: [], total: 0, page: parseInt(page), limit: parseInt(limit), totalPages: 0 });
-        }
-        whereClause.id = { [Op.in]: ids };
+      } catch (emailFilterError) {
+        console.error('Error applying email activity filter:', emailFilterError);
+        // Continue without email filter if it fails
       }
     }
 
     const actualSortBy = sortBy === 'name' ? 'name' : sortBy;
 
-    // Get clients with pagination
-    const { count, rows: clientsRaw } = await Client.findAndCountAll({
-      where: whereClause,
-      order: [[actualSortBy, sortOrder]],
-      limit: parseInt(limit),
-      offset: (parseInt(page) - 1) * parseInt(limit)
-    });
+    // Get clients with pagination (with error handling)
+    let count = 0;
+    let clientsRaw = [];
+    
+    try {
+      const result = await Client.findAndCountAll({
+        where: whereClause,
+        order: [[actualSortBy, sortOrder]],
+        limit: parseInt(limit),
+        offset: (parseInt(page) - 1) * parseInt(limit)
+      });
+      
+      count = result.count || 0;
+      clientsRaw = Array.isArray(result.rows) ? result.rows : [];
+    } catch (queryError) {
+      console.error('Error executing client query:', queryError);
+      // Return empty result instead of error
+      return res.json({ 
+        clients: [], 
+        total: 0, 
+        page: parseInt(page), 
+        limit: parseInt(limit), 
+        totalPages: 0 
+      });
+    }
 
-    // Manually fetch conferences and owners for each client
+    // Manually fetch conferences and owners for each client (with error handling)
     const clients = [];
     for (const client of clientsRaw) {
-      const clientData = client.toJSON();
-      
-      // Fetch conference data
-      if (clientData.conferenceId) {
-        const conference = await Conference.findByPk(clientData.conferenceId, {
-          attributes: ['id', 'name', 'shortName', 'startDate', 'endDate'],
-          raw: true
-        });
-        clientData.conference = conference || null;
-      } else {
-        clientData.conference = null;
-      }
+      try {
+        const clientData = client.toJSON();
+        
+        // Fetch conference data
+        if (clientData.conferenceId) {
+          try {
+            const conference = await Conference.findByPk(clientData.conferenceId, {
+              attributes: ['id', 'name', 'shortName', 'startDate', 'endDate'],
+              raw: true
+            }).catch(() => null);
+            clientData.conference = conference || null;
+          } catch (confError) {
+            console.error(`Error fetching conference for client ${clientData.id}:`, confError);
+            clientData.conference = null;
+          }
+        } else {
+          clientData.conference = null;
+        }
 
-      // Fetch owner data
-      if (clientData.ownerUserId) {
-        const owner = await User.findByPk(clientData.ownerUserId, {
-          attributes: ['id', 'name', 'email', 'role'],
-          raw: true
-        });
-        clientData.owner = owner || null;
-      } else {
-        clientData.owner = null;
-      }
+        // Fetch owner data
+        if (clientData.ownerUserId) {
+          try {
+            const owner = await User.findByPk(clientData.ownerUserId, {
+              attributes: ['id', 'name', 'email', 'role'],
+              raw: true
+            }).catch(() => null);
+            clientData.owner = owner || null;
+          } catch (ownerError) {
+            console.error(`Error fetching owner for client ${clientData.id}:`, ownerError);
+            clientData.owner = null;
+          }
+        } else {
+          clientData.owner = null;
+        }
 
-      clients.push(clientData);
+        clients.push(clientData);
+      } catch (clientError) {
+        console.error('Error processing client:', clientError);
+        // Skip this client and continue with others
+      }
     }
 
     res.json({
@@ -423,7 +620,16 @@ router.get('/', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching clients:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    // Return safe default response instead of error
+    res.status(500).json({ 
+      error: 'Failed to fetch clients',
+      message: error.message || 'Internal server error',
+      clients: [],
+      total: 0,
+      page: 1,
+      limit: 50,
+      totalPages: 0
+    });
   }
 });
 
@@ -495,14 +701,40 @@ router.post('/', authenticateToken, async (req, res) => {
     const resolvedName = (name && String(name).trim()) || `${firstName || ''} ${lastName || ''}`.trim();
 
     // Validate required fields
-    if (!resolvedName || !email) {
-      return res.status(400).json({ error: 'Name and email are required' });
+    if (!resolvedName || !resolvedName.trim()) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Name is required',
+        field: 'name'
+      });
+    }
+    
+    if (!email || !email.trim()) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Email is required',
+        field: 'email'
+      });
+    }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Please enter a valid email address',
+        field: 'email'
+      });
     }
 
     // Check if client already exists
-    const existingClient = await Client.findOne({ where: { email } });
+    const existingClient = await Client.findOne({ where: { email: email.trim() } });
     if (existingClient) {
-      return res.status(400).json({ error: 'Client with this email already exists' });
+      return res.status(400).json({ 
+        error: 'Duplicate entry',
+        message: 'A client with this email already exists',
+        field: 'email'
+      });
     }
 
     console.log('📝 Creating client in database...');
@@ -564,8 +796,7 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error creating client:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    return handleSequelizeError(error, res, 'Failed to create client');
   }
 });
 
@@ -602,6 +833,50 @@ router.put('/:id', authenticateToken, async (req, res) => {
       }
     }
 
+    // Validate required fields if they are being updated
+    if (Object.prototype.hasOwnProperty.call(updateData, 'name') && (!updateData.name || !updateData.name.trim())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Name is required',
+        field: 'name'
+      });
+    }
+    
+    if (Object.prototype.hasOwnProperty.call(updateData, 'email')) {
+      if (!updateData.email || !updateData.email.trim()) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          message: 'Email is required',
+          field: 'email'
+        });
+      }
+      
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email.trim())) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          message: 'Please enter a valid email address',
+          field: 'email'
+        });
+      }
+      
+      // Check if email is already taken by another client
+      const existingClient = await Client.findOne({ 
+        where: { 
+          email: updateData.email.trim(),
+          id: { [Op.ne]: id }
+        } 
+      });
+      if (existingClient) {
+        return res.status(400).json({
+          error: 'Duplicate entry',
+          message: 'A client with this email already exists',
+          field: 'email'
+        });
+      }
+    }
+    
     // Capture old status before update
   const oldStatus = client.status;
     const oldConferenceId = client.conferenceId;
@@ -643,8 +918,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Client updated successfully', client });
   } catch (error) {
-    console.error('Error updating client:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    return handleSequelizeError(error, res, 'Failed to update client');
   }
 });
 

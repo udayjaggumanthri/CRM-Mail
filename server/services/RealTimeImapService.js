@@ -335,11 +335,21 @@ class RealTimeImapService {
     const accountName = account.name || account.email || account.imapHost || 'Unknown Account';
     console.log(`🔄 Starting polling fallback for ${accountName} [${folderName}] (every 30 seconds)`);
     
+    // Ensure pollingIntervals map exists
+    this.pollingIntervals = this.pollingIntervals || new Map();
+    
+    // Clear any existing interval for this connection
+    if (this.pollingIntervals.has(connectionKey)) {
+      clearInterval(this.pollingIntervals.get(connectionKey));
+      this.pollingIntervals.delete(connectionKey);
+    }
+    
     const pollInterval = setInterval(async () => {
       try {
-        if (!client.connected) {
+        if (!client || !client.connected) {
           console.log(`❌ Client disconnected for ${accountName} [${folderName}], stopping polling`);
           clearInterval(pollInterval);
+          this.pollingIntervals.delete(connectionKey);
           return;
         }
         
@@ -347,11 +357,16 @@ class RealTimeImapService {
         await this.checkForNewEmails(account, client, folderName, folderType, connectionKey);
       } catch (error) {
         console.error(`❌ Polling error for ${accountName} [${folderName}]:`, error.message);
+        // If error persists, stop polling to prevent infinite error loops
+        if (error.message && (error.message.includes('timeout') || error.message.includes('ETIMEDOUT'))) {
+          console.warn(`⚠️ Stopping polling for ${accountName} [${folderName}] due to persistent errors`);
+          clearInterval(pollInterval);
+          this.pollingIntervals.delete(connectionKey);
+        }
       }
     }, 30000); // Poll every 30 seconds
     
     // Store the interval for cleanup
-    this.pollingIntervals = this.pollingIntervals || new Map();
     this.pollingIntervals.set(connectionKey, pollInterval);
   }
 
@@ -783,6 +798,56 @@ class RealTimeImapService {
     this.retryAttempts.clear();
     
     console.log('✅ Real-time IMAP sync stopped');
+  }
+
+  /**
+   * Stop monitoring for a specific folder/account
+   */
+  async stopFolderMonitoring(accountId, folderName) {
+    const connectionKey = `${accountId}:${folderName}`;
+    console.log(`🛑 Stopping monitoring for connection: ${connectionKey}`);
+    
+    // Clear keep-alive interval
+    if (this.keepAliveIntervals && this.keepAliveIntervals.has(connectionKey)) {
+      clearInterval(this.keepAliveIntervals.get(connectionKey));
+      this.keepAliveIntervals.delete(connectionKey);
+    }
+    
+    // Clear polling interval
+    if (this.pollingIntervals && this.pollingIntervals.has(connectionKey)) {
+      clearInterval(this.pollingIntervals.get(connectionKey));
+      this.pollingIntervals.delete(connectionKey);
+    }
+    
+    // Close connection
+    const client = this.connections.get(connectionKey);
+    if (client) {
+      try {
+        if (client.connected) {
+          await client.logout();
+        }
+      } catch (error) {
+        console.error(`Error closing connection ${connectionKey}:`, error.message);
+      }
+      this.connections.delete(connectionKey);
+    }
+    
+    // Remove from monitored folders
+    if (this.monitoredFolders) {
+      this.monitoredFolders.delete(connectionKey);
+    }
+    
+    // Remove from idle connections
+    if (this.idleConnections) {
+      this.idleConnections.delete(connectionKey);
+    }
+    
+    // Clear retry attempts
+    if (this.retryAttempts) {
+      this.retryAttempts.delete(connectionKey);
+    }
+    
+    console.log(`✅ Stopped monitoring for ${connectionKey}`);
   }
 
   /**

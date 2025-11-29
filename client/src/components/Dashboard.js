@@ -1,6 +1,7 @@
 import React from 'react';
 import { useQuery } from 'react-query';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import {
   Users,
   FileText,
@@ -14,6 +15,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 const Dashboard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   
   const { data: stats, isLoading } = useQuery('dashboard-stats', async () => {
     const response = await axios.get('/api/dashboard/stats');
@@ -109,8 +111,31 @@ const Dashboard = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {statCards.map((stat, index) => {
           const Icon = stat.icon;
+          // Determine navigation route based on card type
+          const getNavigationRoute = () => {
+            if (stat.title.includes('Client')) return '/clients';
+            if (stat.title.includes('Email')) return '/email';
+            if (stat.title.includes('Abstract')) return '/clients';
+            if (stat.title.includes('Registered')) return '/clients';
+            if (stat.title.includes('Conversion')) return '/clients';
+            if (stat.title.includes('Follow-up')) return '/clients';
+            return '/clients'; // Default route
+          };
+          
           return (
-            <div key={index} className="card">
+            <div 
+              key={index} 
+              className="card cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+              onClick={() => navigate(getNavigationRoute())}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  navigate(getNavigationRoute());
+                }
+              }}
+            >
               <div className="flex items-center">
                 <div className={`p-3 rounded-lg ${stat.color}`}>
                   <Icon className="h-6 w-6 text-white" />

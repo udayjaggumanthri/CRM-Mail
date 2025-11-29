@@ -79,6 +79,78 @@ const followUpService = new FollowUpService();
 const emailService = new EmailService();
 const emailJobScheduler = new EmailJobScheduler();
 
+// Helper function to handle Sequelize validation errors and return proper error responses
+const handleSequelizeError = (error, res, defaultMessage = 'An error occurred') => {
+  console.error('Database error:', error);
+  
+  // Handle Sequelize validation errors
+  if (error.name === 'SequelizeValidationError') {
+    const validationErrors = error.errors.map(err => ({
+      field: err.path,
+      message: err.message,
+      value: err.value
+    }));
+    
+    // Create user-friendly error message
+    const errorMessages = validationErrors.map(err => {
+      const fieldName = err.field.charAt(0).toUpperCase() + err.field.slice(1).replace(/([A-Z])/g, ' $1');
+      return `${fieldName}: ${err.message}`;
+    });
+    
+    return res.status(400).json({
+      error: 'Validation failed',
+      message: errorMessages.join(', '),
+      details: validationErrors
+    });
+  }
+  
+  // Handle unique constraint errors
+  if (error.name === 'SequelizeUniqueConstraintError') {
+    const field = error.errors?.[0]?.path || 'field';
+    const fieldName = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return res.status(400).json({
+      error: 'Duplicate entry',
+      message: `${fieldName} already exists. Please use a different value.`,
+      field: field
+    });
+  }
+  
+  // Handle foreign key constraint errors
+  if (error.name === 'SequelizeForeignKeyConstraintError') {
+    return res.status(400).json({
+      error: 'Invalid reference',
+      message: 'The referenced record does not exist. Please check your input.'
+    });
+  }
+  
+  // Handle database connection errors
+  if (error.name === 'SequelizeConnectionError') {
+    return res.status(503).json({
+      error: 'Database connection error',
+      message: 'Unable to connect to the database. Please try again later.'
+    });
+  }
+  
+  // Handle not null constraint errors
+  if (error.name === 'SequelizeDatabaseError' && error.message?.includes('NOT NULL')) {
+    const fieldMatch = error.message.match(/column "(\w+)"/);
+    const field = fieldMatch ? fieldMatch[1] : 'field';
+    const fieldName = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return res.status(400).json({
+      error: 'Required field missing',
+      message: `${fieldName} is required. Please provide a value.`,
+      field: field
+    });
+  }
+  
+  // Default error response
+  return res.status(500).json({
+    error: 'Internal server error',
+    message: defaultMessage,
+    details: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
+};
+
 const normalizeShortName = (value) => {
   if (typeof value !== 'string') {
     return value === null ? null : undefined;
@@ -978,49 +1050,136 @@ app.get('/api/conferences', authenticateToken, async (req, res) => {
   try {
     console.log(`🔍 API Call - User: ${req.user.email} (${req.user.role}) - ID: ${req.user.id}`);
     
-    // Build where clause based on user role
+    // Build where clause based on user role (with error handling)
     let whereClause = {};
 
-    if (req.user.role === 'TeamLead') {
-      // TeamLead sees only conferences where they are assigned
-      whereClause.assignedTeamLeadId = req.user.id;
-      console.log(`🔒 TeamLead ${req.user.email} - Filtering conferences by assignedTeamLeadId: ${req.user.id}`);
-    } else if (req.user.role === 'Member') {
-      // Member sees only conferences where they are in assignedMemberIds array (JSON column)
-      // Use PostgreSQL JSON contains operator with proper casting
-      whereClause = sequelize.where(
-        sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
-        '@>',
-        sequelize.cast(`["${req.user.id}"]`, 'jsonb')
-      );
-      console.log(`🔒 Member ${req.user.email} - Filtering conferences by assignedMemberIds contains: ${req.user.id}`);
-    } else if (req.user.role === 'CEO') {
-      // CEO sees all conferences (no filter)
-      console.log(`👑 CEO ${req.user.email} - Showing all conferences`);
-    } else {
-      // Default: no conferences for unknown roles
-      console.log(`⚠️ Unknown role ${req.user.role} - No conferences shown`);
-      return res.json([]);
+    try {
+      if (req.user.role === 'TeamLead') {
+        // TeamLead sees only conferences where they are assigned
+        whereClause.assignedTeamLeadId = req.user.id;
+        console.log(`🔒 TeamLead ${req.user.email} - Filtering conferences by assignedTeamLeadId: ${req.user.id}`);
+      } else if (req.user.role === 'Member') {
+        // Member sees only conferences where they are in assignedMemberIds array (JSON column)
+        // Use PostgreSQL JSON contains operator with proper casting
+        whereClause = sequelize.where(
+          sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+          '@>',
+          sequelize.cast(`["${req.user.id}"]`, 'jsonb')
+        );
+        console.log(`🔒 Member ${req.user.email} - Filtering conferences by assignedMemberIds contains: ${req.user.id}`);
+      } else if (req.user.role === 'CEO') {
+        // CEO sees all conferences (no filter)
+        console.log(`👑 CEO ${req.user.email} - Showing all conferences`);
+      } else {
+        // Default: no conferences for unknown roles
+        console.log(`⚠️ Unknown role ${req.user.role} - No conferences shown`);
+        return res.json([]);
+      }
+    } catch (roleError) {
+      console.error('Error in role-based filtering:', roleError);
+      // Continue with empty filter if role filtering fails
     }
 
-    const conferences = await Conference.findAll({
-      where: whereClause,
-      order: [['createdAt', 'DESC']],
-      limit: 100
-    });
+    // Execute query with error handling
+    let conferences = [];
+    try {
+      conferences = await Conference.findAll({
+        where: whereClause,
+        order: [['createdAt', 'DESC']],
+        limit: 100
+      }).catch(() => []);
+      
+      conferences = Array.isArray(conferences) ? conferences : [];
+    } catch (queryError) {
+      console.error('Error executing conference query:', queryError);
+      conferences = [];
+    }
 
     console.log(`📋 Found ${conferences.length} conference(s) for ${req.user.role} ${req.user.email}`);
-    console.log(`📋 Conference names: ${conferences.map(c => c.name).join(', ')}`);
     
-    res.json(conferences);
+    res.json(conferences || []);
   } catch (error) {
     console.error('Get conferences error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    // Return safe default response instead of error
+    res.status(500).json({ 
+      error: 'Failed to fetch conferences',
+      message: error.message || 'Internal server error',
+      conferences: []
+    });
   }
 });
 
 app.post('/api/conferences', authenticateToken, async (req, res) => {
   try {
+    // Validate required fields before processing
+    if (!req.body.name || !req.body.name.trim()) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Conference name is required',
+        field: 'name'
+      });
+    }
+    
+    if (!req.body.shortName || !req.body.shortName.trim()) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Conference short name is required',
+        field: 'shortName'
+      });
+    }
+    
+    if (!req.body.venue || !req.body.venue.trim()) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Venue is required',
+        field: 'venue'
+      });
+    }
+    
+    if (!req.body.startDate) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Start date is required',
+        field: 'startDate'
+      });
+    }
+    
+    if (!req.body.endDate) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'End date is required',
+        field: 'endDate'
+      });
+    }
+    
+    // Validate date range
+    const startDate = new Date(req.body.startDate);
+    const endDate = new Date(req.body.endDate);
+    
+    if (isNaN(startDate.getTime())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Start date must be a valid date',
+        field: 'startDate'
+      });
+    }
+    
+    if (isNaN(endDate.getTime())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'End date must be a valid date',
+        field: 'endDate'
+      });
+    }
+    
+    if (endDate < startDate) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'End date must be after start date',
+        field: 'endDate'
+      });
+    }
+    
     // Clean the request body to handle empty template IDs
     const conferenceData = { ...req.body };
     
@@ -1058,8 +1217,7 @@ app.post('/api/conferences', authenticateToken, async (req, res) => {
     const conference = await Conference.create(conferenceData);
     res.status(201).json(conference);
   } catch (error) {
-    console.error('Create conference error:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    return handleSequelizeError(error, res, 'Failed to create conference');
   }
 });
 
@@ -1148,6 +1306,61 @@ app.put('/api/conferences/:id', authenticateToken, async (req, res) => {
 
     const previousState = conference.toJSON();
 
+    // Validate required fields if they are being updated
+    if (Object.prototype.hasOwnProperty.call(updateData, 'name') && (!updateData.name || !updateData.name.trim())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Conference name is required',
+        field: 'name'
+      });
+    }
+    
+    if (Object.prototype.hasOwnProperty.call(updateData, 'shortName') && (!updateData.shortName || !updateData.shortName.trim())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Conference short name is required',
+        field: 'shortName'
+      });
+    }
+    
+    if (Object.prototype.hasOwnProperty.call(updateData, 'venue') && (!updateData.venue || !updateData.venue.trim())) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Venue is required',
+        field: 'venue'
+      });
+    }
+    
+    if (Object.prototype.hasOwnProperty.call(updateData, 'startDate') && !updateData.startDate) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Start date is required',
+        field: 'startDate'
+      });
+    }
+    
+    if (Object.prototype.hasOwnProperty.call(updateData, 'endDate') && !updateData.endDate) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'End date is required',
+        field: 'endDate'
+      });
+    }
+    
+    // Validate date range if both dates are being updated
+    if (updateData.startDate && updateData.endDate) {
+      const startDate = new Date(updateData.startDate);
+      const endDate = new Date(updateData.endDate);
+      
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate < startDate) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          message: 'End date must be after start date',
+          field: 'endDate'
+        });
+      }
+    }
+
     await conference.update(updateData);
     await conference.reload();
     console.log(`✅ Conference ${conference.id} updated by ${req.user.role} ${req.user.email}`);
@@ -1163,8 +1376,7 @@ app.put('/api/conferences/:id', authenticateToken, async (req, res) => {
 
     res.json(conference);
   } catch (error) {
-    console.error('Update conference error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    return handleSequelizeError(error, res, 'Failed to update conference');
   }
 });
 
@@ -1536,7 +1748,28 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 // Optimized dashboard endpoint with parallel queries and caching
 app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
-    const { timeRange = '7d', conferenceId = 'all' } = req.query;
+    // Validate and sanitize filter parameters
+    let { timeRange = '7d', conferenceId = 'all' } = req.query;
+    
+    // Validate timeRange
+    const validTimeRanges = ['1d', '7d', '30d', '90d'];
+    if (!validTimeRanges.includes(timeRange)) {
+      timeRange = '7d'; // Default to 7 days if invalid
+    }
+    
+    // Validate conferenceId (should be 'all' or a valid UUID/ID)
+    if (conferenceId && conferenceId !== 'all') {
+      // Check if conference exists (optional validation)
+      try {
+        const conference = await Conference.findByPk(conferenceId);
+        if (!conference) {
+          conferenceId = 'all'; // Reset to 'all' if conference doesn't exist
+        }
+      } catch (err) {
+        // If validation fails, use 'all'
+        conferenceId = 'all';
+      }
+    }
     
     // Build where clauses based on role
     let conferenceWhere = {};
@@ -1545,51 +1778,85 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
     
     // Role-based filtering - optimized with single query
     let conferenceIds = [];
-    if (req.user.role === 'TeamLead') {
-      const assignedConferences = await Conference.findAll({
-        where: { assignedTeamLeadId: req.user.id },
-        attributes: ['id']
-      });
-      conferenceIds = assignedConferences.map(c => c.id);
-      
-      if (conferenceIds.length > 0) {
-        conferenceWhere.id = { [Op.in]: conferenceIds };
-        clientWhere.conferenceId = { [Op.in]: conferenceIds };
-        emailWhere.conferenceId = { [Op.in]: conferenceIds };
+    try {
+      if (req.user.role === 'TeamLead') {
+        const assignedConferences = await Conference.findAll({
+          where: { assignedTeamLeadId: req.user.id },
+          attributes: ['id']
+        }).catch(() => []);
+        conferenceIds = assignedConferences.map(c => c.id);
+        
+        if (conferenceIds.length > 0) {
+          conferenceWhere.id = { [Op.in]: conferenceIds };
+          clientWhere.conferenceId = { [Op.in]: conferenceIds };
+          emailWhere.conferenceId = { [Op.in]: conferenceIds };
+        }
+        
+        console.log(`🔒 TeamLead dashboard - ${conferenceIds.length} assigned conference(s)`);
+      } else if (req.user.role === 'Member') {
+        const assignedConferences = await Conference.findAll({
+          where: {
+            assignedMemberIds: { [Op.contains]: [req.user.id] }
+          },
+          attributes: ['id']
+        }).catch(() => []);
+        conferenceIds = assignedConferences.map(c => c.id);
+        
+        if (conferenceIds.length > 0) {
+          conferenceWhere.id = { [Op.in]: conferenceIds };
+          clientWhere.conferenceId = { [Op.in]: conferenceIds };
+          emailWhere.conferenceId = { [Op.in]: conferenceIds };
+        }
+        
+        console.log(`🔒 Member dashboard - ${conferenceIds.length} assigned conference(s)`);
+      } else if (req.user.role === 'CEO') {
+        console.log(`👑 CEO dashboard - All system data`);
       }
-      
-      console.log(`🔒 TeamLead dashboard - ${conferenceIds.length} assigned conference(s)`);
-    } else if (req.user.role === 'Member') {
-      const assignedConferences = await Conference.findAll({
-        where: {
-          assignedMemberIds: { [Op.contains]: [req.user.id] }
-        },
-        attributes: ['id']
-      });
-      conferenceIds = assignedConferences.map(c => c.id);
-      
-      if (conferenceIds.length > 0) {
-        conferenceWhere.id = { [Op.in]: conferenceIds };
-        clientWhere.conferenceId = { [Op.in]: conferenceIds };
-        emailWhere.conferenceId = { [Op.in]: conferenceIds };
-      }
-      
-      console.log(`🔒 Member dashboard - ${conferenceIds.length} assigned conference(s)`);
-    } else if (req.user.role === 'CEO') {
-      console.log(`👑 CEO dashboard - All system data`);
+    } catch (roleError) {
+      console.error('Error in role-based filtering:', roleError);
+      // Continue with empty filters if role filtering fails
     }
     
-    // Calculate time ranges
+    // Apply conference filter if specified
+    if (conferenceId && conferenceId !== 'all') {
+      conferenceWhere.id = conferenceId;
+      clientWhere.conferenceId = conferenceId;
+      emailWhere.conferenceId = conferenceId;
+    }
+    
+    // Calculate time ranges with error handling
     const endDate = new Date();
     let startDate;
-    switch (timeRange) {
-      case '1d': startDate = new Date(Date.now() - 24 * 60 * 60 * 1000); break;
-      case '7d': startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); break;
-      case '30d': startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); break;
-      case '90d': startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); break;
-      default: startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    try {
+      switch (timeRange) {
+        case '1d': startDate = new Date(Date.now() - 24 * 60 * 60 * 1000); break;
+        case '7d': startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); break;
+        case '30d': startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); break;
+        case '90d': startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000); break;
+        default: startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      }
+      
+      // Validate dates
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        throw new Error('Invalid date calculation');
+      }
+    } catch (dateError) {
+      console.error('Error calculating date range:', dateError);
+      // Fallback to default 7 days
+      startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     }
     
+    // Apply time range filter ONLY to time-based metrics (not total counts)
+    // Total counts should show all-time totals, not filtered by time range
+    const clientWhereWithTime = {
+      ...clientWhere,
+      createdAt: { [Op.gte]: startDate, [Op.lte]: endDate }
+    };
+    const emailWhereWithTime = {
+      ...emailWhere,
+      sentAt: { [Op.gte]: startDate, [Op.lte]: endDate }
+    };
+
     // Run all queries in parallel for better performance
     const [
       totalClients, 
@@ -1602,26 +1869,27 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
       bouncedEmails,
       unansweredReplies
     ] = await Promise.all([
+      // Total counts - NO time filter (show all-time totals)
       Client.count({ where: clientWhere }),
       Conference.count({ where: conferenceWhere }),
-      EmailLog.count({ where: emailWhere }),
+      EmailLog.count({ where: emailWhere }), // Total emails sent (all-time)
+      // Recent clients - WITH time filter (show recent activity)
       Client.findAll({
-        where: clientWhere,
+        where: clientWhereWithTime,
         limit: 5,
         order: [['createdAt', 'DESC']],
         attributes: ['id', 'name', 'email', 'status', 'createdAt']
       }).catch(() => []), // Return empty array on error
+      // Client status data - WITH time filter (show status distribution for the period)
       Client.findAll({
-        where: clientWhere,
+        where: clientWhereWithTime,
         attributes: ['status', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
         group: ['status'],
         raw: true
       }).catch(() => []),
+      // Email status data - WITH time filter (show email performance for the period)
       EmailLog.findAll({
-        where: {
-          ...emailWhere,
-          sentAt: { [Op.gte]: startDate }
-        },
+        where: emailWhereWithTime,
         attributes: [
           'status',
           [sequelize.fn('COUNT', sequelize.col('id')), 'count']
@@ -1629,27 +1897,29 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
         group: ['status'],
         raw: true
       }).catch(() => []),
+      // Conferences - NO time filter (show all conferences)
       Conference.findAll({
         where: conferenceWhere,
         attributes: ['id', 'name', 'startDate', 'endDate', 'venue', 'primaryContactUserId', 'revenue'],
         include: [{ model: User, as: 'primaryContact', attributes: ['id', 'name', 'email'], required: false }],
         limit: 50
       }).catch(() => []),
+      // Bounced emails - WITH time filter (show recent bounces)
       EmailLog.findAll({
         where: {
-          ...emailWhere,
-          status: 'bounced',
-          sentAt: { [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+          ...emailWhereWithTime,
+          status: 'bounced'
         },
         limit: 20,
         order: [['sentAt', 'DESC']],
         include: [{ model: Client, as: 'client', attributes: ['id', 'name', 'email'], required: false }]
       }).catch(() => []),
+      // Unanswered replies - WITH time filter (show recent unanswered)
       Email.findAll({
         where: {
           folder: 'inbox',
           isRead: false,
-          date: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+          date: { [Op.gte]: startDate, [Op.lte]: endDate },
           clientId: { [Op.ne]: null }
         },
         limit: 20,
@@ -1658,30 +1928,56 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
       }).catch(() => [])
     ]);
 
-    // Calculate KPIs
+    // Calculate KPIs with error handling
     const statusCounts = {};
-    clientStatusData.forEach(item => {
-      statusCounts[item.status] = parseInt(item.count);
-    });
+    try {
+      if (Array.isArray(clientStatusData)) {
+        clientStatusData.forEach(item => {
+          if (item && item.status) {
+            statusCounts[item.status] = parseInt(item.count) || 0;
+          }
+        });
+      }
+    } catch (kpiError) {
+      console.error('Error calculating status counts:', kpiError);
+    }
+    
     const abstractsSubmitted = statusCounts['Abstract Submitted'] || 0;
     const registered = statusCounts['Registered'] || 0;
     const conversionRate = abstractsSubmitted > 0 ? (registered / abstractsSubmitted * 100).toFixed(2) : 0;
     
-    // Calculate total revenue
+    // Calculate total revenue with error handling
     let totalRevenue = 0;
-    if (Array.isArray(conferences)) {
-      conferences.forEach(c => {
-        if (c.revenue && c.revenue.actual) {
-          totalRevenue += parseFloat(c.revenue.actual) || 0;
-        }
-      });
+    try {
+      if (Array.isArray(conferences)) {
+        conferences.forEach(c => {
+          try {
+            if (c && c.revenue && c.revenue.actual) {
+              totalRevenue += parseFloat(c.revenue.actual) || 0;
+            }
+          } catch (revError) {
+            // Skip invalid revenue entries
+          }
+        });
+      }
+    } catch (revenueError) {
+      console.error('Error calculating revenue:', revenueError);
     }
     
-    // Calculate email performance
+    // Calculate email performance with error handling
     const emailCounts = {};
-    emailStatusData.forEach(item => {
-      emailCounts[item.status] = parseInt(item.count);
-    });
+    try {
+      if (Array.isArray(emailStatusData)) {
+        emailStatusData.forEach(item => {
+          if (item && item.status) {
+            emailCounts[item.status] = parseInt(item.count) || 0;
+          }
+        });
+      }
+    } catch (emailError) {
+      console.error('Error calculating email counts:', emailError);
+    }
+    
     const totalSent = emailCounts['sent'] || 0;
     const totalDelivered = emailCounts['delivered'] || 0;
     const totalBounced = emailCounts['bounced'] || 0;
@@ -1697,60 +1993,136 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
       'ETag': `"${req.user.id}-${Date.now()}"`
     });
 
+    // Safely map conferences with error handling
+    const safeConferences = [];
+    try {
+      if (Array.isArray(conferences)) {
+        conferences.forEach(c => {
+          try {
+            if (c && c.id) {
+              safeConferences.push({
+                id: c.id,
+                name: c.name || '',
+                startDate: c.startDate || null,
+                endDate: c.endDate || null,
+                venue: c.venue || '',
+                primaryContact: c.primaryContact ? {
+                  name: c.primaryContact.name || '',
+                  email: c.primaryContact.email || ''
+                } : null
+              });
+            }
+          } catch (confError) {
+            // Skip invalid conference entries
+          }
+        });
+      }
+    } catch (confMapError) {
+      console.error('Error mapping conferences:', confMapError);
+    }
+    
+    // Safely map bounced emails and unanswered replies
+    const safeBouncedEmails = [];
+    const safeUnansweredReplies = [];
+    try {
+      if (Array.isArray(bouncedEmails)) {
+        bouncedEmails.forEach(b => {
+          try {
+            if (b && b.id) {
+              safeBouncedEmails.push({
+                id: b.id,
+                clientId: b.clientId || null,
+                clientName: b.client?.name || '',
+                subject: b.subject || '',
+                status: b.status || '',
+                sentAt: b.sentAt || null
+              });
+            }
+          } catch (bounceError) {
+            // Skip invalid entries
+          }
+        });
+      }
+    } catch (bounceMapError) {
+      console.error('Error mapping bounced emails:', bounceMapError);
+    }
+    
+    try {
+      if (Array.isArray(unansweredReplies)) {
+        unansweredReplies.forEach(e => {
+          try {
+            if (e && e.id) {
+              safeUnansweredReplies.push({
+                id: e.id,
+                clientId: e.clientId || null,
+                clientName: e.client?.name || '',
+                subject: e.subject || '',
+                date: e.date || null
+              });
+            }
+          } catch (replyError) {
+            // Skip invalid entries
+          }
+        });
+      }
+    } catch (replyMapError) {
+      console.error('Error mapping unanswered replies:', replyMapError);
+    }
+
     res.json({ 
       // Original fields (preserved)
-      totalClients,
-      totalConferences,
-      totalEmails,
-      recentClients,
+      totalClients: totalClients || 0,
+      totalConferences: totalConferences || 0,
+      totalEmails: totalEmails || 0,
+      recentClients: Array.isArray(recentClients) ? recentClients : [],
       timeRange,
       conferenceId,
-      userRole: req.user.role,
+      userRole: req.user.role || 'Member',
       cached: false,
       // New additive fields
-      conferences: conferences.map(c => ({
-        id: c.id,
-        name: c.name,
-        startDate: c.startDate,
-        endDate: c.endDate,
-        venue: c.venue,
-        primaryContact: c.primaryContact ? {
-          name: c.primaryContact.name,
-          email: c.primaryContact.email
-        } : null
-      })),
+      conferences: safeConferences,
       kpis: {
-        abstractsSubmitted,
-        registered,
-        conversionRate: parseFloat(conversionRate),
-        totalRevenue
+        abstractsSubmitted: parseInt(abstractsSubmitted) || 0,
+        registered: parseInt(registered) || 0,
+        conversionRate: parseFloat(conversionRate) || 0,
+        totalRevenue: parseFloat(totalRevenue) || 0
       },
       emailPerformance: {
-        deliveryRate: parseFloat(deliveryRate),
-        bounceRate: parseFloat(bounceRate),
-        replyRate: parseFloat(replyRate)
+        deliveryRate: parseFloat(deliveryRate) || 0,
+        bounceRate: parseFloat(bounceRate) || 0,
+        replyRate: parseFloat(replyRate) || 0
       },
       needsAttention: {
-        bouncedEmails: bouncedEmails.map(b => ({
-          id: b.id,
-          clientId: b.clientId,
-          clientName: b.client?.name,
-          subject: b.subject,
-          status: b.status,
-          sentAt: b.sentAt
-        })),
-        unansweredReplies: unansweredReplies.map(e => ({
-          id: e.id,
-          clientId: e.clientId,
-          clientName: e.client?.name,
-          subject: e.subject,
-          date: e.date
-        }))
+        bouncedEmails: safeBouncedEmails,
+        unansweredReplies: safeUnansweredReplies
       }
     });
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    // Return safe default response instead of error
+    res.status(500).json({ 
+      error: 'Failed to load dashboard data',
+      message: error.message || 'Internal server error',
+      totalClients: 0,
+      totalConferences: 0,
+      totalEmails: 0,
+      recentClients: [],
+      kpis: {
+        abstractsSubmitted: 0,
+        registered: 0,
+        conversionRate: 0,
+        totalRevenue: 0
+      },
+      emailPerformance: {
+        deliveryRate: 0,
+        bounceRate: 0,
+        replyRate: 0
+      },
+      needsAttention: {
+        bouncedEmails: [],
+        unansweredReplies: []
+      }
+    });
   }
 });
 

@@ -238,7 +238,8 @@ const ConferenceManagement = () => {
       handleCloseModal();
     },
     onError: (error) => {
-      toast.error(error.response?.data?.error || 'Failed to create conference');
+      const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to create conference';
+      toast.error(errorMessage);
     }
   });
 
@@ -253,7 +254,8 @@ const ConferenceManagement = () => {
       handleCloseModal();
     },
     onError: (error) => {
-      toast.error(error.response?.data?.error || 'Failed to update conference');
+      const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to update conference';
+      toast.error(errorMessage);
     }
   });
 
@@ -650,6 +652,32 @@ const ConferenceManagement = () => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    
+    // Validate required fields
+    if (!formData.name || !formData.name.trim()) {
+      toast.error('Conference name is required');
+      return;
+    }
+    
+    if (!formData.shortName || !formData.shortName.trim()) {
+      toast.error('Conference short name is required');
+      return;
+    }
+    
+    if (!formData.venue || !formData.venue.trim()) {
+      toast.error('Venue is required');
+      return;
+    }
+    
+    if (!formData.startDate) {
+      toast.error('Start date is required');
+      return;
+    }
+    
+    if (!formData.endDate) {
+      toast.error('End date is required');
+      return;
+    }
     
     // Transform interval data to new format
     const trimmedShortName = (formData.shortName || '').trim().slice(0, 50);
@@ -1048,6 +1076,9 @@ const ConferenceManagement = () => {
                   <p className="text-sm text-gray-600 mt-1">
                     {editingConference ? 'Update conference details and email templates' : 'Set up a new conference with email automation'}
                   </p>
+                  <p className="text-xs text-gray-500 mt-2">
+                    Fields marked with <span className="text-red-500">*</span> are required
+                  </p>
                 </div>
                 <button
                   onClick={handleCloseModal}
@@ -1066,7 +1097,7 @@ const ConferenceManagement = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Conference Name *
+                      Conference Name <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -1079,16 +1110,17 @@ const ConferenceManagement = () => {
                     />
                     <div className="mt-4 space-y-1">
                       <label className="text-sm font-medium text-gray-700">
-                        Conference Short Name
+                        Conference Short Name <span className="text-red-500">*</span>
                       </label>
                       <p className="text-xs text-gray-500">
-                        Optional abbreviation displayed alongside the full name (e.g., CRM2025)
+                        Abbreviation displayed alongside the full name (e.g., CRM2025)
                       </p>
                       <input
                         type="text"
                         name="shortName"
                         value={formData.shortName}
                         onChange={handleInputChange}
+                        required
                         placeholder="e.g., CRM2025"
                         maxLength={50}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
@@ -1097,7 +1129,7 @@ const ConferenceManagement = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Venue *
+                      Venue <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -1118,7 +1150,7 @@ const ConferenceManagement = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Start Date *
+                      Start Date <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="date"
@@ -1131,7 +1163,7 @@ const ConferenceManagement = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                      End Date *
+                      End Date <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="date"

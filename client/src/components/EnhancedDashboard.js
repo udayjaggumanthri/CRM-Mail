@@ -36,17 +36,47 @@ const EnhancedDashboard = () => {
   const { data: dashboardData, isLoading: dashboardLoading, error: dashboardError } = useQuery(
     ['dashboard', selectedTimeRange, selectedConference],
     async () => {
-      const response = await axios.get('/api/dashboard', {
-        params: { timeRange: selectedTimeRange, conferenceId: selectedConference }
-      });
-      return response.data;
+      try {
+        const response = await axios.get('/api/dashboard', {
+          params: { timeRange: selectedTimeRange, conferenceId: selectedConference }
+        });
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching dashboard data:', error);
+        // Return safe default data structure
+        return {
+          totalClients: 0,
+          totalConferences: 0,
+          totalEmails: 0,
+          recentClients: [],
+          kpis: {
+            abstractsSubmitted: 0,
+            registered: 0,
+            conversionRate: 0,
+            totalRevenue: 0
+          },
+          emailPerformance: {
+            deliveryRate: 0,
+            bounceRate: 0,
+            replyRate: 0
+          },
+          needsAttention: {
+            bouncedEmails: [],
+            unansweredReplies: []
+          }
+        };
+      }
     },
     {
       refetchInterval: refreshInterval,
       refetchOnWindowFocus: false, // Disable auto-refresh on focus to improve performance
       staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
       cacheTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
-      retry: 2 // Reduce retries for faster failure handling
+      retry: 2, // Reduce retries for faster failure handling
+      onError: (error) => {
+        console.error('Dashboard query error:', error);
+        toast.error('Failed to load dashboard data. Please try again.');
+      }
     }
   );
 
@@ -260,7 +290,18 @@ const EnhancedDashboard = () => {
 
       {/* Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/clients')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/clients');
+            }
+          }}
+        >
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Total Clients</p>
@@ -270,7 +311,18 @@ const EnhancedDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/email')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/email');
+            }
+          }}
+        >
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Emails Sent</p>
@@ -280,7 +332,18 @@ const EnhancedDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/conferences')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/conferences');
+            }
+          }}
+        >
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Conferences</p>
@@ -290,7 +353,30 @@ const EnhancedDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => {
+            // For conversion rate, we can navigate to analytics or stay on dashboard with filter
+            // You can customize this based on your needs
+            if (user?.role === 'CEO') {
+              navigate('/analytics');
+            } else {
+              navigate('/clients');
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (user?.role === 'CEO') {
+                navigate('/analytics');
+              } else {
+                navigate('/clients');
+              }
+            }
+          }}
+        >
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Conversion Rate</p>

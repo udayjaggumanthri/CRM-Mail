@@ -16,7 +16,11 @@ import {
   ChevronDownIcon,
   KeyIcon,
   LockClosedIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  Squares2X2Icon,
+  ListBulletIcon,
+  CalendarIcon,
+  ClockIcon
 } from '@heroicons/react/24/outline';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
@@ -50,6 +54,12 @@ const EnhancedUserManagement = () => {
     jobTitle: ''
   });
   const [showPassword, setShowPassword] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [selectedUserDetail, setSelectedUserDetail] = useState(null);
 
   useEffect(() => {
     fetchUsers();
@@ -84,7 +94,8 @@ const EnhancedUserManagement = () => {
       handleCloseModal();
     } catch (error) {
       console.error('Error saving user:', error);
-      toast.error(error.response?.data?.error || 'Error saving user');
+      const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Error saving user';
+      toast.error(errorMessage);
     }
   };
 
@@ -148,6 +159,9 @@ const EnhancedUserManagement = () => {
     });
     setPasswordStep('change');
     setCurrentPasswordError('');
+    setShowCurrentPassword(false);
+    setShowNewPassword(false);
+    setShowConfirmPassword(false);
     setShowPasswordModal(true);
   };
 
@@ -213,6 +227,9 @@ const EnhancedUserManagement = () => {
     });
     setPasswordStep('change');
     setCurrentPasswordError('');
+    setShowCurrentPassword(false);
+    setShowNewPassword(false);
+    setShowConfirmPassword(false);
   };
 
   const getRoleIcon = (role) => {
@@ -235,6 +252,16 @@ const EnhancedUserManagement = () => {
       Member: 'bg-gradient-to-r from-green-500 to-emerald-600 text-white'
     };
     return badges[role] || 'bg-gray-100 text-gray-800';
+  };
+
+  const handleCardClick = (user) => {
+    setSelectedUserDetail(user);
+    setShowDetailModal(true);
+  };
+
+  const handleCloseDetailModal = () => {
+    setShowDetailModal(false);
+    setSelectedUserDetail(null);
   };
 
   const filteredUsers = users.filter(user => {
@@ -339,9 +366,9 @@ const EnhancedUserManagement = () => {
           </div>
         </div>
 
-        {/* Filters */}
+        {/* Filters and View Toggle */}
         <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-gray-100">
-          <div className="flex flex-col md:flex-row gap-4">
+          <div className="flex flex-col md:flex-row gap-4 items-center">
             <div className="flex-1 relative">
               <MagnifyingGlassIcon className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
               <input
@@ -366,121 +393,260 @@ const EnhancedUserManagement = () => {
               </select>
               <ChevronDownIcon className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5 pointer-events-none" />
             </div>
+            {/* View Toggle */}
+            <div className="flex items-center gap-2 bg-gray-100 rounded-xl p-1">
+              <button
+                onClick={() => setViewMode('grid')}
+                className={`p-2 rounded-lg transition-all duration-200 ${
+                  viewMode === 'grid'
+                    ? 'bg-white text-blue-600 shadow-md'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+                title="Grid View"
+              >
+                <Squares2X2Icon className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={`p-2 rounded-lg transition-all duration-200 ${
+                  viewMode === 'list'
+                    ? 'bg-white text-blue-600 shadow-md'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+                title="List View"
+              >
+                <ListBulletIcon className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Users Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredUsers.map((user) => (
-            <div
-              key={user.id}
-              className="bg-white rounded-xl shadow-lg hover:shadow-2xl transition-all duration-300 overflow-hidden border border-gray-100 group"
-            >
-              {/* Card Header */}
-              <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 text-white relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16"></div>
-                <div className="absolute bottom-0 left-0 w-24 h-24 bg-white opacity-10 rounded-full -ml-12 -mb-12"></div>
-                <div className="relative flex items-center">
-                  <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-2xl font-bold text-blue-600 shadow-lg">
-                    {user.name?.charAt(0) || 'U'}
-                  </div>
-                  <div className="ml-4 flex-1">
-                    <h3 className="text-xl font-bold">{user.name || 'No Name'}</h3>
-                    <div className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold mt-1 ${getRoleBadge(user.role)}`}>
+        {/* Users Grid/List View */}
+        {viewMode === 'grid' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {filteredUsers.map((user) => (
+              <div
+                key={user.id}
+                onClick={() => handleCardClick(user)}
+                className="bg-white rounded-xl shadow-lg hover:shadow-2xl transition-all duration-300 overflow-hidden border border-gray-100 group cursor-pointer transform hover:scale-[1.02]"
+              >
+                {/* Card Header */}
+                <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 text-white relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16"></div>
+                  <div className="absolute bottom-0 left-0 w-24 h-24 bg-white opacity-10 rounded-full -ml-12 -mb-12"></div>
+                  <div className="relative">
+                    <h3 className="text-xl font-bold mb-2">{user.name || 'No Name'}</h3>
+                    <div className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${getRoleBadge(user.role)}`}>
                       <span className="mr-1">{getRoleIcon(user.role)}</span>
                       {user.role}
                     </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Card Body */}
-              <div className="p-6">
-                <div className="space-y-3">
-                  <div className="flex items-center text-gray-600">
-                    <EnvelopeIcon className="w-5 h-5 mr-3 text-blue-500" />
-                    <span className="text-sm truncate">{user.email}</span>
+                {/* Card Body */}
+                <div className="p-6">
+                  <div className="space-y-3">
+                    <div className="flex items-center text-gray-600">
+                      <EnvelopeIcon className="w-5 h-5 mr-3 text-blue-500" />
+                      <span className="text-sm truncate">{user.email}</span>
+                    </div>
+                    {user.phone && (
+                      <div className="flex items-center text-gray-600">
+                        <PhoneIcon className="w-5 h-5 mr-3 text-green-500" />
+                        <span className="text-sm">{user.phone}</span>
+                      </div>
+                    )}
+                    {user.department && (
+                      <div className="flex items-center text-gray-600">
+                        <BuildingOfficeIcon className="w-5 h-5 mr-3 text-purple-500" />
+                        <span className="text-sm">{user.department}</span>
+                      </div>
+                    )}
+                    {user.jobTitle && (
+                      <div className="flex items-center text-gray-600">
+                        <UserCircleIcon className="w-5 h-5 mr-3 text-orange-500" />
+                        <span className="text-sm">{user.jobTitle}</span>
+                      </div>
+                    )}
                   </div>
-                  {user.phone && (
-                    <div className="flex items-center text-gray-600">
-                      <PhoneIcon className="w-5 h-5 mr-3 text-green-500" />
-                      <span className="text-sm">{user.phone}</span>
-                    </div>
-                  )}
-                  {user.department && (
-                    <div className="flex items-center text-gray-600">
-                      <BuildingOfficeIcon className="w-5 h-5 mr-3 text-purple-500" />
-                      <span className="text-sm">{user.department}</span>
-                    </div>
-                  )}
-                  {user.jobTitle && (
-                    <div className="flex items-center text-gray-600">
-                      <UserCircleIcon className="w-5 h-5 mr-3 text-orange-500" />
-                      <span className="text-sm">{user.jobTitle}</span>
-                    </div>
-                  )}
-                </div>
 
-                {/* Status Badge */}
-                <div className="mt-4 pt-4 border-t border-gray-100">
-                  <div className="flex items-center justify-between">
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
-                      user.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                    }`}>
-                      {user.isActive ? (
-                        <>
-                          <CheckCircleIcon className="w-4 h-4 mr-1" />
-                          Active
-                        </>
-                      ) : (
-                        <>
-                          <XCircleIcon className="w-4 h-4 mr-1" />
-                          Inactive
-                        </>
-                      )}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {new Date(user.createdAt).toLocaleDateString()}
-                    </span>
+                  {/* Status Badge */}
+                  <div className="mt-4 pt-4 border-t border-gray-100">
+                    <div className="flex items-center justify-between">
+                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
+                        user.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {user.isActive ? (
+                          <>
+                            <CheckCircleIcon className="w-4 h-4 mr-1" />
+                            Active
+                          </>
+                        ) : (
+                          <>
+                            <XCircleIcon className="w-4 h-4 mr-1" />
+                            Inactive
+                          </>
+                        )}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        {new Date(user.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Card Actions */}
-              <div className="px-6 pb-6">
-                {/* Primary Actions Row */}
-                <div className="flex space-x-2 mb-2">
-                <button
-                  onClick={() => handleEdit(user)}
-                  className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
-                >
-                  <PencilSquareIcon className="w-4 h-4 mr-2" />
-                  Edit
-                </button>
-                {user.role !== 'CEO' && (
+                {/* Card Actions */}
+                <div className="px-6 pb-6" onClick={(e) => e.stopPropagation()}>
+                  {/* Primary Actions Row */}
+                  <div className="flex space-x-2 mb-2">
                   <button
-                    onClick={() => handleDelete(user.id)}
-                    className="flex items-center justify-center px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors duration-200 font-medium"
-                  >
-                    <TrashIcon className="w-4 h-4" />
-                  </button>
-                )}
-                </div>
-                
-                {/* Password Management Row */}
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => handlePasswordManagement(user)}
+                    onClick={() => handleEdit(user)}
                     className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
                   >
-                    <KeyIcon className="w-4 h-4 mr-2" />
-                    Manage Password
+                    <PencilSquareIcon className="w-4 h-4 mr-2" />
+                    Edit
                   </button>
+                  {user.role !== 'CEO' && (
+                    <button
+                      onClick={() => handleDelete(user.id)}
+                      className="flex items-center justify-center px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors duration-200 font-medium"
+                    >
+                      <TrashIcon className="w-4 h-4" />
+                    </button>
+                  )}
+                  </div>
+                  
+                  {/* Password Management Row */}
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => handlePasswordManagement(user)}
+                      className="flex-1 flex items-center justify-center px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors duration-200 font-medium"
+                    >
+                      <KeyIcon className="w-4 h-4 mr-2" />
+                      Manage Password
+                    </button>
+                  </div>
                 </div>
               </div>
+            ))}
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gradient-to-r from-blue-500 to-indigo-600 text-white">
+                  <tr>
+                    <th className="px-6 py-4 text-left text-sm font-semibold">User</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold">Role</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold">Contact</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold">Department</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold">Status</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold">Joined</th>
+                    <th className="px-6 py-4 text-center text-sm font-semibold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {filteredUsers.map((user, index) => (
+                    <tr
+                      key={user.id}
+                      onClick={() => handleCardClick(user)}
+                      className="hover:bg-blue-50 cursor-pointer transition-colors duration-150"
+                    >
+                      <td className="px-6 py-4">
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">{user.name || 'No Name'}</div>
+                          {user.jobTitle && (
+                            <div className="text-xs text-gray-500 mt-1">{user.jobTitle}</div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${getRoleBadge(user.role)}`}>
+                          <span className="mr-1">{getRoleIcon(user.role)}</span>
+                          {user.role}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="space-y-1">
+                          <div className="flex items-center text-sm text-gray-600">
+                            <EnvelopeIcon className="w-4 h-4 mr-2 text-blue-500" />
+                            <span className="truncate max-w-xs">{user.email}</span>
+                          </div>
+                          {user.phone && (
+                            <div className="flex items-center text-sm text-gray-600">
+                              <PhoneIcon className="w-4 h-4 mr-2 text-green-500" />
+                              <span>{user.phone}</span>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        {user.department ? (
+                          <div className="flex items-center text-sm text-gray-600">
+                            <BuildingOfficeIcon className="w-4 h-4 mr-2 text-purple-500" />
+                            <span>{user.department}</span>
+                          </div>
+                        ) : (
+                          <span className="text-sm text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
+                          user.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                        }`}>
+                          {user.isActive ? (
+                            <>
+                              <CheckCircleIcon className="w-4 h-4 mr-1" />
+                              Active
+                            </>
+                          ) : (
+                            <>
+                              <XCircleIcon className="w-4 h-4 mr-1" />
+                              Inactive
+                            </>
+                          )}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center text-sm text-gray-600">
+                          <CalendarIcon className="w-4 h-4 mr-2 text-gray-400" />
+                          <span>{new Date(user.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => handleEdit(user)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors duration-200"
+                            title="Edit User"
+                          >
+                            <PencilSquareIcon className="w-5 h-5" />
+                          </button>
+                          {user.role !== 'CEO' && (
+                            <button
+                              onClick={() => handleDelete(user.id)}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors duration-200"
+                              title="Delete User"
+                            >
+                              <TrashIcon className="w-5 h-5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handlePasswordManagement(user)}
+                            className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors duration-200"
+                            title="Manage Password"
+                          >
+                            <KeyIcon className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
-        </div>
+          </div>
+        )}
 
         {filteredUsers.length === 0 && (
           <div className="bg-white rounded-xl shadow-lg p-12 text-center">
@@ -708,21 +874,31 @@ const EnhancedUserManagement = () => {
                       <label className="block text-sm font-semibold text-gray-700 mb-2">
                         Current Password
                       </label>
-                      <input
-                        type="password"
-                        value={passwordData.currentPassword}
-                        onChange={(e) => setPasswordData(prev => ({
-                          ...prev,
-                          currentPassword: e.target.value
-                        }))}
-                        className={`w-full px-4 py-3 border-2 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
-                          currentPasswordError 
-                            ? 'border-red-300 focus:ring-red-500' 
-                            : 'border-gray-200 focus:ring-green-500'
-                        }`}
-                        placeholder="Enter current password"
-                        required
-                      />
+                      <div className="relative">
+                        <input
+                          type={showCurrentPassword ? 'text' : 'password'}
+                          value={passwordData.currentPassword}
+                          onChange={(e) => setPasswordData(prev => ({
+                            ...prev,
+                            currentPassword: e.target.value
+                          }))}
+                          className={`w-full px-4 py-3 pr-12 border-2 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
+                            currentPasswordError 
+                              ? 'border-red-300 focus:ring-red-500' 
+                              : 'border-gray-200 focus:ring-green-500'
+                          }`}
+                          placeholder="Enter current password"
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowCurrentPassword((prev) => !prev)}
+                          className="absolute inset-y-0 right-3 flex items-center text-gray-500 hover:text-gray-700 focus:outline-none"
+                          aria-label={showCurrentPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showCurrentPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                        </button>
+                      </div>
                       {currentPasswordError && (
                         <p className="text-red-500 text-sm mt-1">{currentPasswordError}</p>
                       )}
@@ -733,40 +909,60 @@ const EnhancedUserManagement = () => {
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
                       New Password
                     </label>
-                    <input
-                      type="password"
-                      value={passwordData.newPassword}
-                      onChange={(e) => setPasswordData(prev => ({
-                        ...prev,
-                        newPassword: e.target.value
-                      }))}
-                      className={`w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
-                        passwordStep === 'change' ? 'focus:ring-green-500' : 'focus:ring-orange-500'
-                      }`}
-                      placeholder="Enter new password"
-                      required
-                      minLength={6}
-                    />
+                    <div className="relative">
+                      <input
+                        type={showNewPassword ? 'text' : 'password'}
+                        value={passwordData.newPassword}
+                        onChange={(e) => setPasswordData(prev => ({
+                          ...prev,
+                          newPassword: e.target.value
+                        }))}
+                        className={`w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
+                          passwordStep === 'change' ? 'focus:ring-green-500' : 'focus:ring-orange-500'
+                        }`}
+                        placeholder="Enter new password"
+                        required
+                        minLength={6}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword((prev) => !prev)}
+                        className="absolute inset-y-0 right-3 flex items-center text-gray-500 hover:text-gray-700 focus:outline-none"
+                        aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showNewPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                      </button>
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
                       Confirm New Password
                     </label>
-                    <input
-                      type="password"
-                      value={passwordData.confirmPassword}
-                      onChange={(e) => setPasswordData(prev => ({
-                        ...prev,
-                        confirmPassword: e.target.value
-                      }))}
-                      className={`w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
-                        passwordStep === 'change' ? 'focus:ring-green-500' : 'focus:ring-orange-500'
-                      }`}
-                      placeholder="Confirm new password"
-                      required
-                      minLength={6}
-                    />
+                    <div className="relative">
+                      <input
+                        type={showConfirmPassword ? 'text' : 'password'}
+                        value={passwordData.confirmPassword}
+                        onChange={(e) => setPasswordData(prev => ({
+                          ...prev,
+                          confirmPassword: e.target.value
+                        }))}
+                        className={`w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:border-transparent transition-all duration-200 ${
+                          passwordStep === 'change' ? 'focus:ring-green-500' : 'focus:ring-orange-500'
+                        }`}
+                        placeholder="Confirm new password"
+                        required
+                        minLength={6}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword((prev) => !prev)}
+                        className="absolute inset-y-0 right-3 flex items-center text-gray-500 hover:text-gray-700 focus:outline-none"
+                        aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -802,6 +998,176 @@ const EnhancedUserManagement = () => {
                   </div>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* User Detail Modal */}
+      {showDetailModal && selectedUserDetail && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4">
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl transform transition-all">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 rounded-t-2xl">
+              <div className="flex items-center justify-between text-white">
+                <div>
+                  <h3 className="text-2xl font-bold mb-2">{selectedUserDetail.name || 'No Name'}</h3>
+                  <p className="text-blue-100 text-sm flex items-center">
+                    <span className="mr-2">{getRoleIcon(selectedUserDetail.role)}</span>
+                    {selectedUserDetail.role}
+                  </p>
+                </div>
+                <button
+                  onClick={handleCloseDetailModal}
+                  className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 transition-colors"
+                >
+                  <XCircleIcon className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+            
+            {/* Modal Body */}
+            <div className="p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Contact Information */}
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-100">
+                  <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                    <EnvelopeIcon className="w-5 h-5 mr-2 text-blue-600" />
+                    Contact Information
+                  </h4>
+                  <div className="space-y-3">
+                    <div className="flex items-start">
+                      <EnvelopeIcon className="w-5 h-5 mr-3 text-blue-500 mt-0.5" />
+                      <div>
+                        <p className="text-xs text-gray-500 uppercase tracking-wide">Email</p>
+                        <p className="text-sm font-medium text-gray-900">{selectedUserDetail.email}</p>
+                      </div>
+                    </div>
+                    {selectedUserDetail.phone && (
+                      <div className="flex items-start">
+                        <PhoneIcon className="w-5 h-5 mr-3 text-green-500 mt-0.5" />
+                        <div>
+                          <p className="text-xs text-gray-500 uppercase tracking-wide">Phone</p>
+                          <p className="text-sm font-medium text-gray-900">{selectedUserDetail.phone}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Professional Information */}
+                <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-6 border border-purple-100">
+                  <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                    <BuildingOfficeIcon className="w-5 h-5 mr-2 text-purple-600" />
+                    Professional Information
+                  </h4>
+                  <div className="space-y-3">
+                    {selectedUserDetail.department && (
+                      <div className="flex items-start">
+                        <BuildingOfficeIcon className="w-5 h-5 mr-3 text-purple-500 mt-0.5" />
+                        <div>
+                          <p className="text-xs text-gray-500 uppercase tracking-wide">Department</p>
+                          <p className="text-sm font-medium text-gray-900">{selectedUserDetail.department}</p>
+                        </div>
+                      </div>
+                    )}
+                    {selectedUserDetail.jobTitle && (
+                      <div className="flex items-start">
+                        <UserCircleIcon className="w-5 h-5 mr-3 text-orange-500 mt-0.5" />
+                        <div>
+                          <p className="text-xs text-gray-500 uppercase tracking-wide">Job Title</p>
+                          <p className="text-sm font-medium text-gray-900">{selectedUserDetail.jobTitle}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Account Status */}
+                <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-6 border border-green-100">
+                  <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                    <CheckCircleIcon className="w-5 h-5 mr-2 text-green-600" />
+                    Account Status
+                  </h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">Status</span>
+                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
+                        selectedUserDetail.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {selectedUserDetail.isActive ? (
+                          <>
+                            <CheckCircleIcon className="w-4 h-4 mr-1" />
+                            Active
+                          </>
+                        ) : (
+                          <>
+                            <XCircleIcon className="w-4 h-4 mr-1" />
+                            Inactive
+                          </>
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex items-center text-sm text-gray-600">
+                      <CalendarIcon className="w-4 h-4 mr-2 text-gray-400" />
+                      <span>Joined: {new Date(selectedUserDetail.createdAt).toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'long', 
+                        day: 'numeric' 
+                      })}</span>
+                    </div>
+                    {selectedUserDetail.updatedAt && (
+                      <div className="flex items-center text-sm text-gray-600">
+                        <ClockIcon className="w-4 h-4 mr-2 text-gray-400" />
+                        <span>Last updated: {new Date(selectedUserDetail.updatedAt).toLocaleDateString('en-US', { 
+                          year: 'numeric', 
+                          month: 'long', 
+                          day: 'numeric' 
+                        })}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Role Information */}
+                <div className="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-xl p-6 border border-indigo-100">
+                  <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                    <ShieldCheckIcon className="w-5 h-5 mr-2 text-indigo-600" />
+                    Role & Permissions
+                  </h4>
+                  <div className="space-y-3">
+                    <div className={`inline-flex items-center px-4 py-2 rounded-lg ${getRoleBadge(selectedUserDetail.role)}`}>
+                      <span className="mr-2">{getRoleIcon(selectedUserDetail.role)}</span>
+                      <span className="font-semibold">{selectedUserDetail.role}</span>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-2">
+                      {selectedUserDetail.role === 'CEO' && 'Full system access and administrative privileges.'}
+                      {selectedUserDetail.role === 'TeamLead' && 'Can manage team members and assigned conferences.'}
+                      {selectedUserDetail.role === 'Member' && 'Standard user access with assigned tasks and clients.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 pb-6 flex justify-end space-x-3 border-t border-gray-200 pt-6">
+              <button
+                onClick={handleCloseDetailModal}
+                className="px-6 py-3 text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200 font-semibold transition-colors duration-200"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  handleCloseDetailModal();
+                  handleEdit(selectedUserDetail);
+                }}
+                className="px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 font-semibold transition-all duration-200 shadow-lg hover:shadow-xl flex items-center"
+              >
+                <PencilSquareIcon className="w-5 h-5 mr-2" />
+                Edit User
+              </button>
             </div>
           </div>
         </div>

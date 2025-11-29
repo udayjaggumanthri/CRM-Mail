@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -27,7 +27,7 @@ const ImapSettings = () => {
   });
 
   // Fetch IMAP status with real-time updates
-  const { data: imapStatus, refetch: refetchStatus, isLoading: statusLoading } = useQuery('imap-status', async () => {
+  const { data: imapStatus, refetch: refetchStatus } = useQuery('imap-status', async () => {
     try {
       const response = await axios.get('/api/inbound/status');
       return response.data || {
@@ -49,10 +49,10 @@ const ImapSettings = () => {
       };
     }
   }, {
-    refetchInterval: 5000, // Refresh every 5 seconds for real-time status updates
+    refetchInterval: 10000, // Refresh every 10 seconds for real-time status updates (reduced from 5s to prevent excessive requests)
     retry: 2,
     retryDelay: 1000,
-    staleTime: 3000 // Consider data stale after 3 seconds
+    staleTime: 5000 // Consider data stale after 5 seconds
   });
 
   // Test IMAP connection

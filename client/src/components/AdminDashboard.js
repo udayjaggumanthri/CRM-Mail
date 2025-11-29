@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 import {
   Users,
   Mail,
@@ -45,6 +46,7 @@ const AdminDashboard = () => {
   const [selectedClient, setSelectedClient] = useState(null);
 
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   // Fetch conferences
   const { data: conferences } = useQuery('conferences', async () => {
@@ -246,7 +248,18 @@ const AdminDashboard = () => {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/clients')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/clients');
+            }
+          }}
+        >
           <div className="flex items-center">
             <div className="p-2 bg-blue-100 rounded-lg">
               <Users className="h-6 w-6 text-blue-600" />
@@ -258,7 +271,18 @@ const AdminDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/clients')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/clients');
+            }
+          }}
+        >
           <div className="flex items-center">
             <div className="p-2 bg-green-100 rounded-lg">
               <FileText className="h-6 w-6 text-green-600" />
@@ -270,7 +294,18 @@ const AdminDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/clients')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/clients');
+            }
+          }}
+        >
           <div className="flex items-center">
             <div className="p-2 bg-purple-100 rounded-lg">
               <CheckCircle className="h-6 w-6 text-purple-600" />
@@ -282,7 +317,18 @@ const AdminDashboard = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div 
+          className="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-lg transition-shadow duration-200 hover:scale-105 transform"
+          onClick={() => navigate('/clients')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/clients');
+            }
+          }}
+        >
           <div className="flex items-center">
             <div className="p-2 bg-yellow-100 rounded-lg">
               <Percent className="h-6 w-6 text-yellow-600" />

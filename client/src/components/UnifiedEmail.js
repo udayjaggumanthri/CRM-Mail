@@ -100,38 +100,61 @@ const UnifiedEmail = () => {
   const [attachmentFiles, setAttachmentFiles] = useState([]);
   const [showDraftConfirm, setShowDraftConfirm] = useState(false);
   const [pendingCloseAction, setPendingCloseAction] = useState(null); // 'close' or 'discard'
+  const [isSending, setIsSending] = useState(false); // Track sending state to prevent multiple clicks
 
   const { data: emailsData, isLoading, refetch } = useQuery(
     ['emails', activeFolder, searchTerm, currentPage, filters, activeEmailAccountId], 
     async () => {
-      const params = new URLSearchParams();
-      if (activeFolder) {
-        params.append('folder', activeFolder);
+      try {
+        const params = new URLSearchParams();
+        if (activeFolder) {
+          params.append('folder', activeFolder);
+        }
+        if (searchTerm) {
+          params.append('search', searchTerm.trim().substring(0, 200)); // Sanitize search
+        }
+        params.append('page', currentPage);
+        params.append('limit', 50);
+        
+        if (filters.fromEmail) {
+          params.append('fromEmail', filters.fromEmail.trim().substring(0, 200));
+        }
+        if (filters.toEmail) {
+          params.append('toEmail', filters.toEmail.trim().substring(0, 200));
+        }
+        if (filters.startDate) {
+          params.append('startDate', filters.startDate);
+        }
+        if (filters.endDate) {
+          params.append('endDate', filters.endDate);
+        }
+        if (activeEmailAccountId && activeEmailAccountId !== 'all') {
+          params.append('accountId', activeEmailAccountId);
+        }
+        
+        const response = await axios.get(`/api/emails?${params.toString()}`);
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching emails:', error);
+        // Return safe default data structure
+        return {
+          emails: [],
+          pagination: {
+            total: 0,
+            page: currentPage,
+            limit: 50,
+            pages: 0,
+            hasMore: false
+          }
+        };
       }
-      if (searchTerm) {
-        params.append('search', searchTerm);
-      }
-      params.append('page', currentPage);
-      params.append('limit', 50);
-      
-      if (filters.fromEmail) {
-        params.append('fromEmail', filters.fromEmail);
-      }
-      if (filters.toEmail) {
-        params.append('toEmail', filters.toEmail);
-      }
-      if (filters.startDate) {
-        params.append('startDate', filters.startDate);
-      }
-      if (filters.endDate) {
-        params.append('endDate', filters.endDate);
-      }
-      if (activeEmailAccountId && activeEmailAccountId !== 'all') {
-        params.append('accountId', activeEmailAccountId);
-      }
-      
-      const response = await axios.get(`/api/emails?${params.toString()}`);
-      return response.data;
+    },
+    {
+      onError: (error) => {
+        console.error('Email query error:', error);
+        toast.error('Failed to load emails. Please try again.');
+      },
+      retry: 1
     }
   );
 
@@ -247,6 +270,29 @@ const UnifiedEmail = () => {
 
   const queryClient = useQueryClient();
 
+  // Mutation for marking email as read
+  const markAsReadMutation = useMutation(
+    async (emailId) => {
+      const response = await axios.put(`/api/emails/${emailId}`, { 
+        isRead: true
+      });
+      return response.data;
+    },
+    {
+      onSuccess: (data) => {
+        queryClient.invalidateQueries(['emails', activeFolder, searchTerm, currentPage, filters, activeEmailAccountId]);
+        if (selectedEmail && selectedEmail.id === data.id) {
+          // Update selected email in local state
+          setSelectedEmail({ ...selectedEmail, isRead: true });
+        }
+      },
+      onError: (error) => {
+        console.error('Failed to mark email as read:', error);
+        // Don't show error toast - this is a background operation
+      }
+    }
+  );
+
   // Mutation for marking email as starred (toggle)
   const starEmailMutation = useMutation(
     async (emailId) => {
@@ -268,8 +314,9 @@ const UnifiedEmail = () => {
         }
         toast.success(data.isStarred ? 'Email starred' : 'Email unstarred');
       },
-      onError: () => {
-        toast.error('Failed to update email');
+      onError: (error) => {
+        const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to update email';
+        toast.error(errorMessage);
       }
     }
   );
@@ -289,8 +336,9 @@ const UnifiedEmail = () => {
         toast.success('Email archived');
         setSelectedEmail(null); // Close email view
       },
-      onError: () => {
-        toast.error('Failed to archive email');
+      onError: (error) => {
+        const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to archive email';
+        toast.error(errorMessage);
       }
     }
   );
@@ -309,8 +357,9 @@ const UnifiedEmail = () => {
         toast.success('Email moved to trash');
         setSelectedEmail(null); // Close email view
       },
-      onError: () => {
-        toast.error('Failed to delete email');
+      onError: (error) => {
+        const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to delete email';
+        toast.error(errorMessage);
       }
     }
   );
@@ -533,6 +582,7 @@ const UnifiedEmail = () => {
   };
 
   const resetComposeData = () => {
+    setIsSending(false); // Reset sending state when compose data is reset
     setComposeData({
       to: '',
       cc: '',
@@ -558,6 +608,12 @@ const UnifiedEmail = () => {
   };
 
   const handleSendEmail = async () => {
+    // Prevent multiple clicks
+    if (isSending) {
+      toast.error('Email is already being sent. Please wait...');
+      return;
+    }
+
     // Validate required fields
     if (!composeData.to || !composeData.to.trim()) {
       toast.error('Please enter a recipient email address');
@@ -662,6 +718,9 @@ const UnifiedEmail = () => {
       }
       console.log('==============================');
       
+      // Set sending state to prevent multiple clicks
+      setIsSending(true);
+      
       // Don't set Content-Type header - let axios set it automatically with boundary
       const response = await axios.post('/api/emails/send', formData);
       
@@ -687,6 +746,9 @@ const UnifiedEmail = () => {
       console.error('Full error:', JSON.stringify(error.response?.data, null, 2));
       const errorMessage = error.response?.data?.error || error.response?.data?.details || error.message || 'Failed to send email';
       toast.error(errorMessage);
+    } finally {
+      // Always clear sending state, even on error
+      setIsSending(false);
     }
   };
 
@@ -1172,6 +1234,10 @@ const UnifiedEmail = () => {
                       console.log('Email body:', email.body);
                       console.log('Email bodyText:', email.bodyText);
                       setSelectedEmail(email);
+                      // Mark as read if not already read
+                      if (!email.isRead) {
+                        markAsReadMutation.mutate(email.id);
+                      }
                       }
                     }}
                     className={`flex items-start space-x-3 px-4 py-3 cursor-pointer hover:shadow-sm transition-all group ${
@@ -2019,16 +2085,27 @@ const UnifiedEmail = () => {
                 <div className="flex items-center space-x-2">
                   <button
                     onClick={() => handleCloseCompose('discard')}
-                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors"
+                    disabled={isSending}
+                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Discard
                   </button>
                       <button
                         onClick={handleSendEmail}
-                    className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                        disabled={isSending}
+                        className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
                       >
-                        <Send className="h-4 w-4" />
-                    <span>Send</span>
+                        {isSending ? (
+                          <>
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                            <span>Sending...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send className="h-4 w-4" />
+                            <span>Send</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   </div>

@@ -55,10 +55,15 @@ export const useRealtimeSync = (interval = 30000) => {
   }, [syncEmails]);
 
   useEffect(() => {
+    // Cleanup on unmount
     return () => {
-      stopSync();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      isActiveRef.current = false;
     };
-  }, [stopSync]);
+  }, []); // Empty deps - only cleanup on unmount
 
   return {
     startSync,

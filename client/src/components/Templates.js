@@ -654,6 +654,64 @@ const Templates = () => {
     resetForm();
   };
 
+  const handleCloseModalWithAutoSave = () => {
+    // Check if there's any meaningful content to save
+    const hasContent = 
+      formData.name?.trim() || 
+      formData.subject?.trim() || 
+      formData.bodyHtml?.trim() || 
+      attachments.length > 0;
+
+    // If there's content and we're in add mode (not editing an existing template)
+    if (hasContent && showAddModal && !selectedTemplate) {
+      const bodyTextValue = stripHtml(formData.bodyHtml || '');
+      
+      // Only auto-save if there's body content (required for draft)
+      if (bodyTextValue.trim()) {
+        const payload = buildDraftPayload();
+        
+        if (activeDraftId) {
+          // Update existing draft silently
+          updateTemplateDraftMutation.mutate(
+            { id: activeDraftId, data: payload },
+            {
+              onSuccess: () => {
+                toast.success('Draft auto-saved');
+                handleCloseModal();
+              },
+              onError: (error) => {
+                console.error('Error auto-saving draft:', error);
+                // Close modal even if save fails
+                handleCloseModal();
+              }
+            }
+          );
+          return; // Don't close immediately, wait for mutation
+        } else {
+          // Create new draft silently
+          createTemplateDraftMutation.mutate(
+            payload,
+            {
+              onSuccess: () => {
+                toast.success('Draft auto-saved');
+                handleCloseModal();
+              },
+              onError: (error) => {
+                console.error('Error auto-saving draft:', error);
+                // Close modal even if save fails
+                handleCloseModal();
+              }
+            }
+          );
+          return; // Don't close immediately, wait for mutation
+        }
+      }
+    }
+    
+    // Close the modal if no content to save
+    handleCloseModal();
+  };
+
   const handlePreview = (template) => {
     setSelectedTemplate(template);
     setShowPreviewModal(true);
@@ -935,7 +993,7 @@ const Templates = () => {
 
       {/* Add Template Modal */}
       <Transition appear show={showAddModal} as={Fragment}>
-        <Dialog as="div" className="relative z-50" onClose={() => setShowAddModal(false)}>
+        <Dialog as="div" className="relative z-50" onClose={handleCloseModalWithAutoSave}>
           <Transition.Child
             as={Fragment}
             enter="ease-out duration-300"
@@ -974,7 +1032,7 @@ const Templates = () => {
                         </p>
                       </div>
                       <button
-                        onClick={handleCloseModal}
+                        onClick={handleCloseModalWithAutoSave}
                         className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-lg transition-colors duration-200"
                       >
                         <X className="h-6 w-6" />
@@ -1148,7 +1206,7 @@ const Templates = () => {
                         <div className="flex items-center justify-end gap-3 sm:ml-auto">
                           <button
                             type="button"
-                            onClick={handleCloseModal}
+                            onClick={handleCloseModalWithAutoSave}
                             className="px-6 py-3 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-all duration-200 font-medium"
                           >
                             Cancel

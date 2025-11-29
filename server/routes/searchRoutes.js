@@ -57,7 +57,8 @@ async function checkClientAccess(clientId, userId, userRole) {
 // POST /api/search/global - Global search across all entities
 router.post('/global', authenticateToken, async (req, res) => {
   try {
-    const { 
+    // Validate and sanitize parameters
+    let { 
       query, 
       entities = ['clients', 'conferences', 'emails', 'users', 'notes', 'tasks'],
       filters = {},
@@ -65,11 +66,35 @@ router.post('/global', authenticateToken, async (req, res) => {
       offset = 0
     } = req.body;
 
-    if (!query || !query.trim()) {
-      return res.status(400).json({ error: 'Search query is required' });
+    // Validate query
+    if (!query || typeof query !== 'string' || !query.trim()) {
+      return res.status(400).json({ 
+        error: 'Search query is required',
+        message: 'Please provide a valid search query'
+      });
     }
 
-    const searchTerm = query.trim();
+    // Sanitize search term
+    const searchTerm = query.trim().substring(0, 200); // Limit search length
+    
+    // Validate entities array
+    const validEntities = ['clients', 'conferences', 'emails', 'users', 'notes', 'tasks'];
+    if (!Array.isArray(entities)) {
+      entities = ['clients', 'conferences', 'emails'];
+    }
+    entities = entities.filter(e => validEntities.includes(e));
+    if (entities.length === 0) {
+      entities = ['clients', 'conferences', 'emails']; // Default entities
+    }
+
+    // Validate pagination
+    limit = Math.min(100, Math.max(1, parseInt(limit) || 20));
+    offset = Math.max(0, parseInt(offset) || 0);
+
+    // Validate and sanitize filters
+    if (!filters || typeof filters !== 'object') {
+      filters = {};
+    }
     const results = {
       clients: [],
       conferences: [],
@@ -94,18 +119,32 @@ router.post('/global', authenticateToken, async (req, res) => {
         ]
       };
 
-      // Apply additional filters
-      if (filters.clientStatus) {
-        clientWhereClause.status = filters.clientStatus;
-      }
-      if (filters.clientCountry) {
-        clientWhereClause.country = filters.clientCountry;
-      }
-      if (filters.conferenceId) {
-        clientWhereClause.conferenceId = filters.conferenceId;
+      // Apply additional filters (with validation)
+      try {
+        if (filters.clientStatus && typeof filters.clientStatus === 'string') {
+          clientWhereClause.status = filters.clientStatus.trim();
+        }
+        if (filters.clientCountry && typeof filters.clientCountry === 'string') {
+          clientWhereClause.country = filters.clientCountry.trim();
+        }
+        if (filters.conferenceId) {
+          // Validate conference exists
+          try {
+            const conference = await Conference.findByPk(filters.conferenceId);
+            if (conference) {
+              clientWhereClause.conferenceId = filters.conferenceId;
+            }
+          } catch (confError) {
+            console.error('Error validating conferenceId filter:', confError);
+          }
+        }
+      } catch (filterError) {
+        console.error('Error applying client filters:', filterError);
       }
 
-      const clients = await Client.findAll({
+      let clients = [];
+      try {
+        clients = await Client.findAll({
         where: clientWhereClause,
         include: [
           {
@@ -124,16 +163,27 @@ router.post('/global', authenticateToken, async (req, res) => {
         order: [['createdAt', 'DESC']]
       });
 
-      // Filter clients by access permissions
+        clients = Array.isArray(clients) ? clients : [];
+      } catch (clientQueryError) {
+        console.error('Error executing client search query:', clientQueryError);
+        clients = [];
+      }
+
+      // Filter clients by access permissions (with error handling)
       const accessibleClients = [];
       for (const client of clients) {
-        const hasAccess = await checkClientAccess(client.id, req.user.id, req.user.role);
-        if (hasAccess) {
-          accessibleClients.push({
-            ...client.toJSON(),
-            entityType: 'client',
-            searchScore: calculateSearchScore(client, searchTerm)
-          });
+        try {
+          const hasAccess = await checkClientAccess(client.id, req.user.id, req.user.role);
+          if (hasAccess) {
+            accessibleClients.push({
+              ...client.toJSON(),
+              entityType: 'client',
+              searchScore: calculateSearchScore(client, searchTerm)
+            });
+          }
+        } catch (accessError) {
+          console.error(`Error checking access for client ${client.id}:`, accessError);
+          // Skip this client if access check fails
         }
       }
 
@@ -152,20 +202,33 @@ router.post('/global', authenticateToken, async (req, res) => {
         ]
       };
 
-      // Apply additional filters
-      if (filters.conferenceStatus) {
-        conferenceWhereClause.status = filters.conferenceStatus;
-      }
-      if (filters.conferenceYear) {
-        conferenceWhereClause.startDate = {
-          [Op.between]: [
-            new Date(`${filters.conferenceYear}-01-01`),
-            new Date(`${filters.conferenceYear}-12-31`)
-          ]
-        };
+      // Apply additional filters (with validation)
+      try {
+        if (filters.conferenceStatus && typeof filters.conferenceStatus === 'string') {
+          conferenceWhereClause.status = filters.conferenceStatus.trim();
+        }
+        if (filters.conferenceYear) {
+          const year = parseInt(filters.conferenceYear);
+          if (!isNaN(year) && year >= 1900 && year <= 2100) {
+            try {
+              conferenceWhereClause.startDate = {
+                [Op.between]: [
+                  new Date(`${year}-01-01`),
+                  new Date(`${year}-12-31`)
+                ]
+              };
+            } catch (dateError) {
+              console.error('Error creating date range for conferenceYear:', dateError);
+            }
+          }
+        }
+      } catch (filterError) {
+        console.error('Error applying conference filters:', filterError);
       }
 
-      const conferences = await Conference.findAll({
+      let conferences = [];
+      try {
+        conferences = await Conference.findAll({
         where: conferenceWhereClause,
         include: [
           {
@@ -179,16 +242,27 @@ router.post('/global', authenticateToken, async (req, res) => {
         order: [['startDate', 'DESC']]
       });
 
-      // Filter conferences by access permissions
+        conferences = Array.isArray(conferences) ? conferences : [];
+      } catch (confQueryError) {
+        console.error('Error executing conference search query:', confQueryError);
+        conferences = [];
+      }
+
+      // Filter conferences by access permissions (with error handling)
       const accessibleConferences = [];
       for (const conference of conferences) {
-        const hasAccess = await checkConferenceAccess(conference.id, req.user.id, req.user.role);
-        if (hasAccess) {
-          accessibleConferences.push({
-            ...conference.toJSON(),
-            entityType: 'conference',
-            searchScore: calculateSearchScore(conference, searchTerm)
-          });
+        try {
+          const hasAccess = await checkConferenceAccess(conference.id, req.user.id, req.user.role);
+          if (hasAccess) {
+            accessibleConferences.push({
+              ...conference.toJSON(),
+              entityType: 'conference',
+              searchScore: calculateSearchScore(conference, searchTerm)
+            });
+          }
+        } catch (accessError) {
+          console.error(`Error checking access for conference ${conference.id}:`, accessError);
+          // Skip this conference if access check fails
         }
       }
 
@@ -207,45 +281,83 @@ router.post('/global', authenticateToken, async (req, res) => {
         ]
       };
 
-      // Apply additional filters
-      if (filters.emailFolder) {
-        emailWhereClause.folder = filters.emailFolder;
-      }
-      if (filters.emailDateFrom) {
-        emailWhereClause.date = {
-          ...emailWhereClause.date,
-          [Op.gte]: new Date(filters.emailDateFrom)
-        };
-      }
-      if (filters.emailDateTo) {
-        emailWhereClause.date = {
-          ...emailWhereClause.date,
-          [Op.lte]: new Date(filters.emailDateTo)
-        };
-      }
-
-      const emails = await Email.findAll({
-        where: emailWhereClause,
-        include: [
-          {
-            model: Client,
-            as: 'client',
-            attributes: ['id', 'name', 'email']
+      // Apply additional filters (with validation)
+      try {
+        if (filters.emailFolder && typeof filters.emailFolder === 'string') {
+          const validFolders = ['inbox', 'sent', 'drafts', 'trash', 'spam', 'all'];
+          if (validFolders.includes(filters.emailFolder.trim().toLowerCase())) {
+            emailWhereClause.folder = filters.emailFolder.trim();
           }
-        ],
-        limit: Math.min(limit, 50),
-        offset,
-        order: [['date', 'DESC']]
-      });
+        }
+        if (filters.emailDateFrom) {
+          try {
+            const fromDate = new Date(filters.emailDateFrom);
+            if (!isNaN(fromDate.getTime())) {
+              emailWhereClause.date = {
+                ...emailWhereClause.date,
+                [Op.gte]: fromDate
+              };
+            }
+          } catch (dateError) {
+            console.error('Error parsing emailDateFrom:', dateError);
+          }
+        }
+        if (filters.emailDateTo) {
+          try {
+            const toDate = new Date(filters.emailDateTo);
+            if (!isNaN(toDate.getTime())) {
+              toDate.setHours(23, 59, 59, 999); // End of day
+              emailWhereClause.date = {
+                ...emailWhereClause.date,
+                [Op.lte]: toDate
+              };
+            }
+          } catch (dateError) {
+            console.error('Error parsing emailDateTo:', dateError);
+          }
+        }
+      } catch (filterError) {
+        console.error('Error applying email filters:', filterError);
+      }
 
-      results.emails = emails.map(email => ({
-        ...email.toJSON(),
-        entityType: 'email',
-        searchScore: calculateSearchScore(email, searchTerm)
-      }));
+      let emails = [];
+      try {
+        emails = await Email.findAll({
+          where: emailWhereClause,
+          include: [
+            {
+              model: Client,
+              as: 'client',
+              attributes: ['id', 'name', 'email'],
+              required: false
+            }
+          ],
+          limit: Math.min(limit, 50),
+          offset,
+          order: [['date', 'DESC']]
+        }).catch(() => []);
+        
+        emails = Array.isArray(emails) ? emails : [];
+      } catch (emailQueryError) {
+        console.error('Error executing email search query:', emailQueryError);
+        emails = [];
+      }
+
+      results.emails = emails.map(email => {
+        try {
+          return {
+            ...email.toJSON(),
+            entityType: 'email',
+            searchScore: calculateSearchScore(email, searchTerm)
+          };
+        } catch (mapError) {
+          console.error('Error mapping email result:', mapError);
+          return null;
+        }
+      }).filter(Boolean); // Remove null entries
     }
 
-    // Search Users
+    // Search Users (CEO only)
     if (entities.includes('users') && req.user.role === 'CEO') {
       const userWhereClause = {
         organizationId: req.user.organizationId,
@@ -255,30 +367,50 @@ router.post('/global', authenticateToken, async (req, res) => {
         ]
       };
 
-      // Apply additional filters
-      if (filters.userRole) {
-        userWhereClause.role = filters.userRole;
+      // Apply additional filters (with validation)
+      try {
+        if (filters.userRole && typeof filters.userRole === 'string') {
+          userWhereClause.role = filters.userRole.trim();
+        }
+      } catch (filterError) {
+        console.error('Error applying user filters:', filterError);
       }
 
-      const users = await User.findAll({
-        where: userWhereClause,
-        include: [
-          {
-            model: User,
-            as: 'manager',
-            attributes: ['id', 'name', 'email']
-          }
-        ],
-        limit: Math.min(limit, 50),
-        offset,
-        order: [['name', 'ASC']]
-      });
+      let users = [];
+      try {
+        users = await User.findAll({
+          where: userWhereClause,
+          include: [
+            {
+              model: User,
+              as: 'manager',
+              attributes: ['id', 'name', 'email'],
+              required: false
+            }
+          ],
+          limit: Math.min(limit, 50),
+          offset,
+          order: [['name', 'ASC']]
+        }).catch(() => []);
+        
+        users = Array.isArray(users) ? users : [];
+      } catch (userQueryError) {
+        console.error('Error executing user search query:', userQueryError);
+        users = [];
+      }
 
-      results.users = users.map(user => ({
-        ...user.toJSON(),
-        entityType: 'user',
-        searchScore: calculateSearchScore(user, searchTerm)
-      }));
+      results.users = users.map(user => {
+        try {
+          return {
+            ...user.toJSON(),
+            entityType: 'user',
+            searchScore: calculateSearchScore(user, searchTerm)
+          };
+        } catch (mapError) {
+          console.error('Error mapping user result:', mapError);
+          return null;
+        }
+      }).filter(Boolean); // Remove null entries
     }
 
     // Search Client Notes
@@ -292,43 +424,62 @@ router.post('/global', authenticateToken, async (req, res) => {
         ]
       };
 
-      // Apply additional filters
-      if (filters.noteType) {
-        noteWhereClause.type = filters.noteType;
-      }
-      if (filters.notePriority) {
-        noteWhereClause.priority = filters.notePriority;
+      // Apply additional filters (with validation)
+      try {
+        if (filters.noteType && typeof filters.noteType === 'string') {
+          noteWhereClause.type = filters.noteType.trim();
+        }
+        if (filters.notePriority && typeof filters.notePriority === 'string') {
+          noteWhereClause.priority = filters.notePriority.trim();
+        }
+      } catch (filterError) {
+        console.error('Error applying note filters:', filterError);
       }
 
-      const notes = await ClientNote.findAll({
-        where: noteWhereClause,
-        include: [
-          {
-            model: Client,
-            as: 'client',
-            attributes: ['id', 'name', 'email']
-          },
-          {
-            model: User,
-            as: 'author',
-            attributes: ['id', 'name', 'email']
-          }
-        ],
-        limit: Math.min(limit, 50),
-        offset,
-        order: [['createdAt', 'DESC']]
-      });
+      let notes = [];
+      try {
+        notes = await ClientNote.findAll({
+          where: noteWhereClause,
+          include: [
+            {
+              model: Client,
+              as: 'client',
+              attributes: ['id', 'name', 'email'],
+              required: false
+            },
+            {
+              model: User,
+              as: 'author',
+              attributes: ['id', 'name', 'email'],
+              required: false
+            }
+          ],
+          limit: Math.min(limit, 50),
+          offset,
+          order: [['createdAt', 'DESC']]
+        }).catch(() => []);
+        
+        notes = Array.isArray(notes) ? notes : [];
+      } catch (noteQueryError) {
+        console.error('Error executing note search query:', noteQueryError);
+        notes = [];
+      }
 
-      // Filter notes by client access permissions
+      // Filter notes by client access permissions (with error handling)
       const accessibleNotes = [];
       for (const note of notes) {
-        const hasAccess = await checkClientAccess(note.clientId, req.user.id, req.user.role);
-        if (hasAccess) {
-          accessibleNotes.push({
-            ...note.toJSON(),
-            entityType: 'note',
-            searchScore: calculateSearchScore(note, searchTerm)
-          });
+        try {
+          const hasAccess = await checkClientAccess(note.clientId, req.user.id, req.user.role);
+          if (hasAccess) {
+            accessibleNotes.push({
+              ...note.toJSON(),
+              entityType: 'note',
+              searchScore: calculateSearchScore(note, searchTerm)
+            });
+          }
+        } catch (accessError) {
+          console.error(`Error checking access for note ${note.id}:`, accessError);
+          // Skip this note if access check fails
         }
       }
 
@@ -347,70 +498,109 @@ router.post('/global', authenticateToken, async (req, res) => {
         ]
       };
 
-      // Apply additional filters
-      if (filters.taskStatus) {
-        taskWhereClause.status = filters.taskStatus;
-      }
-      if (filters.taskPriority) {
-        taskWhereClause.priority = filters.taskPriority;
-      }
-      if (filters.taskAssignedTo) {
-        taskWhereClause.assignedToId = filters.taskAssignedTo;
-      }
-
-      const tasks = await Task.findAll({
-        where: taskWhereClause,
-        include: [
-          {
-            model: User,
-            as: 'assignedTo',
-            attributes: ['id', 'name', 'email']
-          },
-          {
-            model: User,
-            as: 'assignedBy',
-            attributes: ['id', 'name', 'email']
+      // Apply additional filters (with validation)
+      try {
+        if (filters.taskStatus && typeof filters.taskStatus === 'string') {
+          taskWhereClause.status = filters.taskStatus.trim();
+        }
+        if (filters.taskPriority && typeof filters.taskPriority === 'string') {
+          taskWhereClause.priority = filters.taskPriority.trim();
+        }
+        if (filters.taskAssignedTo) {
+          // Validate user exists
+          try {
+            const assignedUser = await User.findByPk(filters.taskAssignedTo);
+            if (assignedUser) {
+              taskWhereClause.assignedToId = filters.taskAssignedTo;
+            }
+          } catch (userError) {
+            console.error('Error validating taskAssignedTo filter:', userError);
           }
-        ],
-        limit: Math.min(limit, 50),
-        offset,
-        order: [['createdAt', 'DESC']]
-      });
+        }
+      } catch (filterError) {
+        console.error('Error applying task filters:', filterError);
+      }
 
-      // Filter tasks by access permissions
+      let tasks = [];
+      try {
+        tasks = await Task.findAll({
+          where: taskWhereClause,
+          include: [
+            {
+              model: User,
+              as: 'assignedTo',
+              attributes: ['id', 'name', 'email'],
+              required: false
+            },
+            {
+              model: User,
+              as: 'assignedBy',
+              attributes: ['id', 'name', 'email'],
+              required: false
+            }
+          ],
+          limit: Math.min(limit, 50),
+          offset,
+          order: [['createdAt', 'DESC']]
+        }).catch(() => []);
+        
+        tasks = Array.isArray(tasks) ? tasks : [];
+      } catch (taskQueryError) {
+        console.error('Error executing task search query:', taskQueryError);
+        tasks = [];
+      }
+
+      // Filter tasks by access permissions (with error handling)
       const accessibleTasks = [];
       for (const task of tasks) {
-        const canView = req.user.role === 'CEO' || 
-                       task.assignedToId === req.user.id || 
-                       task.assignedById === req.user.id;
-        
-        if (canView) {
-          accessibleTasks.push({
-            ...task.toJSON(),
-            entityType: 'task',
-            searchScore: calculateSearchScore(task, searchTerm)
-          });
+        try {
+          const canView = req.user.role === 'CEO' || 
+                         task.assignedToId === req.user.id || 
+                         task.assignedById === req.user.id;
+          
+          if (canView) {
+            accessibleTasks.push({
+              ...task.toJSON(),
+              entityType: 'task',
+              searchScore: calculateSearchScore(task, searchTerm)
+            });
+          }
+        } catch (accessError) {
+          console.error(`Error checking access for task ${task.id}:`, accessError);
+          // Skip this task if access check fails
         }
       }
 
       results.tasks = accessibleTasks;
     }
 
-    // Calculate total results
+    // Calculate total results (with safe array length checks)
     results.totalResults = 
-      results.clients.length + 
-      results.conferences.length + 
-      results.emails.length + 
-      results.users.length + 
-      results.notes.length + 
-      results.tasks.length;
+      (Array.isArray(results.clients) ? results.clients.length : 0) + 
+      (Array.isArray(results.conferences) ? results.conferences.length : 0) + 
+      (Array.isArray(results.emails) ? results.emails.length : 0) + 
+      (Array.isArray(results.users) ? results.users.length : 0) + 
+      (Array.isArray(results.notes) ? results.notes.length : 0) + 
+      (Array.isArray(results.tasks) ? results.tasks.length : 0);
 
     console.log(`🔍 Global search for "${searchTerm}" returned ${results.totalResults} results`);
 
     res.json(results);
   } catch (error) {
     console.error('Error in global search:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    // Return safe default response instead of error
+    res.status(500).json({ 
+      error: 'Failed to perform search',
+      message: error.message || 'Internal server error',
+      clients: [],
+      conferences: [],
+      emails: [],
+      users: [],
+      notes: [],
+      tasks: [],
+      totalResults: 0,
+      query: req.body?.query || ''
+    });
   }
 });
 
