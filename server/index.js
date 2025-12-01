@@ -290,6 +290,9 @@ const normalizeConferenceSettings = (rawSettings = {}, options = {}) => {
   const followupCC = normalizeEmailList(rawSettings.followupCC);
   const abstractSubmissionLink = sanitizeOptionalUrl(rawSettings.abstractSubmissionLink || rawSettings.abstract_submission_link);
   const registrationLink = sanitizeOptionalUrl(rawSettings.registrationLink || rawSettings.registration_link);
+  const smtpDefaultId = typeof rawSettings.smtp_default_id === 'string' && rawSettings.smtp_default_id.trim()
+    ? rawSettings.smtp_default_id.trim()
+    : null;
   const stage1TemplatesRaw = rawSettings.stage1Templates ?? rawSettings.stage1TemplateSequence;
   const stage2TemplatesRaw = rawSettings.stage2Templates ?? rawSettings.stage2TemplateSequence;
   const stage1Templates = normalizeTemplateSequence(stage1TemplatesRaw, options.stage1TemplateId);
@@ -313,6 +316,7 @@ const normalizeConferenceSettings = (rawSettings = {}, options = {}) => {
     followupCC,
     abstractSubmissionLink,
     registrationLink,
+    smtp_default_id: smtpDefaultId,
     stage1Templates: limitedStage1Templates,
     stage2Templates: limitedStage2Templates
   };
@@ -1020,10 +1024,58 @@ app.post('/api/emails/reset', authenticateToken, async (req, res) => {
 // Add missing email endpoints
 app.get('/api/emails', authenticateToken, async (req, res) => {
   try {
+    const userRole = req.user?.role;
+    const userId = req.user?.id;
+
+    // CEOs can see all emails
+    let conferenceWhereClause = {};
+
+    if (userRole === 'TeamLead') {
+      conferenceWhereClause.assignedTeamLeadId = userId;
+    } else if (userRole === 'Member') {
+      // Member: only conferences where they are in assignedMemberIds JSON array
+      conferenceWhereClause = sequelize.where(
+        sequelize.cast(sequelize.col('Conference.assignedMemberIds'), 'jsonb'),
+        '@>',
+        sequelize.cast(`["${userId}"]`, 'jsonb')
+      );
+    } else if (userRole !== 'CEO') {
+      // Unknown roles get no emails
+      return res.json([]);
+    }
+
     const emails = await Email.findAll({
+      include: [
+        {
+          model: Client,
+          as: 'client',
+          required: false,
+          attributes: ['id', 'conferenceId'],
+          include: [
+            {
+              model: Conference,
+              as: 'conference',
+              required: false,
+              attributes: ['id', 'name', 'assignedTeamLeadId', 'assignedMemberIds'],
+              where: conferenceWhereClause
+            }
+          ]
+        }
+      ],
+      where: {
+        // Only return emails that are linked to a client + conference when role is restricted
+        ...(userRole === 'CEO'
+          ? {}
+          : {
+              '$client.conference.id$': {
+                [sequelize.Op.not]: null
+              }
+            })
+      },
       order: [['createdAt', 'DESC']],
       limit: 50
     });
+
     res.json(emails);
   } catch (error) {
     console.error('Get emails error:', error);
@@ -1111,6 +1163,15 @@ app.get('/api/conferences', authenticateToken, async (req, res) => {
 
 app.post('/api/conferences', authenticateToken, async (req, res) => {
   try {
+    // Role-based authorization: Only CEO can create conferences
+    if (req.user.role === 'Member' || req.user.role === 'TeamLead') {
+      console.log(`🚫 ${req.user.role} ${req.user.email} attempted to create a conference`);
+      return res.status(403).json({ 
+        error: 'Permission denied',
+        message: 'You do not have permission to create conferences. Only CEO can create conferences.'
+      });
+    }
+    
     // Validate required fields before processing
     if (!req.body.name || !req.body.name.trim()) {
       return res.status(400).json({
@@ -1229,17 +1290,17 @@ app.put('/api/conferences/:id', authenticateToken, async (req, res) => {
     }
 
     // Role-based authorization check
-    if (req.user.role === 'TeamLead') {
+    if (req.user.role === 'Member') {
+      // Members cannot update conferences at all
+      console.log(`🚫 Member ${req.user.email} attempted to update conference ${conference.id}`);
+      return res.status(403).json({ 
+        error: 'Permission denied',
+        message: 'Members do not have permission to update conferences. You can only view assigned conferences.'
+      });
+    } else if (req.user.role === 'TeamLead') {
       // TeamLead can only edit conferences where they are assigned
       if (conference.assignedTeamLeadId !== req.user.id) {
         console.log(`🚫 TeamLead ${req.user.email} attempted to edit non-assigned conference ${conference.id}`);
-        return res.status(403).json({ error: 'You do not have permission to edit this conference' });
-      }
-    } else if (req.user.role === 'Member') {
-      // Member can only edit conferences where they are in assignedMemberIds
-      const assignedMemberIds = conference.assignedMemberIds || [];
-      if (!assignedMemberIds.includes(req.user.id)) {
-        console.log(`🚫 Member ${req.user.email} attempted to edit non-assigned conference ${conference.id}`);
         return res.status(403).json({ error: 'You do not have permission to edit this conference' });
       }
     }

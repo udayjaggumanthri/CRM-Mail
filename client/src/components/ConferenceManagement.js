@@ -140,7 +140,9 @@ const ConferenceManagement = () => {
       subject: '',
       bodyHtml: '',
       bodyText: ''
-    }
+    },
+    // SMTP mapping for this conference (EmailAccount ID)
+    smtp_default_id: ''
   });
   const [templateData, setTemplateData] = useState({
     stage1: {
@@ -181,6 +183,22 @@ const ConferenceManagement = () => {
     } catch (error) {
       console.error('Error fetching templates:', error);
       return []; // Return empty array on error
+    }
+  }, {
+    retry: 1,
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  // Fetch SMTP accounts so CEO can map one per conference
+  const { data: smtpAccounts = [] } = useQuery('smtp-accounts', async () => {
+    try {
+      const response = await axios.get('/api/smtp-accounts');
+      return response.data || [];
+    } catch (error) {
+      console.error('Error fetching SMTP accounts:', error);
+      return [];
     }
   }, {
     retry: 1,
@@ -435,7 +453,8 @@ const ConferenceManagement = () => {
         subject: '',
         bodyHtml: '',
         bodyText: ''
-      }
+      },
+      smtp_default_id: ''
     });
   };
 
@@ -495,6 +514,7 @@ const ConferenceManagement = () => {
     const sanitizedAssignedMembers = Array.isArray(conference.assignedMemberIds)
       ? conference.assignedMemberIds.filter(Boolean)
       : [];
+    const smtpDefaultId = typeof settings.smtp_default_id === 'string' ? settings.smtp_default_id : '';
 
     setFormData({
       name: conference.name,
@@ -516,7 +536,10 @@ const ConferenceManagement = () => {
       // Conference Settings
       stage1IntervalValue: stage1Value,
       stage1IntervalUnit: stage1Unit,
-      stage1MaxFollowUps: maxAttempts.Stage1 || 6,
+      // Interpret stored Stage1 max_attempts as "initial + follow-ups".
+      // The UI field (stage1MaxFollowUps) should show only the number of
+      // follow-ups AFTER the initial email.
+      stage1MaxFollowUps: maxAttempts.Stage1 ? Math.max(1, maxAttempts.Stage1 - 1) : 6,
       stage2IntervalValue: stage2Value,
       stage2IntervalUnit: stage2Unit,
       stage2MaxFollowUps: maxAttempts.Stage2 || 6,
@@ -536,7 +559,8 @@ const ConferenceManagement = () => {
         subject: '',
         bodyHtml: '',
         bodyText: ''
-      }
+      },
+      smtp_default_id: smtpDefaultId
     });
     setShowModal(true);
   };
@@ -569,9 +593,11 @@ const ConferenceManagement = () => {
   };
 
   const getTemplateSlots = (stage) => {
-    const max = stage === 'stage1'
+    const rawMax = stage === 'stage1'
       ? Number(formData.stage1MaxFollowUps) || 0
       : Number(formData.stage2MaxFollowUps) || 0;
+    // For Stage 1, we always reserve one extra slot for the Initial Email.
+    const max = stage === 'stage1' ? rawMax + 1 : rawMax;
     const templatesKey = stage === 'stage1' ? 'stage1Templates' : 'stage2Templates';
     const source = Array.isArray(formData[templatesKey]) ? formData[templatesKey] : [];
     return Array.from({ length: max }, (_, index) => source[index] || '');
@@ -590,8 +616,11 @@ const ConferenceManagement = () => {
       const currentTemplates = Array.isArray(prev[templatesKey]) ? [...prev[templatesKey]] : [];
       let nextTemplates = currentTemplates;
 
-      if (parsed < currentTemplates.length) {
-        const trimmed = currentTemplates.slice(parsed);
+      // For Stage 1 we maintain one extra slot at index 0 for the Initial Email.
+      const effectiveMax = stage === 'stage1' ? parsed + 1 : parsed;
+
+      if (effectiveMax < currentTemplates.length) {
+        const trimmed = currentTemplates.slice(effectiveMax);
         const hasAssignments = trimmed.some((id) => id && id.trim());
         if (hasAssignments && typeof window !== 'undefined') {
           const confirmed = window.confirm(
@@ -601,11 +630,11 @@ const ConferenceManagement = () => {
             return prev;
           }
         }
-        nextTemplates = currentTemplates.slice(0, parsed);
-      } else if (parsed > currentTemplates.length) {
+        nextTemplates = currentTemplates.slice(0, effectiveMax);
+      } else if (effectiveMax > currentTemplates.length) {
         nextTemplates = [
           ...currentTemplates,
-          ...Array(parsed - currentTemplates.length).fill('')
+          ...Array(effectiveMax - currentTemplates.length).fill('')
         ];
       }
 
@@ -741,7 +770,13 @@ const ConferenceManagement = () => {
       return;
     }
 
-    const stage1Sequence = sanitizeTemplateSequence(formData.stage1Templates || [], stage1MaxFollowUps);
+    // For Stage 1, reserve one extra slot for the Initial Email (index 0),
+    // and interpret "Max Follow-ups" in the UI as the number of Abstract
+    // Submission follow-ups AFTER the initial email.
+    const stage1Sequence = sanitizeTemplateSequence(
+      formData.stage1Templates || [],
+      stage1MaxFollowUps + 1
+    );
     const stage2Sequence = sanitizeTemplateSequence(formData.stage2Templates || [], stage2MaxFollowUps);
 
     const submitData = {
@@ -759,7 +794,9 @@ const ConferenceManagement = () => {
           Stage2: { value: stage2IntervalValue, unit: stage2Unit }
         },
         max_attempts: {
-          Stage1: Math.floor(stage1MaxFollowUps),
+          // Store Stage 1 max attempts as "initial + follow-ups" so the scheduler
+          // can send the initial email plus the configured number of follow-ups.
+          Stage1: Math.floor(stage1MaxFollowUps + 1),
           Stage2: Math.floor(stage2MaxFollowUps)
         },
         skip_weekends: formData.skipWeekends,
@@ -772,7 +809,8 @@ const ConferenceManagement = () => {
         registrationLink: registrationLink || null,
         followupCC: followupCcList,
         stage1Templates: stage1Sequence,
-        stage2Templates: stage2Sequence
+        stage2Templates: stage2Sequence,
+        smtp_default_id: formData.smtp_default_id || null
       }
     };
     submitData.website = formData.website || registrationLink || abstractLink || '';
@@ -887,13 +925,15 @@ const ConferenceManagement = () => {
             <h1 className="text-2xl font-bold text-gray-900">Conferences</h1>
             <p className="text-gray-600">Manage your conference events and settings</p>
           </div>
-          <button
-            onClick={handleCreate}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
-          >
-            <PlusIcon className="h-5 w-5" />
-            Add Conference
-          </button>
+          {user?.role === 'CEO' && (
+            <button
+              onClick={handleCreate}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
+            >
+              <PlusIcon className="h-5 w-5" />
+              Add Conference
+            </button>
+          )}
         </div>
 
         {/* Search and Filter Controls */}
@@ -968,22 +1008,15 @@ const ConferenceManagement = () => {
                 >
                   <EyeIcon className="h-4 w-4" />
                 </button>
-                <button
-                  onClick={() => handleEdit(conference)}
-                  className="p-1 text-gray-400 hover:text-yellow-600"
-                  title="Edit"
-                >
-                  <PencilIcon className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => handleTemplates(conference)}
-                  className="p-1 text-gray-400 hover:text-purple-600"
-                  title="Email Templates"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                  </svg>
-                </button>
+                {user?.role !== 'Member' && (
+                  <button
+                    onClick={() => handleEdit(conference)}
+                    className="p-1 text-gray-400 hover:text-yellow-600"
+                    title="Edit"
+                  >
+                    <PencilIcon className="h-4 w-4" />
+                  </button>
+                )}
                 <button
                   onClick={() => handleDelete(conference)}
                   className="p-1 text-gray-400 hover:text-red-600"
@@ -1049,7 +1082,7 @@ const ConferenceManagement = () => {
               : 'Get started by creating a new conference.'
             }
           </p>
-          {!searchTerm && filterStatus === 'all' && conferences.length > 0 && (
+          {!searchTerm && filterStatus === 'all' && conferences.length > 0 && user?.role === 'CEO' && (
             <div className="mt-6">
               <button
                 onClick={handleCreate}
@@ -1179,7 +1212,7 @@ const ConferenceManagement = () => {
 
               {/* Additional Information */}
               <div className="bg-gray-50 rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-gray-900 mb-4">Additional Information</h4>
+              <h4 className="text-sm font-semibold text-gray-900 mb-4">Additional Information</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1223,6 +1256,32 @@ const ConferenceManagement = () => {
                       <option value="INR">INR - Indian Rupee</option>
                     </select>
                   </div>
+
+                  {/* SMTP Mapping - CEO only */}
+                  {user?.role === 'CEO' && (
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        SMTP Account for this Conference
+                      </label>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Choose which SMTP account should send all automated emails for this conference.
+                        If left blank, the system primary SMTP will be used.
+                      </p>
+                      <select
+                        name="smtp_default_id"
+                        value={formData.smtp_default_id}
+                        onChange={handleInputChange}
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
+                      >
+                        <option value="">Use system primary SMTP</option>
+                        {smtpAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.name || account.email} ({account.email})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1583,28 +1642,98 @@ const ConferenceManagement = () => {
                   <p className="text-sm text-gray-600">Configure email templates for each stage of your conference workflow</p>
                 </div>
                 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  {/* Stage 1 Template Selection */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  {/* Initial Email Template Selection */}
+                  <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-6 border border-purple-100">
+                    <div className="flex items-center mb-4">
+                      <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center mr-3">
+                        <span className="text-purple-600 font-semibold text-sm">1</span>
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-semibold text-gray-900">Initial Email</h4>
+                        <p className="text-xs text-gray-600">
+                          First email sent immediately when a client is assigned to this conference
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {(() => {
+                        const slots = getTemplateSlots('stage1');
+                        const initialTemplateId = slots[0] || '';
+                        const selectedTemplate = initialTemplateId ? templatesById[initialTemplateId] : null;
+                        return (
+                          <div className="bg-white border border-purple-100 rounded-lg p-4 shadow-sm">
+                            <div className="flex items-center justify-between mb-3">
+                              <div>
+                                <p className="text-sm font-semibold text-gray-900">Initial Email Template</p>
+                                <p className="text-xs text-gray-500">Sent as soon as the workflow starts</p>
+                              </div>
+                              {selectedTemplate && (
+                                <span className="text-xs font-medium text-purple-600 bg-purple-50 px-2 py-1 rounded-full">
+                                  {selectedTemplate.name}
+                                </span>
+                              )}
+                            </div>
+                            <select
+                              value={initialTemplateId}
+                              onChange={(e) => handleTemplateSlotChange('stage1', 0, e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 bg-white text-sm"
+                            >
+                              <option value="">Select a template</option>
+                              {stageTemplateOptions.stage1.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                            {selectedTemplate ? (
+                              <div className="mt-3 text-xs text-gray-600 bg-gray-50 p-3 rounded border border-gray-100">
+                                <p className="font-medium text-gray-800">Subject: {selectedTemplate.subject}</p>
+                                <p className="mt-1 line-clamp-2">
+                                  {selectedTemplate.bodyText || selectedTemplate.bodyHtml?.replace(/<[^>]*>/g, '')}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="mt-3 text-xs text-gray-400">
+                                No initial template selected. The first Stage 1 template will be used instead.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      {stageTemplateOptions.stage1.length === 0 && (
+                        <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg p-3">
+                          No Initial / Stage 1 templates available. Please create templates in the Templates page.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Stage 1 Template Selection (Abstract Submission follow-ups) */}
                   <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-6 border border-blue-100">
                     <div className="flex items-center mb-4">
                       <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-                        <span className="text-blue-600 font-semibold text-sm">1</span>
+                        <span className="text-blue-600 font-semibold text-sm">2</span>
                       </div>
                       <div>
                         <h4 className="text-sm font-semibold text-gray-900">Abstract Submission</h4>
-                        <p className="text-xs text-gray-600">Follow-up for abstract submissions</p>
+                        <p className="text-xs text-gray-600">Stage 2 follow-up emails for abstract submissions</p>
                       </div>
                     </div>
                     
                     <div className="space-y-4">
-                      {getTemplateSlots('stage1').map((templateId, index) => {
+                      {getTemplateSlots('stage1')
+                        .slice(1)
+                        .map((templateId, index) => {
+                        const actualIndex = index + 1;
                         const selectedTemplate = templateId ? templatesById[templateId] : null;
                         return (
-                          <div key={`stage1-slot-${index}`} className="bg-white border border-blue-100 rounded-lg p-4 shadow-sm">
+                          <div key={`stage1-slot-${actualIndex}`} className="bg-white border border-blue-100 rounded-lg p-4 shadow-sm">
                             <div className="flex items-center justify-between mb-3">
                               <div>
                                 <p className="text-sm font-semibold text-gray-900">Follow-up {index + 1}</p>
-                                <p className="text-xs text-gray-500">Attempt #{index + 1}</p>
+                                <p className="text-xs text-gray-500">Attempt #{actualIndex + 1}</p>
                               </div>
                               {selectedTemplate && (
                                 <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded-full">
@@ -1614,7 +1743,7 @@ const ConferenceManagement = () => {
                             </div>
                             <select
                               value={templateId}
-                              onChange={(e) => handleTemplateSlotChange('stage1', index, e.target.value)}
+                              onChange={(e) => handleTemplateSlotChange('stage1', actualIndex, e.target.value)}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white text-sm"
                             >
                               <option value="">Select a template</option>
@@ -1762,110 +1891,290 @@ const ConferenceManagement = () => {
       )}
 
       {/* View Modal */}
-      {showViewModal && viewingConference && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-900">Conference Details</h2>
-              <button
-                onClick={() => setShowViewModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <XMarkIcon className="h-6 w-6" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    {viewingConference.name}
-                    {viewingConference.shortName ? (
-                      <span className="text-sm text-gray-500 ml-2">({viewingConference.shortName})</span>
-                    ) : null}
-                  </h3>
-                </div>
-                {getStatusBadge(viewingConference)}
+      {showViewModal && viewingConference && (() => {
+        const settings = viewingConference.settings || {};
+        const followupIntervals = settings.followup_intervals || {};
+        const maxAttempts = settings.max_attempts || {};
+        const workingHours = settings.working_hours || {};
+        const abstractLink = settings.abstractSubmissionLink || '';
+        const registrationLink = settings.registrationLink || '';
+        const followupCC = Array.isArray(settings.followupCC) ? settings.followupCC : [];
+        const stage1Templates = Array.isArray(settings.stage1Templates) ? settings.stage1Templates : [];
+        const stage2Templates = Array.isArray(settings.stage2Templates) ? settings.stage2Templates : [];
+        
+        // Get user names for team assignments
+        const assignedTeamLead = users.find(u => u.id === viewingConference.assignedTeamLeadId);
+        const assignedMembers = Array.isArray(viewingConference.assignedMemberIds) 
+          ? viewingConference.assignedMemberIds.map(id => users.find(u => u.id === id)).filter(Boolean)
+          : [];
+        
+        // Get template names
+        const stage1TemplateNames = stage1Templates.map(id => {
+          const template = templatesById[id];
+          return template ? template.name : `Template ${id}`;
+        }).filter(Boolean);
+        const stage2TemplateNames = stage2Templates.map(id => {
+          const template = templatesById[id];
+          return template ? template.name : `Template ${id}`;
+        }).filter(Boolean);
+        
+        // Parse interval values
+        const stage1Interval = followupIntervals.Stage1 || {};
+        const stage2Interval = followupIntervals.Stage2 || {};
+        const stage1IntervalValue = typeof stage1Interval === 'object' ? (stage1Interval.value || 7) : (stage1Interval || 7);
+        const stage1IntervalUnit = typeof stage1Interval === 'object' ? (stage1Interval.unit || 'days') : 'days';
+        const stage2IntervalValue = typeof stage2Interval === 'object' ? (stage2Interval.value || 3) : (stage2Interval || 3);
+        const stage2IntervalUnit = typeof stage2Interval === 'object' ? (stage2Interval.unit || 'days') : 'days';
+        
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-4xl mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold text-gray-900">Conference Details</h2>
+                <button
+                  onClick={() => setShowViewModal(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <XMarkIcon className="h-6 w-6" />
+                </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {viewingConference.shortName && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-500">Short Name:</span>
-                    <span className="text-gray-700">{viewingConference.shortName}</span>
+              <div className="space-y-6">
+                {/* Basic Information */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Basic Information</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Conference Name</span>
+                      <p className="text-gray-900 font-medium mt-1">
+                        {viewingConference.name}
+                        {viewingConference.shortName && (
+                          <span className="text-sm text-gray-500 ml-2">({viewingConference.shortName})</span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Status</span>
+                      <div className="mt-1">{getStatusBadge(viewingConference)}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MapPinIcon className="h-5 w-5 text-gray-400" />
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Venue</span>
+                        <p className="text-gray-900">{viewingConference.venue}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CalendarIcon className="h-5 w-5 text-gray-400" />
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Conference Dates</span>
+                        <p className="text-gray-900">
+                          {formatDate(viewingConference.startDate)} - {formatDate(viewingConference.endDate)}
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Currency</span>
+                      <p className="text-gray-900">{viewingConference.currency || 'USD'}</p>
+                    </div>
+                    {viewingConference.website && (
+                      <div className="flex items-center gap-2">
+                        <GlobeAltIcon className="h-5 w-5 text-gray-400" />
+                        <div>
+                          <span className="text-sm font-medium text-gray-500">Website</span>
+                          <p className="text-gray-900">
+                            <a 
+                              href={viewingConference.website} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline"
+                            >
+                              {viewingConference.website}
+                            </a>
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-                <div className="flex items-center gap-2">
-                  <MapPinIcon className="h-5 w-5 text-gray-400" />
-                  <span className="text-gray-600">{viewingConference.venue}</span>
+                  {viewingConference.description && (
+                    <div className="mt-4">
+                      <span className="text-sm font-medium text-gray-500">Description</span>
+                      <p className="text-gray-900 mt-1">{viewingConference.description}</p>
+                    </div>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="h-5 w-5 text-gray-400" />
-                  <span className="text-gray-600">
-                    {formatDate(viewingConference.startDate)} - {formatDate(viewingConference.endDate)}
-                  </span>
-                </div>
-
-                {viewingConference.website && (
-                  <div className="flex items-center gap-2">
-                    <GlobeAltIcon className="h-5 w-5 text-gray-400" />
-                    <a 
-                      href={viewingConference.website} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline"
-                    >
-                      {viewingConference.website}
-                    </a>
+                {/* Deadlines and Links */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Deadlines & Links</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Abstract Deadline</span>
+                      <p className="text-gray-900">{formatDate(viewingConference.abstractDeadline)}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Registration Deadline</span>
+                      <p className="text-gray-900">{formatDate(viewingConference.registrationDeadline)}</p>
+                    </div>
+                    {abstractLink && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Abstract Submission Link</span>
+                        <p className="text-gray-900">
+                          <a href={abstractLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline break-all">
+                            {abstractLink}
+                          </a>
+                        </p>
+                      </div>
+                    )}
+                    {registrationLink && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Registration Link</span>
+                        <p className="text-gray-900">
+                          <a href={registrationLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline break-all">
+                            {registrationLink}
+                          </a>
+                        </p>
+                      </div>
+                    )}
                   </div>
+                </div>
+
+                {/* Team Assignment */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Team Assignment</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Team Lead</span>
+                      <p className="text-gray-900">
+                        {assignedTeamLead ? `${assignedTeamLead.name} (${assignedTeamLead.email})` : 'Not assigned'}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Team Members</span>
+                      {assignedMembers.length > 0 ? (
+                        <ul className="text-gray-900 mt-1 space-y-1">
+                          {assignedMembers.map(member => (
+                            <li key={member.id}>• {member.name} ({member.email})</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-gray-500">No members assigned</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Email Templates */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Email Templates</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Stage 1 (Abstract Submission)</span>
+                      {stage1TemplateNames.length > 0 ? (
+                        <ul className="text-gray-900 mt-1 space-y-1">
+                          {stage1TemplateNames.map((name, idx) => (
+                            <li key={idx}>{idx + 1}. {name}</li>
+                          ))}
+                        </ul>
+                      ) : viewingConference.stage1TemplateId ? (
+                        <p className="text-gray-900 mt-1">
+                          {templatesById[viewingConference.stage1TemplateId]?.name || `Template ${viewingConference.stage1TemplateId}`}
+                        </p>
+                      ) : (
+                        <p className="text-gray-500 mt-1">No template assigned</p>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Stage 2 (Registration)</span>
+                      {stage2TemplateNames.length > 0 ? (
+                        <ul className="text-gray-900 mt-1 space-y-1">
+                          {stage2TemplateNames.map((name, idx) => (
+                            <li key={idx}>{idx + 1}. {name}</li>
+                          ))}
+                        </ul>
+                      ) : viewingConference.stage2TemplateId ? (
+                        <p className="text-gray-900 mt-1">
+                          {templatesById[viewingConference.stage2TemplateId]?.name || `Template ${viewingConference.stage2TemplateId}`}
+                        </p>
+                      ) : (
+                        <p className="text-gray-500 mt-1">No template assigned</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Follow-up Settings */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Follow-up Settings</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Stage 1 Interval</span>
+                      <p className="text-gray-900">{stage1IntervalValue} {stage1IntervalUnit}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Stage 1 Max Follow-ups</span>
+                      <p className="text-gray-900">{maxAttempts.Stage1 || 6}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Stage 2 Interval</span>
+                      <p className="text-gray-900">{stage2IntervalValue} {stage2IntervalUnit}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Stage 2 Max Follow-ups</span>
+                      <p className="text-gray-900">{maxAttempts.Stage2 || 6}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Skip Weekends</span>
+                      <p className="text-gray-900">{settings.skip_weekends !== false ? 'Yes' : 'No'}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-500">Timezone</span>
+                      <p className="text-gray-900">{settings.timezone || 'UTC'}</p>
+                    </div>
+                    {workingHours.start && workingHours.end && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Working Hours</span>
+                        <p className="text-gray-900">{workingHours.start} - {workingHours.end}</p>
+                      </div>
+                    )}
+                    {followupCC.length > 0 && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Follow-up CC Emails</span>
+                        <ul className="text-gray-900 mt-1 space-y-1">
+                          {followupCC.map((email, idx) => (
+                            <li key={idx}>• {email}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-6 border-t border-gray-200 mt-6">
+                <button
+                  onClick={() => setShowViewModal(false)}
+                  className="px-4 py-2 text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300"
+                >
+                  Close
+                </button>
+                {user?.role !== 'Member' && (
+                  <button
+                    onClick={() => {
+                      setShowViewModal(false);
+                      handleEdit(viewingConference);
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2"
+                  >
+                    <PencilIcon className="h-4 w-4" />
+                    Edit
+                  </button>
                 )}
-
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-600">Currency: {viewingConference.currency}</span>
-                </div>
               </div>
-
-              {viewingConference.description && (
-                <div>
-                  <h4 className="font-medium text-gray-900 mb-2">Description</h4>
-                  <p className="text-gray-600">{viewingConference.description}</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-gray-200">
-                <div>
-                  <h4 className="font-medium text-gray-900 mb-1">Abstract Deadline</h4>
-                  <p className="text-gray-600">{formatDate(viewingConference.abstractDeadline)}</p>
-                </div>
-                <div>
-                  <h4 className="font-medium text-gray-900 mb-1">Registration Deadline</h4>
-                  <p className="text-gray-600">{formatDate(viewingConference.registrationDeadline)}</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-6">
-              <button
-                onClick={() => setShowViewModal(false)}
-                className="px-4 py-2 text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300"
-              >
-                Close
-              </button>
-              <button
-                onClick={() => {
-                  setShowViewModal(false);
-                  handleEdit(viewingConference);
-                }}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2"
-              >
-                <PencilIcon className="h-4 w-4" />
-                Edit
-              </button>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && deletingConference && (

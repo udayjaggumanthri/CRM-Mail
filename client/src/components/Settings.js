@@ -398,24 +398,29 @@ const Settings = () => {
                       </div>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <Info className="h-4 w-4 text-gray-400" title="This account is used for all automated follow-up emails. Switching won't interrupt existing follow-ups." />
+                      <Info
+                        className="h-4 w-4 text-gray-400"
+                        title="This is the default SMTP account for conferences that don't have their own SMTP mapped. Individual conferences can now choose a specific SMTP in the Create/Edit Conference form."
+                      />
                     </div>
                   </div>
                   {!isCeo && (
                     <p className="text-xs text-gray-500 mt-2">
-                      Only CEOs can switch the primary follow-up account.
+                      Only CEOs can switch the primary follow-up account. Conferences with a specific SMTP mapped will always use that account.
                     </p>
                   )}
                 </div>
               )}
             </div>
-            <button
-              onClick={() => setShowAddSmtpModal(true)}
-              className="btn-primary flex items-center"
-            >
-              <Plus className="h-5 w-5 mr-2" />
-              Add SMTP Account
-            </button>
+            {isCeo && (
+              <button
+                onClick={() => setShowAddSmtpModal(true)}
+                className="btn-primary flex items-center"
+              >
+                <Plus className="h-5 w-5 mr-2" />
+                Add SMTP Account
+              </button>
+            )}
           </div>
 
           {/* List View */}
@@ -478,7 +483,8 @@ const Settings = () => {
                           : isMine
                           ? 'bg-purple-100 text-purple-700'
                           : 'bg-gray-100 text-gray-700';
-                        const canManageAccount = isCeo || (account.ownerId && account.ownerId === currentUserId);
+                        // Only CEO can manage SMTP accounts (edit/delete/toggle/primary)
+                        const canManageAccount = isCeo;
                         const canSetPrimary = isCeo && !isCurrentlyActive && isActive;
 
                         return (

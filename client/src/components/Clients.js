@@ -89,7 +89,13 @@ const Clients = () => {
     conferenceId: '',
     notes: '',
     manualStage1Count: 0,
-    manualStage2Count: 0
+    manualStage2Count: 0,
+    // Optional: Message-ID of the first manual email sent outside CRM.
+    // When provided, all automated follow-ups will reply to this message.
+    initialThreadMessageId: '',
+    // Optional: Subject of the first manual email (e.g., "one").
+    // When provided, follow-ups can use this subject (with "Re:") to improve Gmail threading.
+    initialThreadSubject: ''
   });
 
   // Country combobox state (Add/Edit modal only) - placed after formData so it can read formData.country safely
@@ -346,7 +352,9 @@ const Clients = () => {
       conferenceId: '',
       notes: '',
       manualStage1Count: 0,
-      manualStage2Count: 0
+      manualStage2Count: 0,
+      initialThreadMessageId: '',
+      initialThreadSubject: ''
     });
   };
 
@@ -377,13 +385,23 @@ const Clients = () => {
     // Prepare data for submission
     const stage1Count = normalizeManualCount(formData.manualStage1Count);
     const stage2Count = normalizeManualCount(formData.manualStage2Count);
+    const initialThreadMessageId =
+      typeof formData.initialThreadMessageId === 'string'
+        ? formData.initialThreadMessageId.trim()
+        : '';
+    const initialThreadSubject =
+      typeof formData.initialThreadSubject === 'string'
+        ? formData.initialThreadSubject.trim()
+        : '';
 
     const submitData = {
       ...formData,
       manualStage1Count: stage1Count,
       manualStage2Count: stage2Count,
       manualEmailsCount: stage1Count,
-      conferenceId: formData.conferenceId || null // Convert empty string to null
+      conferenceId: formData.conferenceId || null, // Convert empty string to null
+      initialThreadMessageId: initialThreadMessageId || undefined,
+      initialThreadSubject: initialThreadSubject || undefined
     };
     
     if (showEditForm && selectedClient) {
@@ -399,6 +417,14 @@ const Clients = () => {
       ? normalizeManualCount(client.manualStage1Count)
       : normalizeManualCount(client.manualEmailsCount);
     const stage2Manual = normalizeManualCount(client.manualStage2Count);
+    const initialThreadMessageId =
+      client.customFields && client.customFields.initialThreadMessageId
+        ? String(client.customFields.initialThreadMessageId)
+        : '';
+    const initialThreadSubject =
+      client.customFields && client.customFields.initialThreadSubject
+        ? String(client.customFields.initialThreadSubject)
+        : '';
     setFormData({
       name: client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim(),
       email: client.email || '',
@@ -408,7 +434,9 @@ const Clients = () => {
       conferenceId: client.conferenceId || '',
       notes: client.notes || '',
       manualStage1Count: stage1Manual,
-      manualStage2Count: stage2Manual
+      manualStage2Count: stage2Manual,
+      initialThreadMessageId,
+      initialThreadSubject
     });
     setShowEditForm(true);
   };
@@ -1244,7 +1272,7 @@ const getInitialsFromName = (name) => {
               required
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
             >
-              <option value="stage1">Stage 1 - Abstract submission emails</option>
+              <option value="stage1">Stage 1 - Initial email + Abstract submission emails</option>
               <option value="stage2">Stage 2 - Registration emails</option>
               <option value="completed">Completed - No emails</option>
             </select>
@@ -1319,16 +1347,16 @@ const getInitialsFromName = (name) => {
               </p>
               <ul className="list-disc ml-5 mt-2 space-y-2">
                 <li>
-                  <strong>Lead + Stage 1:</strong> New client → Stage 1 (abstract submission) follow-ups start immediately. When status moves to "Abstract Submitted", Stage 2 takes over automatically.
+                  <strong>Lead + Stage 1:</strong> New client → Sends the <strong>Initial Email (Stage 1)</strong> immediately from the conference Initial template. After that, the system continues automatically into <strong>Stage 2 (Abstract Submission)</strong> and later <strong>Stage 3 (Registration)</strong> based on your conference settings.
                 </li>
                 <li>
-                  <strong>Abstract Submitted + Stage 2:</strong> Client already submitted an abstract → Sends only Stage 2 (registration) emails until they register or the follow-up cap is reached.
+                  <strong>Abstract Submitted + Stage 2:</strong> Client already submitted an abstract → Skips the Initial email and Abstract stage, and sends only <strong>Stage 3 (Registration)</strong> emails until they register or the follow-up cap is reached.
                 </li>
                 <li>
                   <strong>Registered + Completed:</strong> Client already registered → No automated emails are sent.
                 </li>
                 <li className="text-orange-700">
-                  <strong>Auto-Declined Marking:</strong> If Stage 1 max reached and status still "Lead" → marked "Declined". If Stage 2 max reached and status still "Abstract Submitted" → marked "Registration Unresponsive"
+                  <strong>Auto-Declined Marking:</strong> If the Abstract Submission follow-up limit is reached and status is still "Lead" → marked "Declined". If the Registration follow-up limit is reached and status is still "Abstract Submitted" → marked "Registration Unresponsive".
                 </li>
               </ul>
             </div>

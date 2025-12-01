@@ -54,11 +54,10 @@ const canUserAccessAccount = (req, account) => {
   return ownerId && req.user?.id && ownerId === req.user.id;
 };
 
+// Only CEOs are allowed to manage SMTP/IMAP accounts (create/update/delete/start-sync/stop-sync)
 const canUserManageAccount = (req, account) => {
   if (!account) return false;
-  if (isCeoUser(req)) return true;
-  const ownerId = getAccountOwnerId(account);
-  return ownerId && req.user?.id && ownerId === req.user.id;
+  return isCeoUser(req);
 };
 
 const buildVisibilityWhereClause = (req) => {

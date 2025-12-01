@@ -282,19 +282,41 @@ class EmailJobScheduler {
         return; // Skip sending this email
       }
 
-      // Dynamic SMTP selection: Always uses account with lowest sendPriority (primary)
-      // This allows admin to change primary SMTP mid-follow-up without breaking sequences
+      // Dynamic SMTP selection:
+      // 1) Prefer conference-specific SMTP (settings.smtp_default_id)
+      // 2) Fallback to global primary account (lowest sendPriority)
       // Threading is preserved via threadRootMessageId in job.settings
-      // Get SMTP account
-      const smtpAccount = await EmailAccount.findOne({
-        where: {
-          isActive: true
-        },
-        order: [
-          ['sendPriority', 'ASC'],
-          ['createdAt', 'ASC']
-        ]
-      });
+      const conferenceForSmtp = conferenceContext || conference;
+      let smtpAccount = null;
+
+      if (conferenceForSmtp?.settings && conferenceForSmtp.settings.smtp_default_id) {
+        smtpAccount = await EmailAccount.findOne({
+          where: {
+            id: conferenceForSmtp.settings.smtp_default_id,
+            isActive: true
+          }
+        });
+
+        if (!smtpAccount) {
+          console.warn(
+            `⚠️  Conference "${conferenceForSmtp.name}" has smtp_default_id=${conferenceForSmtp.settings.smtp_default_id},` +
+            ' but no active SMTP account was found. Falling back to primary SMTP account.'
+          );
+        }
+      }
+
+      // Fallback: use primary/global SMTP if conference-specific not configured or inactive
+      if (!smtpAccount) {
+        smtpAccount = await EmailAccount.findOne({
+          where: {
+            isActive: true
+          },
+          order: [
+            ['sendPriority', 'ASC'],
+            ['createdAt', 'ASC']
+          ]
+        });
+      }
 
       if (!smtpAccount) {
         console.log('⚠️  No SMTP account found, skipping email');

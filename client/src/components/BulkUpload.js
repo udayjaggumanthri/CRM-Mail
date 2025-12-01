@@ -115,11 +115,11 @@ function BulkUpload() {
             <div>
               <h3 className="font-semibold text-blue-900 mb-2">How It Works</h3>
               <ol className="list-decimal list-inside space-y-1 text-sm text-blue-800">
-                <li>Download the Excel template below</li>
-                <li>Fill in your client details (see Instructions sheet in template)</li>
-                <li>Make sure to select Conference, Status, and Stage for each client</li>
-                <li>Upload the completed file</li>
-                <li>Automatic email workflows will start based on each client's status and stage</li>
+                <li>Download the Excel template below.</li>
+                <li>Fill in your client details (see the "Instructions" sheet in the template).</li>
+                <li>Optionally select Conference, Status, and Stage for each client to control the email workflow.</li>
+                <li>Upload the completed file.</li>
+                <li>Automatic emails will start based on each client's Conference, Status, and Stage (Initial → Abstract → Registration).</li>
               </ol>
             </div>
           </div>
@@ -138,7 +138,7 @@ function BulkUpload() {
               Download Excel Template
             </button>
             <p className="text-sm text-gray-500 mt-2">
-              The template includes example data and dropdown options for Status, Stage, and Conference
+              The template includes example data, dropdown options for Status / Stage / Conference, and a full Instructions sheet.
             </p>
           </div>
 
@@ -240,16 +240,20 @@ function BulkUpload() {
           <h3 className="font-semibold text-gray-900 mb-3">Workflow Guide</h3>
           <div className="space-y-2 text-sm text-gray-700">
             <div className="flex items-start gap-2">
-              <span className="font-medium min-w-[180px]">Lead + initial:</span>
-              <span>Full workflow (invitation + Stage 1 + Stage 2 emails)</span>
+              <span className="font-medium min-w-[180px]">Lead + stage1:</span>
+              <span>
+                Sends the Initial Email immediately, then continues with Abstract Submission follow-ups and finally Registration follow-ups (based on the conference settings).
+              </span>
             </div>
             <div className="flex items-start gap-2">
               <span className="font-medium min-w-[180px]">Abstract Submitted + stage2:</span>
-              <span>Only Stage 2 emails (registration reminders)</span>
+              <span>
+                Skips the Initial and Abstract stages and sends only Registration emails.
+              </span>
             </div>
             <div className="flex items-start gap-2">
               <span className="font-medium min-w-[180px]">Registered + completed:</span>
-              <span>No emails sent</span>
+              <span>No automated emails are sent.</span>
             </div>
           </div>
         </div>

@@ -106,34 +106,34 @@ const UnifiedEmail = () => {
     ['emails', activeFolder, searchTerm, currentPage, filters, activeEmailAccountId], 
     async () => {
       try {
-        const params = new URLSearchParams();
-        if (activeFolder) {
-          params.append('folder', activeFolder);
-        }
-        if (searchTerm) {
+      const params = new URLSearchParams();
+      if (activeFolder) {
+        params.append('folder', activeFolder);
+      }
+      if (searchTerm) {
           params.append('search', searchTerm.trim().substring(0, 200)); // Sanitize search
-        }
-        params.append('page', currentPage);
-        params.append('limit', 50);
-        
-        if (filters.fromEmail) {
+      }
+      params.append('page', currentPage);
+      params.append('limit', 50);
+      
+      if (filters.fromEmail) {
           params.append('fromEmail', filters.fromEmail.trim().substring(0, 200));
-        }
-        if (filters.toEmail) {
+      }
+      if (filters.toEmail) {
           params.append('toEmail', filters.toEmail.trim().substring(0, 200));
-        }
-        if (filters.startDate) {
-          params.append('startDate', filters.startDate);
-        }
-        if (filters.endDate) {
-          params.append('endDate', filters.endDate);
-        }
+      }
+      if (filters.startDate) {
+        params.append('startDate', filters.startDate);
+      }
+      if (filters.endDate) {
+        params.append('endDate', filters.endDate);
+      }
         if (activeEmailAccountId && activeEmailAccountId !== 'all') {
           params.append('accountId', activeEmailAccountId);
         }
-        
-        const response = await axios.get(`/api/emails?${params.toString()}`);
-        return response.data;
+      
+      const response = await axios.get(`/api/emails?${params.toString()}`);
+      return response.data;
       } catch (error) {
         console.error('Error fetching emails:', error);
         // Return safe default data structure
@@ -613,7 +613,7 @@ const UnifiedEmail = () => {
       toast.error('Email is already being sent. Please wait...');
       return;
     }
-
+    
     // Validate required fields
     if (!composeData.to || !composeData.to.trim()) {
       toast.error('Please enter a recipient email address');
@@ -2102,7 +2102,7 @@ const UnifiedEmail = () => {
                           </>
                         ) : (
                           <>
-                            <Send className="h-4 w-4" />
+                        <Send className="h-4 w-4" />
                             <span>Send</span>
                           </>
                         )}

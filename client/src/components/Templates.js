@@ -411,16 +411,22 @@ const Templates = () => {
 
   const getStageBadge = (stage) => {
     const stageClasses = {
+      // Internal stages used by backend
       'abstract_submission': 'bg-blue-100 text-blue-800',
-      'registration': 'bg-green-100 text-green-800'
+      'registration': 'bg-green-100 text-green-800',
+      // Virtual stage for UI only – mapped to abstract_submission + followUpNumber=1
+      'initial': 'bg-purple-100 text-purple-800'
     };
     return `status-badge ${stageClasses[stage] || 'bg-gray-100 text-gray-800'}`;
   };
 
   const getStageName = (stage) => {
     const stageNames = {
+      // Internal stages
       'abstract_submission': 'Abstract Submission',
-      'registration': 'Registration'
+      'registration': 'Registration',
+      // Virtual stage for first email in the sequence
+      'initial': 'Initial Email'
     };
     return stageNames[stage] || stage;
   };
@@ -429,6 +435,15 @@ const Templates = () => {
     if (!template) return;
     setActiveDraftId(null);
     setActiveTab('templates');
+    // Map backend template to UI form.
+    // For "Initial" emails we keep backend stage as abstract_submission but
+    // show a virtual "initial" stage in the dropdown for clarity.
+    const isInitial =
+      template.stage === 'abstract_submission' &&
+      (template.followUpNumber === 0 || template.followUpNumber === 1);
+
+    const uiStage = isInitial ? 'initial' : template.stage;
+
     setSelectedTemplate(template);
     setShowEditModal(true);
   };
@@ -495,7 +510,8 @@ const Templates = () => {
 
   const buildDraftPayload = () => ({
     name: formData.name || '',
-    stage: formData.stage || null,
+    // Map virtual "initial" stage to backend "abstract_submission"
+    stage: formData.stage === 'initial' ? 'abstract_submission' : (formData.stage || null),
     subject: formData.subject || '',
     bodyHtml: formData.bodyHtml || '',
     bodyText: stripHtml(formData.bodyHtml || ''),
@@ -533,9 +549,13 @@ const Templates = () => {
   const handleEditDraft = (draft) => {
     if (!draft) return;
     setActiveDraftId(draft.id);
+    const isInitial =
+      draft.stage === 'abstract_submission' &&
+      (draft.followUpNumber === 0 || draft.followUpNumber === 1);
+    const uiStage = isInitial ? 'initial' : (draft.stage || '');
     setFormData({
       name: draft.name || '',
-      stage: draft.stage || '',
+      stage: uiStage,
       subject: draft.subject || '',
       bodyHtml: draft.bodyHtml || '',
       bodyText: draft.bodyText || '',
@@ -625,6 +645,9 @@ const Templates = () => {
     }
     const templateData = {
       ...formData,
+      // Map virtual "initial" stage to backend stage + ensure followUpNumber = 1
+      stage: formData.stage === 'initial' ? 'abstract_submission' : formData.stage,
+      followUpNumber: formData.stage === 'initial' ? 1 : (formData.followUpNumber || 1),
       bodyText: bodyTextValue,
       attachments: attachments.map(att => ({
         id: att.id,
@@ -1072,6 +1095,7 @@ const Templates = () => {
                               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
                             >
                               <option value="">Select Stage</option>
+                              <option value="initial">Initial Email</option>
                               <option value="abstract_submission">Abstract Submission</option>
                               <option value="registration">Registration</option>
                             </select>
@@ -1558,6 +1582,7 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
             className="input-field"
           >
             <option value="">Select Stage</option>
+            <option value="initial">Initial Email</option>
             <option value="abstract_submission">Abstract Submission</option>
             <option value="registration">Registration</option>
           </select>
