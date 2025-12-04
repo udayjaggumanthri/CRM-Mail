@@ -34,11 +34,6 @@ const Layout = () => {
     navigation.splice(3, 0, { name: 'Users', href: '/users', icon: Users });
   }
 
-  // CEO-only communications hub
-  if (user?.role === 'CEO') {
-    navigation.splice(4, 0, { name: 'Global Communications', href: '/communications', icon: Mail });
-  }
-
   if (user?.role === 'CEO' || user?.role === 'TeamLead') {
     navigation.push({ name: 'Settings', href: '/settings', icon: Settings });
   }

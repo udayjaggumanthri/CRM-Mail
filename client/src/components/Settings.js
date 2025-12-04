@@ -46,8 +46,6 @@ const mapAccountToFormData = (account = {}, defaultOwnerId = '') => ({
   username: account.username || account.smtpUsername || '',
   password: account.password || account.smtpPassword || '',
   fromEmail: account.fromEmail || account.email || '',
-  isSystemAccount: Boolean(account.isSystemAccount),
-  allowUsers: account.allowUsers !== undefined ? Boolean(account.allowUsers) : true,
   ownerId: account.ownerId || account.createdBy || defaultOwnerId || '',
   type: account.type || 'both',
   imapHost: account.imapHost || '',
@@ -58,7 +56,7 @@ const mapAccountToFormData = (account = {}, defaultOwnerId = '') => ({
   imapFolder: account.imapFolder || 'INBOX'
 });
 
-const mapFormDataToPayload = (formData, { canManageSystemAccount = false, defaultOwnerId = null } = {}) => {
+const mapFormDataToPayload = (formData, { defaultOwnerId = null } = {}) => {
   const port = Number(formData.port) || 587;
   const imapPort = Number(formData.imapPort) || 993;
   const smtpSecure = boolFromSecurityOption(formData.security);
@@ -78,8 +76,6 @@ const mapFormDataToPayload = (formData, { canManageSystemAccount = false, defaul
     smtpAuth: true,
     username: formData.username,
     smtpUsername: formData.username,
-    isSystemAccount: canManageSystemAccount ? Boolean(formData.isSystemAccount) : false,
-    allowUsers: Boolean(formData.allowUsers),
     ownerId: formData.ownerId || defaultOwnerId || null,
     imapHost: formData.imapHost,
     imapPort,
@@ -143,17 +139,98 @@ const Settings = () => {
     }
   );
 
+  const [syncProgress, setSyncProgress] = useState(null);
+  const [progressPolling, setProgressPolling] = useState(null);
+
   const addSmtpMutation = useMutation(async (smtpData) => {
     const response = await axios.post('/api/smtp-accounts', smtpData);
     return response.data;
   }, {
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries('smtp-accounts');
       setShowAddSmtpModal(false);
-      toast.success('SMTP account added successfully');
+      
+      // If account has IMAP and is syncing, show progress
+      if (data.data?.syncProgress && (data.data.syncProgress.status === 'syncing' || data.data.syncProgress.status === 'idle')) {
+        setSyncProgress({
+          accountId: data.data.id,
+          accountName: data.data.name,
+          ...data.data.syncProgress
+        });
+        
+        // Start polling for progress updates
+        const pollInterval = setInterval(async () => {
+          try {
+            const progressResponse = await axios.get(`/api/smtp-accounts/${data.data.id}/sync-progress`);
+            const account = progressResponse.data;
+            
+            // Update progress if available
+            if (account.progress) {
+              setSyncProgress({
+                accountId: data.data.id,
+                accountName: data.data.name,
+                ...account.progress
+              });
+            }
+            
+            // Check if sync is complete (use 'active' instead of 'connected' - enum only allows: active, paused, error, disconnected)
+            if (account.syncStatus === 'active' || account.syncStatus === 'error') {
+              // Only stop polling if progress shows completed/error, not just because status is active
+              if (account.progress && (account.progress.status === 'completed' || account.progress.status === 'error')) {
+              clearInterval(pollInterval);
+              setProgressPolling(null);
+              
+              // Show final progress state
+              if (account.progress) {
+                setSyncProgress({
+                  accountId: data.data.id,
+                  accountName: data.data.name,
+                  ...account.progress
+                });
+                
+                // Clear after 5 seconds
+                setTimeout(() => {
+                  setSyncProgress(null);
+                }, 5000);
+              } else {
+                setSyncProgress(null);
+              }
+              
+                if (account.syncStatus === 'active' && account.progress?.status === 'completed') {
+                  toast.success(`Account "${data.data.name}" activated and synced successfully`);
+                } else if (account.syncStatus === 'error' || account.progress?.status === 'error') {
+                  toast.error(`Account "${data.data.name}" sync failed: ${account.errorMessage || account.progress?.message || 'Unknown error'}`);
+                }
+                
+                queryClient.invalidateQueries('smtp-accounts');
+              }
+            }
+          } catch (error) {
+            console.error('Error polling sync progress:', error);
+          }
+        }, 2000); // Poll every 2 seconds
+        
+        setProgressPolling(pollInterval);
+        
+        // Clear polling after 5 minutes max
+        setTimeout(() => {
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            setProgressPolling(null);
+            setSyncProgress(null);
+          }
+        }, 300000);
+      } else {
+        toast.success('SMTP account added and activated successfully');
+      }
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to add SMTP account');
+      if (progressPolling) {
+        clearInterval(progressPolling);
+        setProgressPolling(null);
+      }
+      setSyncProgress(null);
     }
   });
 
@@ -263,8 +340,8 @@ const Settings = () => {
     if (groupedSmtpAccounts.shared.length > 0) {
       sections.push({
         key: 'shared',
-        label: 'Shared (System Accounts)',
-        description: 'Visible to everyone',
+        label: 'Organization Accounts',
+        description: 'Configured by CEOs and available to conferences they’re mapped to',
         accounts: groupedSmtpAccounts.shared
       });
     }
@@ -324,15 +401,97 @@ const Settings = () => {
     toggleActiveMutation.mutate({ id: account.id, isActive: !account.isActive });
   };
 
+  // Cleanup polling on unmount
+  React.useEffect(() => {
+    return () => {
+      if (progressPolling) {
+        clearInterval(progressPolling);
+      }
+    };
+  }, [progressPolling]);
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="text-gray-600">Manage system configuration and user accounts</p>
+        <p className="text-gray-600">Manage SMTP accounts, inbound email sync, and security for your organization.</p>
       </div>
       <div className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3">
-        Private accounts are only visible to you (and CEOs). System accounts are shared with the entire organization.
+        SMTP accounts are owned by individual users and are automatically synced. CEOs can see and manage all accounts, while TeamLeads and Members only see and use accounts that are mapped to conferences assigned to them.
       </div>
+
+      {/* Sync Progress Banner */}
+      {syncProgress && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-start space-x-3">
+            <div className="flex-shrink-0">
+              {syncProgress.status === 'syncing' ? (
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+              ) : syncProgress.status === 'completed' ? (
+                <CheckCircle2 className="h-5 w-5 text-green-600" />
+              ) : (
+                <AlertCircle className="h-5 w-5 text-red-600" />
+              )}
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">
+                    {syncProgress.status === 'syncing' ? 'Activating & Syncing Account' : 
+                     syncProgress.status === 'completed' ? 'Account Activated & Synced' : 
+                     'Sync Error'}
+                  </p>
+                  <p className="text-sm text-gray-600 mt-1">
+                    {syncProgress.accountName}
+                  </p>
+                  {syncProgress.status === 'syncing' && (
+                    <div className="mt-2">
+                      <p className="text-xs text-gray-600">{syncProgress.message}</p>
+                      {syncProgress.totalEmails > 0 && (
+                        <div className="mt-2">
+                          <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
+                            <span>Syncing emails...</span>
+                            <span>{syncProgress.emailsSynced} / {syncProgress.totalEmails}</span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2">
+                            <div 
+                              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${(syncProgress.emailsSynced / syncProgress.totalEmails) * 100}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {syncProgress.status === 'completed' && (
+                    <p className="text-xs text-green-600 mt-1">{syncProgress.message}</p>
+                  )}
+                  {syncProgress.status === 'error' && (
+                    <p className="text-xs text-red-600 mt-1">{syncProgress.message}</p>
+                  )}
+                </div>
+                {syncProgress.status === 'completed' || syncProgress.status === 'error' ? (
+                  <button
+                    onClick={() => {
+                      setSyncProgress(null);
+                      if (progressPolling) {
+                        clearInterval(progressPolling);
+                        setProgressPolling(null);
+                      }
+                    }}
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <span className="sr-only">Close</span>
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="border-b border-gray-200">
@@ -871,7 +1030,7 @@ const SmtpForm = ({ onSubmit, onCancel, loading, initialData, canManageSystemAcc
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSubmit(mapFormDataToPayload(formData, { canManageSystemAccount, defaultOwnerId }));
+    onSubmit(mapFormDataToPayload(formData, { defaultOwnerId }));
   };
 
   const handleChange = (e) => {
@@ -999,36 +1158,6 @@ const SmtpForm = ({ onSubmit, onCancel, loading, initialData, canManageSystemAcc
         />
       </div>
       <input type="hidden" name="ownerId" value={formData.ownerId || defaultOwnerId} />
-      
-      <div className="space-y-3">
-        {canManageSystemAccount && (
-          <div className="flex items-center">
-            <input
-              type="checkbox"
-              name="isSystemAccount"
-              checked={Boolean(formData.isSystemAccount)}
-              onChange={handleChange}
-              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-            />
-            <label className="ml-2 block text-sm text-gray-900">
-              System Account (shared with everyone)
-            </label>
-          </div>
-        )}
-        
-        <div className="flex items-center">
-          <input
-            type="checkbox"
-            name="allowUsers"
-            checked={Boolean(formData.allowUsers)}
-            onChange={handleChange}
-            className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-          />
-          <label className="ml-2 block text-sm text-gray-900">
-            Allow users to use this account
-          </label>
-        </div>
-      </div>
 
       {/* IMAP Settings */}
       <div className="mt-6">

@@ -641,7 +641,9 @@ const { router: analyticsRoutes } = require('./routes/analyticsRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const taskRoutes = require('./routes/taskRoutes');
 const searchRoutes = require('./routes/searchRoutes');
-app.use('/api/emails', emailRoutes);
+
+// Protect email routes with authentication so req.user is available
+app.use('/api/emails', authenticateToken, emailRoutes);
 app.use('/api/email-accounts', emailAccountRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/users', userRoutes);

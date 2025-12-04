@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client, EmailTemplate, Conference } = require('../models');
+const { Email, EmailAccount, EmailFolder, EmailThread, EmailLog, Client, EmailTemplate, Conference, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
@@ -117,6 +117,63 @@ const resolveImapFolderName = (folderName, account) => {
   };
 
   return folderMap[folderName?.toLowerCase()] || folderName;
+};
+
+// Get SMTP account IDs from user's assigned conferences
+const getConferenceSmtpAccountIds = async (req) => {
+  const normalizeRole = (role) => (role || '').toString().toLowerCase();
+  const isCeo = normalizeRole(req.user?.role) === 'ceo';
+  
+  if (isCeo) {
+    return null; // CEO can see all emails
+  }
+
+  const userId = req.user?.id;
+  if (!userId) {
+    return [];
+  }
+
+  try {
+    let whereClause = {};
+    const role = normalizeRole(req.user?.role);
+
+    if (role === 'teamlead') {
+      whereClause.assignedTeamLeadId = userId;
+    } else if (role === 'member') {
+      // Member sees only conferences where they are in assignedMemberIds array
+      whereClause = sequelize.where(
+        sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+        '@>',
+        sequelize.cast(`["${userId}"]`, 'jsonb')
+      );
+    } else {
+      // Unknown role - no conferences
+      return [];
+    }
+
+    const conferences = await Conference.findAll({
+      where: whereClause,
+      attributes: ['id', 'settings']
+    });
+
+    const smtpIds = new Set();
+    conferences.forEach(conference => {
+      try {
+        const settings = conference.settings || {};
+        const smtpId = settings.smtp_default_id;
+        if (smtpId && (typeof smtpId === 'string' || typeof smtpId === 'number')) {
+          smtpIds.add(String(smtpId));
+        }
+      } catch (error) {
+        console.error('Error extracting SMTP ID from conference:', error);
+      }
+    });
+
+    return Array.from(smtpIds);
+  } catch (error) {
+    console.error('Error fetching conference SMTP account IDs:', error);
+    return [];
+  }
 };
 
 // Helper function to sync email operations with IMAP server
@@ -570,9 +627,67 @@ router.get('/', async (req, res) => {
     // Build whereClause: combine folder condition with other filters using AND
     const conditions = [folderCondition];
 
-    // Add account filter
-    if (accountId) {
-      conditions.push({ emailAccountId: accountId });
+    // For non-CEO users, filter by conference-assigned SMTP accounts
+    const conferenceSmtpIds = await getConferenceSmtpAccountIds(req);
+    
+    console.log(`📧 Email Query - User: ${req.user?.email} (${req.user?.role}), accountId: ${accountId}, conferenceSmtpIds:`, conferenceSmtpIds);
+    
+    // CEO sees all emails
+    if (conferenceSmtpIds === null) {
+      // CEO user - no filtering by conference SMTP accounts
+      console.log(`👑 CEO user - showing all emails`);
+      if (accountId && accountId !== 'all') {
+        conditions.push({ emailAccountId: accountId });
+        console.log(`📧 Filtering by accountId: ${accountId}`);
+      } else {
+        console.log(`📧 No accountId filter - showing all emails`);
+      }
+    } else {
+      // Non-CEO user - filter by conference-assigned SMTP accounts
+      console.log(`🔒 Non-CEO user - filtering by conference SMTP accounts:`, conferenceSmtpIds);
+      if (conferenceSmtpIds.length === 0) {
+        // User has no assigned conferences or no SMTP mappings - return empty result
+        console.log(`⚠️ No assigned conferences or SMTP mappings - returning empty result`);
+        return res.json({
+          emails: [],
+          pagination: {
+            total: 0,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: 0,
+            hasMore: false
+          }
+        });
+      }
+      
+      // User has assigned conferences with SMTP mappings
+      if (accountId && accountId !== 'all') {
+        // If specific account requested, verify it's in allowed list
+        if (!conferenceSmtpIds.includes(String(accountId))) {
+          // Requested account is not in allowed list - return empty result
+          console.log(`⚠️ Requested account ${accountId} not in allowed list - returning empty result`);
+          return res.json({
+            emails: [],
+            pagination: {
+              total: 0,
+              page: parseInt(page),
+              limit: parseInt(limit),
+              pages: 0,
+              hasMore: false
+            }
+          });
+        }
+        conditions.push({ emailAccountId: accountId });
+        console.log(`📧 Filtering by accountId: ${accountId}`);
+      } else {
+        // No specific account requested - filter to only allowed accounts
+        conditions.push({
+          emailAccountId: {
+            [Op.in]: conferenceSmtpIds
+          }
+        });
+        console.log(`📧 Filtering by conference SMTP account IDs:`, conferenceSmtpIds);
+      }
     }
 
     // Add email address filters (only if valid)
@@ -652,10 +767,23 @@ router.get('/', async (req, res) => {
     }
 
     // Combine all conditions with AND
-    if (conditions.length === 1) {
-      Object.assign(whereClause, conditions[0]);
-    } else {
-      whereClause[Op.and] = conditions;
+    // Flatten conditions to avoid nested Op.and
+    const flattenedConditions = [];
+    conditions.forEach(condition => {
+      if (condition && typeof condition === 'object') {
+        // If condition already has Op.and, extract its conditions
+        if (condition[Op.and] && Array.isArray(condition[Op.and])) {
+          flattenedConditions.push(...condition[Op.and]);
+        } else {
+          flattenedConditions.push(condition);
+        }
+      }
+    });
+    
+    if (flattenedConditions.length === 1) {
+      Object.assign(whereClause, flattenedConditions[0]);
+    } else if (flattenedConditions.length > 1) {
+      whereClause[Op.and] = flattenedConditions;
     }
 
     // Build order clause
@@ -683,6 +811,8 @@ router.get('/', async (req, res) => {
     let count = 0;
     let emails = [];
     
+    console.log(`📧 Executing email query with whereClause:`, JSON.stringify(whereClause, null, 2));
+    
     try {
       const result = await Email.findAndCountAll({
         where: whereClause,
@@ -700,8 +830,9 @@ router.get('/', async (req, res) => {
       
       count = result.count || 0;
       emails = Array.isArray(result.rows) ? result.rows : [];
+      console.log(`✅ Email query executed successfully - Found ${count} emails, returning ${emails.length} emails`);
     } catch (queryError) {
-      console.error('Error executing email query:', queryError);
+      console.error('❌ Error executing email query:', queryError);
       // Return empty result instead of error
       count = 0;
       emails = [];

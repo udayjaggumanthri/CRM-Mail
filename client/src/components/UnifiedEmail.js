@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -41,17 +41,48 @@ import { Fragment } from 'react';
 const Font = Quill.import('formats/font');
 Font.whitelist = [
   'arial',
-  'timesnewroman',
-  'helvetica',
-  'georgia',
-  'verdana',
-  'trebuchetms',
-  'tahoma',
+  'calistomt',
+  'cambria',
   'couriernew',
+  'georgia',
+  'helvetica',
   'lucidasansunicode',
-  'palatinolinotype'
+  'palatinolinotype',
+  'tahoma',
+  'timesnewroman',
+  'trebuchetms',
+  'verdana'
 ];
 Quill.register(Font, true);
+
+// Register numeric font sizes using style attributor (pixel values)
+const SizeStyle = Quill.import('attributors/style/size');
+SizeStyle.whitelist = ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px'];
+Quill.register(SizeStyle, true);
+
+// Register a custom Blot to preserve HTML content in contenteditable="false" divs
+const BlockEmbed = Quill.import('blots/block/embed');
+class PreservedHtmlBlot extends BlockEmbed {
+  static create(value) {
+    const node = super.create();
+    node.setAttribute('contenteditable', 'false');
+    node.setAttribute('data-quill-preserve', 'true');
+    node.className = 'preserved-email-content';
+    node.style.cssText = 'border-left: 3px solid #ccc; margin: 10px 0; padding: 10px 0 10px 15px; background-color: #f9f9f9; overflow-x: auto; width: 100%; box-sizing: border-box; display: block;';
+    if (typeof value === 'string') {
+      node.innerHTML = value;
+    }
+    return node;
+  }
+  
+  static value(node) {
+    return node.innerHTML;
+  }
+}
+PreservedHtmlBlot.blotName = 'preserved-html';
+PreservedHtmlBlot.tagName = 'div';
+PreservedHtmlBlot.className = 'preserved-email-content';
+Quill.register(PreservedHtmlBlot);
 
 const UnifiedEmail = () => {
   const { user } = useAuth();
@@ -94,13 +125,34 @@ const UnifiedEmail = () => {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestionInput, setSuggestionInput] = useState('');
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
-  const [isComposeMinimized, setIsComposeMinimized] = useState(false);
+  const [isComposeMaximized, setIsComposeMaximized] = useState(false);
   const [showCC, setShowCC] = useState(false);
   const [showBCC, setShowBCC] = useState(false);
   const [attachmentFiles, setAttachmentFiles] = useState([]);
   const [showDraftConfirm, setShowDraftConfirm] = useState(false);
   const [pendingCloseAction, setPendingCloseAction] = useState(null); // 'close' or 'discard'
   const [isSending, setIsSending] = useState(false); // Track sending state to prevent multiple clicks
+  const quillEditorRef = useRef(null); // Ref for ReactQuill editor to set HTML content properly
+  const [pendingReplyHtml, setPendingReplyHtml] = useState(null); // Store HTML to set after editor mounts
+
+  // Prevent background scroll when compose window is open (like Gmail)
+  useEffect(() => {
+    if (showCompose) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.dataset.prevOverflow = originalOverflow;
+      document.body.style.overflow = 'hidden';
+    } else if (document.body.dataset.prevOverflow !== undefined) {
+      document.body.style.overflow = document.body.dataset.prevOverflow;
+      delete document.body.dataset.prevOverflow;
+    }
+
+    return () => {
+      if (document.body.dataset.prevOverflow !== undefined) {
+        document.body.style.overflow = document.body.dataset.prevOverflow;
+        delete document.body.dataset.prevOverflow;
+      }
+    };
+  }, [showCompose]);
 
   const { data: emailsData, isLoading, refetch } = useQuery(
     ['emails', activeFolder, searchTerm, currentPage, filters, activeEmailAccountId], 
@@ -175,6 +227,22 @@ const UnifiedEmail = () => {
     return response.data;
   });
 
+  // Fetch conferences to determine which SMTP accounts user can access
+  const { data: assignedConferences = [] } = useQuery('conferences', async () => {
+    try {
+      const response = await axios.get('/api/conferences');
+      return response.data || [];
+    } catch (error) {
+      console.error('Error fetching conferences:', error);
+      return [];
+    }
+  }, {
+    retry: 1,
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
   const { data: emailAccounts = [], isLoading: emailAccountsLoading } = useQuery('email-accounts', async () => {
     const response = await axios.get('/api/email-accounts');
     return response.data;
@@ -192,6 +260,32 @@ const UnifiedEmail = () => {
     });
   }, [emailAccounts]);
 
+  // Extract SMTP account IDs from assigned conferences
+  const allowedSmtpAccountIds = React.useMemo(() => {
+    if (isCeo) {
+      // CEO can see all accounts
+      return null; // null means no filtering
+    }
+
+    const smtpIds = new Set();
+    const conferencesArray = Array.isArray(assignedConferences) ? assignedConferences : [];
+    
+    conferencesArray.forEach(conference => {
+      try {
+        // Extract smtp_default_id from conference settings
+        const settings = conference.settings || {};
+        const smtpId = settings.smtp_default_id;
+        if (smtpId && (typeof smtpId === 'string' || typeof smtpId === 'number')) {
+          smtpIds.add(String(smtpId));
+        }
+      } catch (error) {
+        console.error('Error extracting SMTP ID from conference:', error);
+      }
+    });
+
+    return smtpIds.size > 0 ? Array.from(smtpIds) : [];
+  }, [assignedConferences, isCeo]);
+
   const groupedEmailAccounts = React.useMemo(() => {
     const accountsArray = Array.isArray(sortedEmailAccounts) ? sortedEmailAccounts : [];
     const shared = accountsArray.filter(account => account.isSystemAccount);
@@ -201,12 +295,33 @@ const UnifiedEmail = () => {
   }, [sortedEmailAccounts, currentUserId]);
 
   const visibleEmailAccounts = React.useMemo(() => {
-    return [
+    // CEO sees all accounts
+    if (isCeo) {
+      return [
+        ...groupedEmailAccounts.shared,
+        ...groupedEmailAccounts.mine,
+        ...groupedEmailAccounts.others
+      ];
+    }
+
+    // Non-CEO users: Only show SMTP accounts mapped to their assigned conferences
+    if (allowedSmtpAccountIds === null || allowedSmtpAccountIds.length === 0) {
+      // No assigned conferences or no SMTP mappings - show nothing
+      return [];
+    }
+
+    // Filter accounts to only those mapped to assigned conferences
+    const allAccounts = [
       ...groupedEmailAccounts.shared,
       ...groupedEmailAccounts.mine,
       ...groupedEmailAccounts.others
     ];
-  }, [groupedEmailAccounts]);
+
+    return allAccounts.filter(account => {
+      const accountId = String(account.id);
+      return allowedSmtpAccountIds.includes(accountId);
+    });
+  }, [groupedEmailAccounts, isCeo, allowedSmtpAccountIds]);
 
   React.useEffect(() => {
     if (!visibleEmailAccounts.length) {
@@ -598,9 +713,50 @@ const UnifiedEmail = () => {
     setAttachmentFiles([]);
     setShowCC(false);
     setShowBCC(false);
-    setIsComposeMinimized(false);
+    setIsComposeMaximized(false);
     setEditingDraftId(null); // Clear draft editing state
+    setPendingReplyHtml(null); // Clear pending HTML
   };
+
+  // Effect to set HTML content when editor is ready
+  useEffect(() => {
+    if (pendingReplyHtml && quillEditorRef.current && showCompose) {
+      // Small delay to ensure editor is fully mounted
+      const timer = setTimeout(() => {
+        const quill = quillEditorRef.current?.getEditor();
+        if (quill && quill.clipboard) {
+          try {
+            // Use dangerouslyPasteHTML - this bypasses some processing
+            // The contenteditable="false" wrapper should help preserve inner structure
+            const range = quill.getSelection(true);
+            const index = range ? range.index : 0;
+            
+            quill.clipboard.dangerouslyPasteHTML(index, pendingReplyHtml, 'user');
+            
+            // Move cursor to end after insertion
+            setTimeout(() => {
+              try {
+                const length = quill.getLength();
+                if (length > 1) {
+                  quill.setSelection(length - 1, 'silent');
+                }
+              } catch (e) {
+                // Ignore selection errors
+              }
+            }, 100);
+            
+            setPendingReplyHtml(null);
+          } catch (error) {
+            console.error('Error setting HTML content:', error);
+            // Fallback: set via value prop
+            setComposeData(prev => ({ ...prev, body: pendingReplyHtml }));
+            setPendingReplyHtml(null);
+          }
+        }
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+  }, [pendingReplyHtml, showCompose]);
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -782,21 +938,41 @@ const UnifiedEmail = () => {
   // Quill editor modules configuration
   const quillModules = {
     toolbar: [
-      [{ 'header': [1, 2, 3, false] }],
-      [{ 'font': ['arial', 'timesnewroman', 'helvetica', 'georgia', 'verdana', 'trebuchetms', 'tahoma', 'couriernew', 'lucidasansunicode', 'palatinolinotype'] }],
+      [{ header: [1, 2, 3, false] }],
+      [{ font: ['arial', 'calistomt', 'cambria', 'couriernew', 'georgia', 'helvetica', 'lucidasansunicode', 'palatinolinotype', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana'] }],
+      [{ size: ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px', false] }],
       ['bold', 'italic', 'underline', 'strike'],
-      [{ 'color': [] }, { 'background': [] }],
-      [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-      [{ 'align': [] }],
+      [{ color: [] }, { background: [] }],
+      [{ list: 'ordered'}, { list: 'bullet' }],
+      [{ align: [] }],
       ['link', 'image'],
       ['clean']
     ],
+    clipboard: {
+      // Preserve HTML structure when pasting/loading
+      matchVisual: false
+    }
   };
 
   const quillFormats = [
-    'header', 'font', 'bold', 'italic', 'underline', 'strike',
-    'color', 'background', 'list', 'bullet', 'align',
-    'link', 'image'
+    'header',
+    'font',
+    'size',
+    'bold',
+    'italic',
+    'underline',
+    'strike',
+    'color',
+    'background',
+    'list',
+    'bullet',
+    'align',
+    'link',
+    'image',
+    'blockquote',
+    'code-block',
+    'indent',
+    'preserved-html' // Our custom Blot for preserving HTML structure
   ];
 
   const formatDate = (dateString) => {
@@ -862,7 +1038,7 @@ const UnifiedEmail = () => {
       setSelectedEmailAccountId(visibleEmailAccounts[0].id);
     }
     setShowCompose(true);
-    setIsComposeMinimized(false);
+    setIsComposeMaximized(false);
   };
 
   const startNewCompose = () => {
@@ -874,29 +1050,91 @@ const UnifiedEmail = () => {
 
   const pagination = emailsData?.pagination || { total: 0, page: 1, pages: 0, hasMore: false };
 
+  // Helper: convert plain text to basic HTML while preserving line breaks/spaces
+  const convertTextToHtml = (text = '') => {
+    if (!text) return '';
+    // Escape basic HTML characters
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped
+      .split('\n')
+      .map(line => (line.trim().length === 0 ? '&nbsp;' : line))
+      .join('<br />');
+  };
+
   const handleReply = () => {
     if (!selectedEmail) return;
+
+    // Prefer the exact HTML we received so layout is preserved.
+    let originalHtml = selectedEmail.bodyHtml;
+
+    // If we don't have HTML, fall back to converting text into basic HTML with line breaks.
+    if (!originalHtml) {
+      if (selectedEmail.body && selectedEmail.body.includes('<')) {
+        originalHtml = selectedEmail.body;
+      } else {
+        originalHtml = convertTextToHtml(selectedEmail.bodyText || selectedEmail.body || '');
+      }
+    }
+
+    // Wrap the original email in a div with contentEditable="false" to preserve structure
+    // The custom PreservedHtmlBlot will handle this, but we still wrap for CSS styling
+    const wrappedOriginalHtml = originalHtml 
+      ? `<div class="preserved-email-content" data-quill-preserve="true" contenteditable="false" style="border-left: 3px solid #ccc; margin: 10px 0; padding: 10px 0 10px 15px; background-color: #f9f9f9; overflow-x: auto; width: 100%; box-sizing: border-box; display: block;">${originalHtml}</div>`
+      : '';
+
+    // Add a separator and the wrapped original email
+    const fullHtml = `<p><br></p>${wrappedOriginalHtml}`;
+
     setComposeData({
       to: selectedEmail.from || '',
       cc: '',
       bcc: '',
       subject: selectedEmail.subject?.startsWith('Re:') ? selectedEmail.subject : `Re: ${selectedEmail.subject || ''}`,
-      body: `\n\n--- Original Message ---\nFrom: ${selectedEmail.from}\nTo: ${selectedEmail.to}\nDate: ${selectedEmail.date ? new Date(selectedEmail.date).toLocaleString() : ''}\nSubject: ${selectedEmail.subject || ''}\n\n${selectedEmail.bodyText || selectedEmail.body || ''}`,
+      body: '', // Set empty initially
       attachments: []
     });
+    
+    // Store HTML to set after editor mounts using dangerouslyPasteHTML
+    setPendingReplyHtml(fullHtml);
     openComposeWindow(selectedEmail.emailAccountId || activeEmailAccountId);
   };
 
   const handleForward = () => {
     if (!selectedEmail) return;
+
+    let originalHtml = selectedEmail.bodyHtml;
+
+    if (!originalHtml) {
+      if (selectedEmail.body && selectedEmail.body.includes('<')) {
+        originalHtml = selectedEmail.body;
+      } else {
+        originalHtml = convertTextToHtml(selectedEmail.bodyText || selectedEmail.body || '');
+      }
+    }
+
+    // Wrap the original email in a div with contentEditable="false" to preserve structure
+    // The custom PreservedHtmlBlot will handle this, but we still wrap for CSS styling
+    const wrappedOriginalHtml = originalHtml 
+      ? `<div class="preserved-email-content" data-quill-preserve="true" contenteditable="false" style="border-left: 3px solid #ccc; margin: 10px 0; padding: 10px 0 10px 15px; background-color: #f9f9f9; overflow-x: auto; width: 100%; box-sizing: border-box; display: block;">${originalHtml}</div>`
+      : '';
+
+    // Add a separator and the wrapped original email
+    const fullHtml = `<p><br></p>${wrappedOriginalHtml}`;
+
     setComposeData({
       to: '',
       cc: '',
       bcc: '',
       subject: selectedEmail.subject?.startsWith('Fwd:') ? selectedEmail.subject : `Fwd: ${selectedEmail.subject || ''}`,
-      body: `\n\n--- Forwarded Message ---\nFrom: ${selectedEmail.from}\nTo: ${selectedEmail.to}\nDate: ${selectedEmail.date ? new Date(selectedEmail.date).toLocaleString() : ''}\nSubject: ${selectedEmail.subject || ''}\n\n${selectedEmail.bodyText || selectedEmail.body || ''}`,
+      body: '', // Set empty initially
       attachments: []
     });
+    
+    // Store HTML to set after editor mounts using dangerouslyPasteHTML
+    setPendingReplyHtml(fullHtml);
     openComposeWindow(selectedEmail.emailAccountId || activeEmailAccountId);
   };
 
@@ -1502,7 +1740,13 @@ const UnifiedEmail = () => {
 
       {/* Gmail-style Compose Window */}
       {showCompose && (
-        <div className={`fixed ${isComposeMinimized ? 'bottom-4 right-4 w-96 h-auto' : 'bottom-4 right-4 w-[600px] h-[600px]'} z-50 bg-white shadow-2xl rounded-lg border border-gray-300 flex flex-col transition-all duration-300`}>
+        <div
+          className={`fixed ${
+            isComposeMaximized
+              ? 'top-20 left-[280px] right-8 bottom-8'
+              : 'bottom-4 right-4 w-[600px] h-[600px] max-h-[calc(100vh-2rem)]'
+          } z-50 bg-white shadow-2xl rounded-lg border border-gray-300 flex flex-col transition-all duration-300`}
+        >
           {/* Header */}
           <div className="bg-gray-50 px-4 py-3 flex items-center justify-between border-b border-gray-200 rounded-t-lg">
             <div className="flex items-center space-x-2">
@@ -1517,11 +1761,11 @@ const UnifiedEmail = () => {
             </div>
             <div className="flex items-center space-x-1">
               <button
-                onClick={() => setIsComposeMinimized(!isComposeMinimized)}
+                onClick={() => setIsComposeMaximized(!isComposeMaximized)}
                 className="p-1.5 hover:bg-gray-200 rounded transition-colors"
-                title={isComposeMinimized ? 'Maximize' : 'Minimize'}
+                title={isComposeMaximized ? 'Restore' : 'Maximize'}
               >
-                {isComposeMinimized ? <Maximize2 className="h-4 w-4 text-gray-600" /> : <Minimize2 className="h-4 w-4 text-gray-600" />}
+                {isComposeMaximized ? <Minimize2 className="h-4 w-4 text-gray-600" /> : <Maximize2 className="h-4 w-4 text-gray-600" />}
               </button>
                     <button
                 onClick={() => handleCloseCompose('close')}
@@ -1533,9 +1777,7 @@ const UnifiedEmail = () => {
             </div>
                   </div>
 
-          {!isComposeMinimized && (
-            <>
-              {/* To, CC, BCC Fields */}
+          {/* To, CC, BCC Fields */}
               <div className="px-4 py-2 border-b border-gray-200 space-y-2 flex-shrink-0">
                 <div className="flex items-center">
                   <span className="text-xs text-gray-500 w-12 flex-shrink-0">From</span>
@@ -1688,18 +1930,25 @@ const UnifiedEmail = () => {
                     </div>
 
               {/* Rich Text Editor */}
-              <div className="flex-1 flex-shrink-0 overflow-hidden" style={{ minHeight: '300px', maxHeight: '500px', display: 'flex', flexDirection: 'column' }}>
+              <div className="flex-1 flex-shrink-0 overflow-hidden flex flex-col min-h-[300px]">
                 <ReactQuill
+                  ref={quillEditorRef}
                   theme="snow"
                       value={composeData.body}
                   onChange={(value) => setComposeData({ ...composeData, body: value })}
                   modules={quillModules}
                   formats={quillFormats}
                   placeholder="Compose your message..."
-                  style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
+                  style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}
                   className="compose-editor"
                 />
                 <style>{`
+                  .compose-editor {
+                    display: flex;
+                    flex-direction: column;
+                    height: 100%;
+                    flex: 1;
+                  }
                   .compose-editor .ql-container {
                     flex: 1;
                     display: flex;
@@ -1707,33 +1956,184 @@ const UnifiedEmail = () => {
                     overflow-y: auto;
                     font-size: 14px;
                     min-height: 0;
+                    height: 100%;
+                    border: none;
                   }
                   .compose-editor .ql-editor {
                     flex: 1;
-                    min-height: 250px;
-                    padding: 12px;
+                    min-height: 200px;
+                    padding: 16px;
                     text-align: left;
-                    line-height: 1.6;
+                    line-height: 1.8;
                     word-wrap: break-word;
                     overflow-wrap: break-word;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                    font-size: 14px;
+                    color: #1f2937;
+                  }
+                  .compose-editor .ql-editor p {
+                    margin: 0 0 12px 0;
+                    line-height: 1.8;
+                  }
+                  .compose-editor .ql-editor p:last-child {
+                    margin-bottom: 0;
+                  }
+                  .compose-editor .ql-editor h1,
+                  .compose-editor .ql-editor h2,
+                  .compose-editor .ql-editor h3 {
+                    margin: 16px 0 12px 0;
+                    line-height: 1.4;
+                    font-weight: 600;
+                  }
+                  .compose-editor .ql-editor ul,
+                  .compose-editor .ql-editor ol {
+                    margin: 12px 0;
+                    padding-left: 24px;
+                  }
+                  .compose-editor .ql-editor li {
+                    margin: 4px 0;
+                    line-height: 1.8;
+                  }
+                  .compose-editor .ql-editor blockquote {
+                    margin: 16px 0;
+                    padding-left: 16px;
+                    border-left: 4px solid #e5e7eb;
+                    color: #6b7280;
+                  }
+                  .compose-editor .ql-editor table {
+                    border-collapse: collapse;
+                    width: 100%;
+                    margin: 16px 0;
+                  }
+                  .compose-editor .ql-editor table td,
+                  .compose-editor .ql-editor table th {
+                    border: 1px solid #e5e7eb;
+                    padding: 8px 12px;
+                    text-align: left;
+                  }
+                  .compose-editor .ql-editor table th {
+                    background-color: #f9fafb;
+                    font-weight: 600;
+                  }
+                  .compose-editor .ql-editor img {
+                    max-width: 100%;
+                    height: auto;
+                    margin: 12px 0;
+                  }
+                  .compose-editor .ql-editor a {
+                    color: #2563eb;
+                    text-decoration: underline;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] {
+                    pointer-events: none;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] * {
+                    pointer-events: none;
+                    max-width: 100%;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"],
+                  .compose-editor .ql-editor div.preserved-email-content,
+                  .compose-editor .ql-editor div[data-quill-preserve="true"] {
+                    /* Preserve structure while maintaining wrapper styles */
+                    display: block !important;
+                    border-left: 3px solid #ccc !important;
+                    margin: 10px 0 !important;
+                    padding: 10px 0 10px 15px !important;
+                    background-color: #f9f9f9 !important;
+                    overflow-x: auto !important;
+                    width: 100% !important;
+                    box-sizing: border-box !important;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] * {
+                    /* Preserve all child element styles */
+                    box-sizing: border-box !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] table {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    border-collapse: collapse !important;
+                    margin: 12px 0 !important;
+                    table-layout: auto !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] table td,
+                  .compose-editor .ql-editor div[contenteditable="false"] table th {
+                    border: 1px solid #d1d5db !important;
+                    padding: 8px 12px !important;
+                    vertical-align: top !important;
+                    text-align: left !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] img {
+                    max-width: 100% !important;
+                    height: auto !important;
+                    display: block !important;
+                    margin: 8px 0 !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] p {
+                    margin: 8px 0 !important;
+                    line-height: 1.6 !important;
+                    display: block !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] div {
+                    /* Don't reset margin/padding for nested divs - preserve original structure */
+                    display: block !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] span {
+                    display: inline !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] a {
+                    color: #2563eb !important;
+                    text-decoration: underline !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] ul,
+                  .compose-editor .ql-editor div[contenteditable="false"] ol {
+                    margin: 12px 0 !important;
+                    padding-left: 24px !important;
+                    display: block !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] li {
+                    margin: 4px 0 !important;
+                    display: list-item !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] h1,
+                  .compose-editor .ql-editor div[contenteditable="false"] h2,
+                  .compose-editor .ql-editor div[contenteditable="false"] h3,
+                  .compose-editor .ql-editor div[contenteditable="false"] h4,
+                  .compose-editor .ql-editor div[contenteditable="false"] h5,
+                  .compose-editor .ql-editor div[contenteditable="false"] h6 {
+                    margin: 16px 0 12px 0 !important;
+                    font-weight: 600 !important;
+                    display: block !important;
+                  }
+                  .compose-editor .ql-editor div[contenteditable="false"] blockquote {
+                    margin: 16px 0 !important;
+                    padding-left: 16px !important;
+                    border-left: 4px solid #e5e7eb !important;
+                    display: block !important;
                   }
                   .compose-editor .ql-editor.ql-blank::before {
-                    left: 12px;
-                    right: 12px;
+                    left: 16px;
+                    right: 16px;
                     text-align: left;
                     font-style: normal;
                     color: #9ca3af;
+                    font-size: 14px;
                   }
                   .compose-editor .ql-toolbar {
                     border-top: 1px solid #e5e7eb;
                     border-left: none;
                     border-right: none;
-                    border-bottom: none;
-                    padding: 8px;
+                    border-bottom: 1px solid #e5e7eb;
+                    padding: 12px;
                     flex-shrink: 0;
+                    background-color: #f9fafb;
                   }
                   .compose-editor .ql-toolbar .ql-formats {
-                    margin-right: 8px;
+                    margin-right: 12px;
                   }
                   /* Keep font picker compact and avoid overflow */
                   .compose-editor .ql-toolbar .ql-picker.ql-font {
@@ -1753,6 +2153,9 @@ const UnifiedEmail = () => {
                   }
                   .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-options {
                     min-width: 180px;
+                    max-height: 300px;
+                    overflow-y: auto;
+                    overflow-x: hidden;
                   }
                   .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item,
                   .compose-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item::before,
@@ -1804,6 +2207,14 @@ const UnifiedEmail = () => {
                   .ql-font-palatinolinotype,
                   *[class*="ql-font-palatinolinotype"] {
                     font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
+                  }
+                  .ql-font-cambria,
+                  *[class*="ql-font-cambria"] {
+                    font-family: Cambria, serif !important;
+                  }
+                  .ql-font-calistomt,
+                  *[class*="ql-font-calistomt"] {
+                    font-family: 'Calisto MT', serif !important;
                   }
                   
                   /* Apply fonts within compose editor - scoped rules with maximum specificity */
@@ -1907,6 +2318,26 @@ const UnifiedEmail = () => {
                     font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
                   }
                   
+                  .compose-editor .ql-editor .ql-font-cambria,
+                  .compose-editor .ql-editor span.ql-font-cambria,
+                  .compose-editor .ql-editor p.ql-font-cambria,
+                  .compose-editor .ql-editor div.ql-font-cambria,
+                  .compose-editor .ql-editor strong.ql-font-cambria,
+                  .compose-editor .ql-editor em.ql-font-cambria,
+                  .compose-editor .ql-editor *[class*="ql-font-cambria"] {
+                    font-family: Cambria, serif !important;
+                  }
+                  
+                  .compose-editor .ql-editor .ql-font-calistomt,
+                  .compose-editor .ql-editor span.ql-font-calistomt,
+                  .compose-editor .ql-editor p.ql-font-calistomt,
+                  .compose-editor .ql-editor div.ql-font-calistomt,
+                  .compose-editor .ql-editor strong.ql-font-calistomt,
+                  .compose-editor .ql-editor em.ql-font-calistomt,
+                  .compose-editor .ql-editor *[class*="ql-font-calistomt"] {
+                    font-family: 'Calisto MT', serif !important;
+                  }
+                  
                   /* Force font application via inline styles - ReactQuill may use inline styles */
                   .compose-editor .ql-editor [style*="font-family: Arial"],
                   .compose-editor .ql-editor [style*="font-family:Arial"],
@@ -1970,10 +2401,10 @@ const UnifiedEmail = () => {
                   }
                   
                   /* Ensure font inheritance for elements WITHOUT font classes or inline styles */
-                  .compose-editor .ql-editor p:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]),
-                  .compose-editor .ql-editor h1:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]),
-                  .compose-editor .ql-editor h2:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]),
-                  .compose-editor .ql-editor h3:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not([style*="font-family"]) {
+                  .compose-editor .ql-editor p:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not(.ql-font-cambria):not(.ql-font-calistomt):not([style*="font-family"]),
+                  .compose-editor .ql-editor h1:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not(.ql-font-cambria):not(.ql-font-calistomt):not([style*="font-family"]),
+                  .compose-editor .ql-editor h2:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not(.ql-font-cambria):not(.ql-font-calistomt):not([style*="font-family"]),
+                  .compose-editor .ql-editor h3:not(.ql-font-arial):not(.ql-font-timesnewroman):not(.ql-font-helvetica):not(.ql-font-georgia):not(.ql-font-verdana):not(.ql-font-trebuchetms):not(.ql-font-tahoma):not(.ql-font-couriernew):not(.ql-font-lucidasansunicode):not(.ql-font-palatinolinotype):not(.ql-font-cambria):not(.ql-font-calistomt):not([style*="font-family"]) {
                     font-family: inherit;
                   }
                   
@@ -2018,21 +2449,208 @@ const UnifiedEmail = () => {
                   .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="palatinolinotype"]::before {
                     content: 'Palatino Linotype' !important;
                   }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="cambria"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="cambria"]::before {
+                    content: 'Cambria' !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value="calistomt"]::before,
+                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value="calistomt"]::before {
+                    content: 'Calisto MT' !important;
+                  }
+                  
+                  /* Font Size Styles - Numeric sizes like MS Word */
+                  /* Apply to all possible elements that Quill might use */
+                  .compose-editor .ql-editor .ql-size-8,
+                  .compose-editor .ql-editor span.ql-size-8,
+                  .compose-editor .ql-editor p.ql-size-8,
+                  .compose-editor .ql-editor div.ql-size-8,
+                  .compose-editor .ql-editor strong.ql-size-8,
+                  .compose-editor .ql-editor em.ql-size-8,
+                  .compose-editor .ql-editor u.ql-size-8,
+                  .compose-editor .ql-editor *[class*="ql-size-8"] {
+                    font-size: 8px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-9,
+                  .compose-editor .ql-editor span.ql-size-9,
+                  .compose-editor .ql-editor p.ql-size-9,
+                  .compose-editor .ql-editor div.ql-size-9,
+                  .compose-editor .ql-editor strong.ql-size-9,
+                  .compose-editor .ql-editor em.ql-size-9,
+                  .compose-editor .ql-editor u.ql-size-9,
+                  .compose-editor .ql-editor *[class*="ql-size-9"] {
+                    font-size: 9px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-10,
+                  .compose-editor .ql-editor span.ql-size-10,
+                  .compose-editor .ql-editor p.ql-size-10,
+                  .compose-editor .ql-editor div.ql-size-10,
+                  .compose-editor .ql-editor strong.ql-size-10,
+                  .compose-editor .ql-editor em.ql-size-10,
+                  .compose-editor .ql-editor u.ql-size-10,
+                  .compose-editor .ql-editor *[class*="ql-size-10"] {
+                    font-size: 10px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-11,
+                  .compose-editor .ql-editor span.ql-size-11,
+                  .compose-editor .ql-editor p.ql-size-11,
+                  .compose-editor .ql-editor div.ql-size-11,
+                  .compose-editor .ql-editor strong.ql-size-11,
+                  .compose-editor .ql-editor em.ql-size-11,
+                  .compose-editor .ql-editor u.ql-size-11,
+                  .compose-editor .ql-editor *[class*="ql-size-11"] {
+                    font-size: 11px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-12,
+                  .compose-editor .ql-editor span.ql-size-12,
+                  .compose-editor .ql-editor p.ql-size-12,
+                  .compose-editor .ql-editor div.ql-size-12,
+                  .compose-editor .ql-editor strong.ql-size-12,
+                  .compose-editor .ql-editor em.ql-size-12,
+                  .compose-editor .ql-editor u.ql-size-12,
+                  .compose-editor .ql-editor *[class*="ql-size-12"] {
+                    font-size: 12px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-14,
+                  .compose-editor .ql-editor span.ql-size-14,
+                  .compose-editor .ql-editor p.ql-size-14,
+                  .compose-editor .ql-editor div.ql-size-14,
+                  .compose-editor .ql-editor strong.ql-size-14,
+                  .compose-editor .ql-editor em.ql-size-14,
+                  .compose-editor .ql-editor u.ql-size-14,
+                  .compose-editor .ql-editor *[class*="ql-size-14"] {
+                    font-size: 14px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-16,
+                  .compose-editor .ql-editor span.ql-size-16,
+                  .compose-editor .ql-editor p.ql-size-16,
+                  .compose-editor .ql-editor div.ql-size-16,
+                  .compose-editor .ql-editor strong.ql-size-16,
+                  .compose-editor .ql-editor em.ql-size-16,
+                  .compose-editor .ql-editor u.ql-size-16,
+                  .compose-editor .ql-editor *[class*="ql-size-16"] {
+                    font-size: 16px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-18,
+                  .compose-editor .ql-editor span.ql-size-18,
+                  .compose-editor .ql-editor p.ql-size-18,
+                  .compose-editor .ql-editor div.ql-size-18,
+                  .compose-editor .ql-editor strong.ql-size-18,
+                  .compose-editor .ql-editor em.ql-size-18,
+                  .compose-editor .ql-editor u.ql-size-18,
+                  .compose-editor .ql-editor *[class*="ql-size-18"] {
+                    font-size: 18px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-20,
+                  .compose-editor .ql-editor span.ql-size-20,
+                  .compose-editor .ql-editor p.ql-size-20,
+                  .compose-editor .ql-editor div.ql-size-20,
+                  .compose-editor .ql-editor strong.ql-size-20,
+                  .compose-editor .ql-editor em.ql-size-20,
+                  .compose-editor .ql-editor u.ql-size-20,
+                  .compose-editor .ql-editor *[class*="ql-size-20"] {
+                    font-size: 20px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-22,
+                  .compose-editor .ql-editor span.ql-size-22,
+                  .compose-editor .ql-editor p.ql-size-22,
+                  .compose-editor .ql-editor div.ql-size-22,
+                  .compose-editor .ql-editor strong.ql-size-22,
+                  .compose-editor .ql-editor em.ql-size-22,
+                  .compose-editor .ql-editor u.ql-size-22,
+                  .compose-editor .ql-editor *[class*="ql-size-22"] {
+                    font-size: 22px !important;
+                  }
+                  .compose-editor .ql-editor .ql-size-24,
+                  .compose-editor .ql-editor span.ql-size-24,
+                  .compose-editor .ql-editor p.ql-size-24,
+                  .compose-editor .ql-editor div.ql-size-24,
+                  .compose-editor .ql-editor strong.ql-size-24,
+                  .compose-editor .ql-editor em.ql-size-24,
+                  .compose-editor .ql-editor u.ql-size-24,
+                  .compose-editor .ql-editor *[class*="ql-size-24"] {
+                    font-size: 24px !important;
+                  }
                   
                   /* Hide default text and show our custom content */
                   .compose-editor .ql-picker.ql-font .ql-picker-label[data-value] span,
                   .compose-editor .ql-picker.ql-font .ql-picker-item[data-value] span {
                     display: none !important;
                   }
-                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value]::after,
-                  .compose-editor .ql-picker.ql-font .ql-picker-item[data-value]::after {
-                    content: attr(data-value) !important;
-                    display: inline-block !important;
-                  }
                   
                   /* Override default "Sans Serif" label when no font is selected */
                   .compose-editor .ql-picker.ql-font .ql-picker-label:not([data-value])::before {
                     content: 'Sans Serif' !important;
+                  }
+                  
+                  /* Ensure font picker shows friendly names, not raw values */
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value]::before {
+                    display: inline-block !important;
+                  }
+                  .compose-editor .ql-picker.ql-font .ql-picker-label[data-value]::after {
+                    display: none !important;
+                  }
+                  
+                  /* Font Size Picker - Show numeric values (SizeStyle uses pixel values like "8px") */
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="8px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="8px"]::before {
+                    content: '8' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="9px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="9px"]::before {
+                    content: '9' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="10px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="10px"]::before {
+                    content: '10' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="11px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="11px"]::before {
+                    content: '11' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="12px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="12px"]::before {
+                    content: '12' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="14px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="14px"]::before {
+                    content: '14' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="16px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="16px"]::before {
+                    content: '16' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="18px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="18px"]::before {
+                    content: '18' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="20px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="20px"]::before {
+                    content: '20' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="22px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="22px"]::before {
+                    content: '22' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value="24px"]::before,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value="24px"]::before {
+                    content: '24' !important;
+                  }
+                  /* Hide default text in size picker */
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value] span,
+                  .compose-editor .ql-picker.ql-size .ql-picker-item[data-value] span {
+                    display: none !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-label[data-value]::after {
+                    display: none !important;
+                  }
+                  /* Show default "Normal" when no size is selected */
+                  .compose-editor .ql-picker.ql-size .ql-picker-label:not([data-value])::before {
+                    content: 'Normal' !important;
+                  }
+                  .compose-editor .ql-picker.ql-size .ql-picker-options {
+                    max-height: 300px;
+                    overflow-y: auto;
+                    overflow-x: hidden;
                   }
                 `}</style>
               </div>
@@ -2109,7 +2727,6 @@ const UnifiedEmail = () => {
                       </button>
                     </div>
                   </div>
-            </>
           )}
 
           {/* Draft Save Confirmation Dialog */}
@@ -2142,18 +2759,12 @@ const UnifiedEmail = () => {
                   >
                     {saveDraftMutation.isLoading ? 'Saving...' : 'Save as Draft'}
                   </button>
-            </div>
-          </div>
-            </div>
-          )}
-
-          {isComposeMinimized && (
-            <div className="px-4 py-2">
-              <div className="text-sm text-gray-600 truncate">
-                {composeData.to || 'New Message'}
+                </div>
               </div>
             </div>
           )}
+
+          {/* End of Compose Window */}
         </div>
       )}
     </div>

@@ -16,7 +16,6 @@ import CampaignManagement from './components/CampaignManagement';
 import ConferenceManagement from './components/ConferenceManagement';
 import EnhancedUserManagement from './components/EnhancedUserManagement';
 import Layout from './components/Layout';
-import GlobalCommunications from './components/GlobalCommunications';
 
 // Configure QueryClient with cache-busting for development
 const queryClient = new QueryClient({
@@ -81,7 +80,6 @@ function AppRoutes() {
         <Route path="users" element={<EnhancedUserManagement />} />
         <Route path="email-logs" element={<EmailLogs />} />
         <Route path="settings" element={<Settings />} />
-        <Route path="communications" element={<GlobalCommunications />} />
       </Route>
     </Routes>
   );

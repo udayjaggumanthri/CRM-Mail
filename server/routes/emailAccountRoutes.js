@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { EmailAccount, EmailFolder, User, Email, sequelize } = require('../models');
+const { EmailAccount, EmailFolder, User, Email, Conference, sequelize } = require('../models');
 const { Op } = require('sequelize');
+
+// In-memory store for sync progress (cleared after completion)
+const syncProgressStore = new Map();
 
 // Simple authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -60,27 +63,79 @@ const canUserManageAccount = (req, account) => {
   return isCeoUser(req);
 };
 
-const buildVisibilityWhereClause = (req) => {
+// Get SMTP account IDs from user's assigned conferences
+const getConferenceSmtpAccountIds = async (req) => {
   if (isCeoUser(req)) {
-    return {};
+    return null; // CEO can see all accounts
   }
 
   const userId = req.user?.id;
   if (!userId) {
-    return { isSystemAccount: true };
+    return [];
   }
 
-  return {
-    [Op.or]: [
-      { isSystemAccount: true },
-      { ownerId: userId },
-      {
-        [Op.and]: [
-          { ownerId: { [Op.is]: null } },
-          { createdBy: userId }
-        ]
+  try {
+    let whereClause = {};
+    const role = normalizeRole(req.user?.role);
+
+    if (role === 'teamlead') {
+      whereClause.assignedTeamLeadId = userId;
+    } else if (role === 'member') {
+      // Member sees only conferences where they are in assignedMemberIds array
+      whereClause = sequelize.where(
+        sequelize.cast(sequelize.col('assignedMemberIds'), 'jsonb'),
+        '@>',
+        sequelize.cast(`["${userId}"]`, 'jsonb')
+      );
+    } else {
+      // Unknown role - no conferences
+      return [];
+    }
+
+    const conferences = await Conference.findAll({
+      where: whereClause,
+      attributes: ['id', 'settings']
+    });
+
+    const smtpIds = new Set();
+    conferences.forEach(conference => {
+      try {
+        const settings = conference.settings || {};
+        const smtpId = settings.smtp_default_id;
+        if (smtpId && (typeof smtpId === 'string' || typeof smtpId === 'number')) {
+          smtpIds.add(String(smtpId));
+        }
+      } catch (error) {
+        console.error('Error extracting SMTP ID from conference:', error);
       }
-    ]
+    });
+
+    return Array.from(smtpIds);
+  } catch (error) {
+    console.error('Error fetching conference SMTP account IDs:', error);
+    return [];
+  }
+};
+
+const buildVisibilityWhereClause = async (req) => {
+  // CEO sees all accounts
+  if (isCeoUser(req)) {
+    return {};
+  }
+
+  // Get SMTP account IDs from assigned conferences
+  const conferenceSmtpIds = await getConferenceSmtpAccountIds(req);
+  
+  if (conferenceSmtpIds.length === 0) {
+    // No assigned conferences or no SMTP mappings - return empty result
+    return { id: { [Op.eq]: null } }; // This will match nothing
+  }
+
+  // Only return SMTP accounts mapped to assigned conferences
+  return {
+    id: {
+      [Op.in]: conferenceSmtpIds
+    }
   };
 };
 
@@ -100,7 +155,7 @@ const formatAccountResponse = (account) => {
 // Get email accounts
 router.get('/', async (req, res) => {
   try {
-    const whereClause = buildVisibilityWhereClause(req);
+    const whereClause = await buildVisibilityWhereClause(req);
     const accounts = await EmailAccount.findAll({
       where: whereClause,
       include: accountIncludes,
@@ -278,9 +333,10 @@ router.post('/', async (req, res) => {
       autoReplyMessage,
       signature,
       syncStatus: 'disconnected',
+      isActive: true, // Automatically activate new accounts
       ownerId: creatorId || (req.user ? req.user.id : null),
-      isSystemAccount: isCeoUser(req) ? parseBoolean(isSystem ?? req.body.isSystemAccount) : false,
-      allowUsers: allowUsers || false
+      isSystemAccount: false, // All accounts are accessible to CEO, filtered by conference for others
+      allowUsers: false // Not used anymore
     };
 
     const maxPriority = await EmailAccount.max('sendPriority');
@@ -302,19 +358,53 @@ router.post('/', async (req, res) => {
     
     const account = await EmailAccount.create(accountData);
 
-    // Auto-sync emails if IMAP is configured
+    // Auto-activate and start monitoring if IMAP is configured
+    let syncProgress = { status: 'idle', message: '', emailsSynced: 0, totalEmails: 0 };
+    
     if ((type === 'imap' || type === 'both') && imapHost) {
-      console.log(`📧 Triggering automatic email sync for new account: ${account.name}`);
+      console.log(`📧 Auto-activating and starting sync for new account: ${account.name}`);
       
-      // Trigger sync in background (non-blocking)
+      // Set status to syncing immediately so frontend can show progress
+      syncProgress.status = 'syncing';
+      syncProgress.message = 'Initializing email sync...';
+      
+      // Start real-time monitoring (non-blocking, doesn't interrupt existing syncs)
+      const realTimeImapService = require('../services/RealTimeImapService');
+      
+      // Add to real-time monitoring in background
+      setTimeout(async () => {
+        try {
+          // Reload account to get fresh data
+          const freshAccount = await EmailAccount.findByPk(account.id);
+          if (freshAccount && freshAccount.isActive) {
+            console.log(`🔄 Adding ${freshAccount.name} to real-time monitoring...`);
+            await realTimeImapService.startAccountMonitoring(freshAccount);
+            console.log(`✅ ${freshAccount.name} added to real-time monitoring`);
+          }
+        } catch (monitorError) {
+          console.error(`⚠️ Failed to add ${account.name} to real-time monitoring:`, monitorError.message);
+          // Don't fail the request, just log the error
+        }
+      }, 1000); // Wait 1 second before adding to monitoring
+      
+      // Trigger initial email sync in background (non-blocking)
       const ImapService = require('../services/ImapService');
       const imapService = new ImapService();
+      
+      // Store progress in memory for real-time access
+      syncProgressStore.set(account.id, syncProgress);
       
       // Async background sync - don't await
       setTimeout(async () => {
         try {
+          syncProgress.message = 'Connecting to email server...';
+          syncProgressStore.set(account.id, { ...syncProgress });
+          
           const sinceDate = new Date();
           sinceDate.setDate(sinceDate.getDate() - 365); // 1 year back
+          
+          syncProgress.message = 'Fetching emails...';
+          syncProgressStore.set(account.id, { ...syncProgress });
           
           const result = await imapService.fetchEmails(account, {
             maxMessages: 500,
@@ -325,6 +415,10 @@ router.post('/', async (req, res) => {
           if (result.success && result.emails) {
             const { Email } = require('../models');
             let syncedCount = 0;
+            const totalEmails = result.emails.length;
+            syncProgress.totalEmails = totalEmails;
+            syncProgress.message = `Processing ${totalEmails} emails...`;
+            syncProgressStore.set(account.id, { ...syncProgress });
             
             for (const emailData of result.emails) {
               try {
@@ -342,24 +436,69 @@ router.post('/', async (req, res) => {
                     folder: 'inbox'
                   });
                   syncedCount++;
+                  syncProgress.emailsSynced = syncedCount;
+                  
+                  // Update progress every 10 emails for better UX
+                  if (syncedCount % 10 === 0 || syncedCount === totalEmails) {
+                    syncProgressStore.set(account.id, { ...syncProgress });
+                  }
                 }
               } catch (saveError) {
                 console.error(`Error saving email during auto-sync: ${saveError.message}`);
               }
             }
             
+            syncProgress.status = 'completed';
+            syncProgress.message = `Successfully synced ${syncedCount} new emails`;
+            syncProgressStore.set(account.id, { ...syncProgress });
             console.log(`✅ Auto-sync completed for ${account.name}: ${syncedCount} new emails`);
+            
+            // Update account sync status (use 'active' instead of 'connected' - enum only allows: active, paused, error, disconnected)
+            await account.update({ 
+              syncStatus: 'active',
+              lastSyncAt: new Date()
+            });
+            
+            // Clear progress after 30 seconds (give frontend time to see completion)
+            setTimeout(() => {
+              syncProgressStore.delete(account.id);
+            }, 30000);
+          } else {
+            syncProgress.status = 'error';
+            syncProgress.message = result.error || 'Failed to fetch emails';
+            syncProgressStore.set(account.id, { ...syncProgress });
+            console.error(`❌ Auto-sync failed for ${account.name}:`, result.error);
+            
+            // Clear progress after 30 seconds
+            setTimeout(() => {
+              syncProgressStore.delete(account.id);
+            }, 30000);
           }
         } catch (syncError) {
+          syncProgress.status = 'error';
+          syncProgress.message = syncError.message;
+          syncProgressStore.set(account.id, { ...syncProgress });
           console.error(`❌ Auto-sync failed for ${account.name}:`, syncError.message);
+          
+          // Update account sync status
+          await account.update({ syncStatus: 'error', errorMessage: syncError.message });
+          
+          // Clear progress after 30 seconds
+          setTimeout(() => {
+            syncProgressStore.delete(account.id);
+          }, 30000);
         }
       }, 2000); // Wait 2 seconds before starting sync
+    } else {
+      // No IMAP, just mark as ready
+      syncProgress.status = 'completed';
+      syncProgress.message = 'Account activated (SMTP only)';
     }
 
     // Enterprise-level success response
     res.status(201).json({
       success: true,
-      message: 'SMTP account created successfully. Email sync started in background.',
+      message: 'SMTP account created and activated. Email sync started in background.',
       data: {
         id: account.id,
         name: account.name,
@@ -368,7 +507,9 @@ router.post('/', async (req, res) => {
         smtpHost: account.smtpHost,
         smtpPort: account.smtpPort,
         status: 'created',
+        isActive: account.isActive,
         syncStatus: (type === 'imap' || type === 'both') ? 'syncing' : 'not_applicable',
+        syncProgress: syncProgress,
         createdAt: account.createdAt,
         sendPriority: account.sendPriority,
         ownerId: getAccountOwnerId(account),
@@ -537,6 +678,53 @@ router.post('/:id/test', async (req, res) => {
     res.json({ success: true, message: 'Connection test successful' });
   } catch (error) {
     console.error('Test email account error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get sync progress for an account
+router.get('/:id/sync-progress', async (req, res) => {
+  try {
+    const account = await EmailAccount.findByPk(req.params.id);
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+            // Check in-memory progress store first (for real-time updates)
+            const inMemoryProgress = syncProgressStore.get(req.params.id);
+            if (inMemoryProgress) {
+              // Map syncStatus: 'active' means connected/synced, 'disconnected' means not syncing
+              let mappedStatus = account.syncStatus || 'disconnected';
+              if (inMemoryProgress.status === 'syncing') {
+                mappedStatus = 'active'; // Show as active while syncing
+              } else if (inMemoryProgress.status === 'completed') {
+                mappedStatus = 'active'; // Show as active when completed
+              }
+              
+              return res.json({
+                accountId: account.id,
+                syncStatus: mappedStatus,
+                lastSyncAt: account.lastSyncAt,
+                isActive: account.isActive,
+                errorMessage: account.errorMessage,
+                progress: inMemoryProgress
+              });
+            }
+
+            // Fallback to database status
+            const syncStatus = account.syncStatus || 'disconnected';
+            const lastSyncAt = account.lastSyncAt;
+            
+            res.json({
+              accountId: account.id,
+              syncStatus,
+              lastSyncAt,
+              isActive: account.isActive,
+              errorMessage: account.errorMessage,
+              progress: null
+            });
+  } catch (error) {
+    console.error('Get sync progress error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

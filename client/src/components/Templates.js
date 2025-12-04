@@ -29,22 +29,30 @@ import 'react-quill/dist/quill.snow.css';
 const Font = Quill.import('formats/font');
 Font.whitelist = [
   'arial',
-  'timesnewroman',
-  'helvetica',
-  'georgia',
-  'verdana',
-  'trebuchetms',
-  'tahoma',
+  'calistomt',
+  'cambria',
   'couriernew',
+  'georgia',
+  'helvetica',
   'lucidasansunicode',
-  'palatinolinotype'
+  'palatinolinotype',
+  'tahoma',
+  'timesnewroman',
+  'trebuchetms',
+  'verdana'
 ];
 Quill.register(Font, true);
+
+// Register numeric font sizes using style attributor (pixel values)
+const SizeStyle = Quill.import('attributors/style/size');
+SizeStyle.whitelist = ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px'];
+Quill.register(SizeStyle, true);
 
 const quillModules = {
   toolbar: [
     [{ header: [1, 2, 3, false] }],
-    [{ font: ['arial', 'timesnewroman', 'helvetica', 'georgia', 'verdana', 'trebuchetms', 'tahoma', 'couriernew', 'lucidasansunicode', 'palatinolinotype'] }],
+    [{ font: ['arial', 'calistomt', 'cambria', 'couriernew', 'georgia', 'helvetica', 'lucidasansunicode', 'palatinolinotype', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana'] }],
+    [{ size: ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px', false] }],
     ['bold', 'italic', 'underline', 'strike'],
     [{ color: [] }, { background: [] }],
     [{ list: 'ordered' }, { list: 'bullet' }],
@@ -57,6 +65,7 @@ const quillModules = {
 const quillFormats = [
   'header',
   'font',
+  'size',
   'bold',
   'italic',
   'underline',
@@ -124,6 +133,9 @@ const TEMPLATE_EDITOR_STYLES = `
   }
   .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-options {
     min-width: 180px;
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
   .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item,
   .template-editor .ql-toolbar .ql-picker.ql-font .ql-picker-item::before,
@@ -171,6 +183,14 @@ const TEMPLATE_EDITOR_STYLES = `
   *[class*="ql-font-palatinolinotype"] {
     font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif !important;
   }
+  .ql-font-cambria,
+  *[class*="ql-font-cambria"] {
+    font-family: Cambria, serif !important;
+  }
+  .ql-font-calistomt,
+  *[class*="ql-font-calistomt"] {
+    font-family: 'Calisto MT', serif !important;
+  }
   .template-editor .ql-picker.ql-font .ql-picker-label[data-value="arial"]::before,
   .template-editor .ql-picker.ql-font .ql-picker-item[data-value="arial"]::before { content: 'Arial' !important; }
   .template-editor .ql-picker.ql-font .ql-picker-label[data-value="timesnewroman"]::before,
@@ -191,8 +211,186 @@ const TEMPLATE_EDITOR_STYLES = `
   .template-editor .ql-picker.ql-font .ql-picker-item[data-value="lucidasansunicode"]::before { content: 'Lucida Sans Unicode' !important; }
   .template-editor .ql-picker.ql-font .ql-picker-label[data-value="palatinolinotype"]::before,
   .template-editor .ql-picker.ql-font .ql-picker-item[data-value="palatinolinotype"]::before { content: 'Palatino Linotype' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="cambria"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="cambria"]::before { content: 'Cambria' !important; }
+  .template-editor .ql-picker.ql-font .ql-picker-label[data-value="calistomt"]::before,
+  .template-editor .ql-picker.ql-font .ql-picker-item[data-value="calistomt"]::before { content: 'Calisto MT' !important; }
   .template-editor .ql-picker.ql-font .ql-picker-label:not([data-value])::before {
     content: 'Sans Serif' !important;
+  }
+  /* Font Size Styles - Numeric sizes like MS Word */
+  /* Apply to all possible elements that Quill might use */
+  .template-editor .ql-editor .ql-size-8,
+  .template-editor .ql-editor span.ql-size-8,
+  .template-editor .ql-editor p.ql-size-8,
+  .template-editor .ql-editor div.ql-size-8,
+  .template-editor .ql-editor strong.ql-size-8,
+  .template-editor .ql-editor em.ql-size-8,
+  .template-editor .ql-editor u.ql-size-8,
+  .template-editor .ql-editor *[class*="ql-size-8"] {
+    font-size: 8px !important;
+  }
+  .template-editor .ql-editor .ql-size-9,
+  .template-editor .ql-editor span.ql-size-9,
+  .template-editor .ql-editor p.ql-size-9,
+  .template-editor .ql-editor div.ql-size-9,
+  .template-editor .ql-editor strong.ql-size-9,
+  .template-editor .ql-editor em.ql-size-9,
+  .template-editor .ql-editor u.ql-size-9,
+  .template-editor .ql-editor *[class*="ql-size-9"] {
+    font-size: 9px !important;
+  }
+  .template-editor .ql-editor .ql-size-10,
+  .template-editor .ql-editor span.ql-size-10,
+  .template-editor .ql-editor p.ql-size-10,
+  .template-editor .ql-editor div.ql-size-10,
+  .template-editor .ql-editor strong.ql-size-10,
+  .template-editor .ql-editor em.ql-size-10,
+  .template-editor .ql-editor u.ql-size-10,
+  .template-editor .ql-editor *[class*="ql-size-10"] {
+    font-size: 10px !important;
+  }
+  .template-editor .ql-editor .ql-size-11,
+  .template-editor .ql-editor span.ql-size-11,
+  .template-editor .ql-editor p.ql-size-11,
+  .template-editor .ql-editor div.ql-size-11,
+  .template-editor .ql-editor strong.ql-size-11,
+  .template-editor .ql-editor em.ql-size-11,
+  .template-editor .ql-editor u.ql-size-11,
+  .template-editor .ql-editor *[class*="ql-size-11"] {
+    font-size: 11px !important;
+  }
+  .template-editor .ql-editor .ql-size-12,
+  .template-editor .ql-editor span.ql-size-12,
+  .template-editor .ql-editor p.ql-size-12,
+  .template-editor .ql-editor div.ql-size-12,
+  .template-editor .ql-editor strong.ql-size-12,
+  .template-editor .ql-editor em.ql-size-12,
+  .template-editor .ql-editor u.ql-size-12,
+  .template-editor .ql-editor *[class*="ql-size-12"] {
+    font-size: 12px !important;
+  }
+  .template-editor .ql-editor .ql-size-14,
+  .template-editor .ql-editor span.ql-size-14,
+  .template-editor .ql-editor p.ql-size-14,
+  .template-editor .ql-editor div.ql-size-14,
+  .template-editor .ql-editor strong.ql-size-14,
+  .template-editor .ql-editor em.ql-size-14,
+  .template-editor .ql-editor u.ql-size-14,
+  .template-editor .ql-editor *[class*="ql-size-14"] {
+    font-size: 14px !important;
+  }
+  .template-editor .ql-editor .ql-size-16,
+  .template-editor .ql-editor span.ql-size-16,
+  .template-editor .ql-editor p.ql-size-16,
+  .template-editor .ql-editor div.ql-size-16,
+  .template-editor .ql-editor strong.ql-size-16,
+  .template-editor .ql-editor em.ql-size-16,
+  .template-editor .ql-editor u.ql-size-16,
+  .template-editor .ql-editor *[class*="ql-size-16"] {
+    font-size: 16px !important;
+  }
+  .template-editor .ql-editor .ql-size-18,
+  .template-editor .ql-editor span.ql-size-18,
+  .template-editor .ql-editor p.ql-size-18,
+  .template-editor .ql-editor div.ql-size-18,
+  .template-editor .ql-editor strong.ql-size-18,
+  .template-editor .ql-editor em.ql-size-18,
+  .template-editor .ql-editor u.ql-size-18,
+  .template-editor .ql-editor *[class*="ql-size-18"] {
+    font-size: 18px !important;
+  }
+  .template-editor .ql-editor .ql-size-20,
+  .template-editor .ql-editor span.ql-size-20,
+  .template-editor .ql-editor p.ql-size-20,
+  .template-editor .ql-editor div.ql-size-20,
+  .template-editor .ql-editor strong.ql-size-20,
+  .template-editor .ql-editor em.ql-size-20,
+  .template-editor .ql-editor u.ql-size-20,
+  .template-editor .ql-editor *[class*="ql-size-20"] {
+    font-size: 20px !important;
+  }
+  .template-editor .ql-editor .ql-size-22,
+  .template-editor .ql-editor span.ql-size-22,
+  .template-editor .ql-editor p.ql-size-22,
+  .template-editor .ql-editor div.ql-size-22,
+  .template-editor .ql-editor strong.ql-size-22,
+  .template-editor .ql-editor em.ql-size-22,
+  .template-editor .ql-editor u.ql-size-22,
+  .template-editor .ql-editor *[class*="ql-size-22"] {
+    font-size: 22px !important;
+  }
+  .template-editor .ql-editor .ql-size-24,
+  .template-editor .ql-editor span.ql-size-24,
+  .template-editor .ql-editor p.ql-size-24,
+  .template-editor .ql-editor div.ql-size-24,
+  .template-editor .ql-editor strong.ql-size-24,
+  .template-editor .ql-editor em.ql-size-24,
+  .template-editor .ql-editor u.ql-size-24,
+  .template-editor .ql-editor *[class*="ql-size-24"] {
+    font-size: 24px !important;
+  }
+  /* Font Size Picker - Show numeric values (SizeStyle uses pixel values like "8px") */
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="8px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="8px"]::before {
+    content: '8' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="9px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="9px"]::before {
+    content: '9' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="10px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="10px"]::before {
+    content: '10' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="11px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="11px"]::before {
+    content: '11' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="12px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="12px"]::before {
+    content: '12' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="14px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="14px"]::before {
+    content: '14' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="16px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="16px"]::before {
+    content: '16' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="18px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="18px"]::before {
+    content: '18' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="20px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="20px"]::before {
+    content: '20' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="22px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="22px"]::before {
+    content: '22' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value="24px"]::before,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value="24px"]::before {
+    content: '24' !important;
+  }
+  /* Hide default text in size picker */
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value] span,
+  .template-editor .ql-picker.ql-size .ql-picker-item[data-value] span {
+    display: none !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-label[data-value]::after {
+    display: none !important;
+  }
+  /* Show default "Normal" when no size is selected */
+  .template-editor .ql-picker.ql-size .ql-picker-label:not([data-value])::before {
+    content: 'Normal' !important;
+  }
+  .template-editor .ql-picker.ql-size .ql-picker-options {
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 `;
 
