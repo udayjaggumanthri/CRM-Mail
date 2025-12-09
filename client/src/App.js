@@ -75,6 +75,8 @@ function AppRoutes() {
         <Route path="bulk-upload" element={<BulkUpload />} />
         <Route path="email" element={<UnifiedEmail />} />
         <Route path="templates" element={<Templates />} />
+        <Route path="templates/new" element={<Templates />} />
+        <Route path="templates/:id/edit" element={<Templates />} />
         <Route path="campaigns" element={<CampaignManagement />} />
         <Route path="conferences" element={<ConferenceManagement />} />
         <Route path="users" element={<EnhancedUserManagement />} />

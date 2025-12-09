@@ -538,7 +538,7 @@ router.get('/', async (req, res) => {
         console.error('Invalid endDate:', dateError);
       }
     }
-    
+
     // Validate accountId if provided
     if (accountId && accountId !== 'all') {
       try {

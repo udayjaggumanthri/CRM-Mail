@@ -323,7 +323,9 @@ router.get('/', authenticateToken, async (req, res) => {
       sortBy = 'createdAt', 
       sortOrder = 'DESC',
       page = 1,
-      limit = 50
+      limit = 50,
+      dateAddedFrom,
+      dateAddedTo
     } = req.query;
 
     // Validate pagination
@@ -535,6 +537,33 @@ router.get('/', authenticateToken, async (req, res) => {
       } catch (emailFilterError) {
         console.error('Error applying email activity filter:', emailFilterError);
         // Continue without email filter if it fails
+      }
+    }
+
+    // Filter by date added (client creation date)
+    if (dateAddedFrom || dateAddedTo) {
+      try {
+        const dateCondition = {};
+        if (dateAddedFrom) {
+          const fromDate = new Date(dateAddedFrom);
+          if (!isNaN(fromDate.getTime())) {
+            fromDate.setHours(0, 0, 0, 0);
+            dateCondition[Op.gte] = fromDate;
+          }
+        }
+        if (dateAddedTo) {
+          const toDate = new Date(dateAddedTo);
+          if (!isNaN(toDate.getTime())) {
+            toDate.setHours(23, 59, 59, 999);
+            dateCondition[Op.lte] = toDate;
+          }
+        }
+        if (Object.keys(dateCondition).length > 0) {
+          whereClause.createdAt = dateCondition;
+        }
+      } catch (dateError) {
+        console.error('Error applying date added filter:', dateError);
+        // Continue without date filter if it fails
       }
     }
 

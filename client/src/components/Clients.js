@@ -19,7 +19,9 @@ import {
   MapPinIcon,
   EnvelopeIcon,
   GlobeAltIcon,
-  ArrowUpTrayIcon
+  ArrowUpTrayIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon
 } from '@heroicons/react/24/outline';
 
 const Clients = () => {
@@ -59,8 +61,12 @@ const Clients = () => {
   const [statusFilter, setStatusFilter] = useState('All Statuses');
   const [countryFilter, setCountryFilter] = useState('All Countries');
   const [conferenceFilter, setConferenceFilter] = useState('');
+  const [dateAddedFrom, setDateAddedFrom] = useState('');
+  const [dateAddedTo, setDateAddedTo] = useState('');
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
@@ -129,7 +135,7 @@ const Clients = () => {
   // Fetch clients with advanced filtering
   const [emailActivityFilter, setEmailActivityFilter] = useState('all');
   const { data: clientsData, isLoading, error: clientsError, refetch } = useQuery(
-    ['clients', conferenceFilter, statusFilter, countryFilter, searchTerm, sortBy, sortOrder, emailActivityFilter],
+    ['clients', conferenceFilter, statusFilter, countryFilter, searchTerm, sortBy, sortOrder, emailActivityFilter, dateAddedFrom, dateAddedTo, currentPage, pageSize],
     async () => {
       try {
         const params = new URLSearchParams();
@@ -141,6 +147,10 @@ const Clients = () => {
         params.append('sortOrder', sortOrder);
         if (emailActivityFilter === 'today') params.append('emailFilter', 'today');
         if (emailActivityFilter === 'upcoming') params.append('emailFilter', 'upcoming');
+        if (dateAddedFrom) params.append('dateAddedFrom', dateAddedFrom);
+        if (dateAddedTo) params.append('dateAddedTo', dateAddedTo);
+        params.append('page', currentPage);
+        params.append('limit', pageSize);
         
         const response = await axios.get(`/api/clients?${params.toString()}`);
         console.log('Clients API response:', response.data);
@@ -181,7 +191,7 @@ const Clients = () => {
     refetchOnWindowFocus: user?.role === 'Member',
   });
 
-  // Ensure clients is always an array
+  // Ensure clients is always an array and extract pagination info
   const clients = useMemo(() => {
     if (!clientsData) return [];
     if (Array.isArray(clientsData)) return clientsData;
@@ -194,6 +204,24 @@ const Clients = () => {
     console.warn('Clients data is not an array:', clientsData);
     return [];
   }, [clientsData]);
+
+  // Extract pagination info
+  const pagination = useMemo(() => {
+    if (!clientsData || typeof clientsData !== 'object') {
+      return { total: 0, page: 1, limit: pageSize, totalPages: 0 };
+    }
+    return {
+      total: clientsData.total || 0,
+      page: clientsData.page || currentPage,
+      limit: clientsData.limit || pageSize,
+      totalPages: clientsData.totalPages || Math.ceil((clientsData.total || 0) / (clientsData.limit || pageSize))
+    };
+  }, [clientsData, currentPage, pageSize]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [conferenceFilter, statusFilter, countryFilter, searchTerm, emailActivityFilter, dateAddedFrom, dateAddedTo]);
 
   // Get unique countries for filter
   const countries = useMemo(() => {
@@ -639,32 +667,65 @@ const getInitialsFromName = (name) => {
 
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
+      <style>{`
+        /* Custom scrollbar styling for better UX */
+        .client-table-container::-webkit-scrollbar {
+          width: 12px;
+          height: 12px;
+        }
+        .client-table-container::-webkit-scrollbar-track {
+          background: #f1f5f9;
+          border-radius: 6px;
+        }
+        .client-table-container::-webkit-scrollbar-thumb {
+          background: #94a3b8;
+          border-radius: 6px;
+          border: 2px solid #f1f5f9;
+        }
+        .client-table-container::-webkit-scrollbar-thumb:hover {
+          background: #64748b;
+        }
+        .client-table-container::-webkit-scrollbar-corner {
+          background: #f1f5f9;
+        }
+        /* Firefox scrollbar */
+        .client-table-container {
+          scrollbar-width: thin;
+          scrollbar-color: #94a3b8 #f1f5f9;
+        }
+        /* Ensure sticky header works */
+        .client-table-container thead th {
+          position: sticky;
+          top: 0;
+          z-index: 10;
+        }
+      `}</style>
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <div className="flex justify-between items-center mb-4">
-        <div>
-              <h1 className="text-3xl font-bold text-gray-900">Client Overview Dashboard</h1>
-              <p className="text-gray-600 mt-2">Manage and track all your clients in one place</p>
-        </div>
-            <div className="flex space-x-3">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900 mb-2">Client Overview Dashboard</h1>
+              <p className="text-gray-600">Manage and track all your clients in one place</p>
+            </div>
+            <div className="flex flex-wrap gap-3">
               <button
                 onClick={handleExport}
-                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                className="flex items-center px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm"
               >
                 <DocumentArrowDownIcon className="w-5 h-5 mr-2" />
                 Export CSV
               </button>
               <button
                 onClick={() => setShowBulkUploadModal(true)}
-                className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                className="flex items-center px-4 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors shadow-sm"
               >
                 <ArrowUpTrayIcon className="w-5 h-5 mr-2" />
                 Bulk Upload
               </button>
               <button
                 onClick={() => setShowAddForm(true)}
-                className="flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                className="flex items-center px-4 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors shadow-sm"
               >
                 <PlusIcon className="w-5 h-5 mr-2" />
                 Add Client
@@ -673,21 +734,21 @@ const getInitialsFromName = (name) => {
           </div>
 
           {/* Stats Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-            <div className="bg-white p-6 rounded-lg shadow-sm border">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="bg-white p-5 rounded-lg shadow-sm border hover:shadow-md transition-shadow">
               <div className="flex items-center">
-                <div className="p-2 bg-blue-100 rounded-lg">
+                <div className="p-2.5 bg-blue-100 rounded-lg">
                   <UserPlusIcon className="w-6 h-6 text-blue-600" />
                 </div>
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Total Clients</p>
-                  <p className="text-2xl font-bold text-gray-900">{clients.length}</p>
+                  <p className="text-2xl font-bold text-gray-900">{pagination.total || clients.length}</p>
                 </div>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow-sm border">
+            <div className="bg-white p-5 rounded-lg shadow-sm border hover:shadow-md transition-shadow">
               <div className="flex items-center">
-                <div className="p-2 bg-green-100 rounded-lg">
+                <div className="p-2.5 bg-green-100 rounded-lg">
                   <CheckIcon className="w-6 h-6 text-green-600" />
                 </div>
                 <div className="ml-4">
@@ -698,9 +759,9 @@ const getInitialsFromName = (name) => {
                 </div>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow-sm border">
+            <div className="bg-white p-5 rounded-lg shadow-sm border hover:shadow-md transition-shadow">
               <div className="flex items-center">
-                <div className="p-2 bg-yellow-100 rounded-lg">
+                <div className="p-2.5 bg-yellow-100 rounded-lg">
                   <CalendarIcon className="w-6 h-6 text-yellow-600" />
                 </div>
                 <div className="ml-4">
@@ -711,9 +772,9 @@ const getInitialsFromName = (name) => {
                 </div>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow-sm border">
+            <div className="bg-white p-5 rounded-lg shadow-sm border hover:shadow-md transition-shadow">
               <div className="flex items-center">
-                <div className="p-2 bg-red-100 rounded-lg">
+                <div className="p-2.5 bg-red-100 rounded-lg">
                   <XMarkIcon className="w-6 h-6 text-red-600" />
                 </div>
                 <div className="ml-4">
@@ -729,7 +790,7 @@ const getInitialsFromName = (name) => {
 
         {/* Filters and Controls */}
         <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             {/* Search */}
             <div className="relative" ref={countryRef}>
               <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
@@ -791,7 +852,29 @@ const getInitialsFromName = (name) => {
             </select>
           </div>
 
-          <div className="flex justify-between items-center">
+          {/* Date Added Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 pt-6 border-t border-gray-200">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Date Added From</label>
+              <input
+                type="date"
+                value={dateAddedFrom}
+                onChange={(e) => setDateAddedFrom(e.target.value)}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Date Added To</label>
+              <input
+                type="date"
+                value={dateAddedTo}
+                onChange={(e) => setDateAddedTo(e.target.value)}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center mt-6 pt-6 border-t border-gray-200">
             <div className="flex items-center space-x-4">
               {/* Sort */}
               <div className="flex items-center space-x-2">
@@ -899,11 +982,11 @@ const getInitialsFromName = (name) => {
         ) : viewMode === 'table' ? (
           /* Table View */
           <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                    <th className="px-6 py-3 text-left">
+            <div className="client-table-container overflow-x-auto overflow-y-auto" style={{ maxHeight: 'calc(100vh - 450px)', minHeight: '600px' }}>
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50 sticky top-0 z-20 shadow-sm">
+                  <tr>
+                    <th className="px-4 py-3 text-left w-12">
                       <input
                         type="checkbox"
                         checked={selectedClients.length === clients.length && clients.length > 0}
@@ -911,33 +994,36 @@ const getInitialsFromName = (name) => {
                         className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                       />
                     </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Client
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[180px]">
+                      Client
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[200px]">
                       Contact
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[120px]">
                       Location
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[150px]">
                       Conference
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[100px]">
                       Email Count
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[180px]">
                       Stage
-                </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[140px]">
+                      Date Added
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[100px]">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
                   {clients.map((client) => (
-                  <tr key={client.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
+                    <tr key={client.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <input
                           type="checkbox"
                           checked={selectedClients.includes(client.id)}
@@ -945,47 +1031,50 @@ const getInitialsFromName = (name) => {
                           className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                         />
                       </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                          <div className="flex-shrink-0 h-10 w-10">
-                          <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
-                            <span className="text-sm font-medium text-primary-700">
-                                {getInitialsFromName(client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim())}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="ml-4">
-                          <div className="text-sm font-medium text-gray-900">
-                            {client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim()}
-                          </div>
-                          <div className="text-sm text-gray-500"></div>
-                        </div>
-                      </div>
-                    </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">{client.email}</div>
-                    </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center text-sm text-gray-900">
-                          <MapPinIcon className="w-4 h-4 mr-1 text-gray-400" />
-                      {client.country}
-                        </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        <ConferenceNameDisplay conference={client.conference} maxLength={30} />
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <div className="flex items-center">
-                          <EnvelopeIcon className="w-4 h-4 mr-1 text-gray-400" />
+                          <div className="flex-shrink-0 h-9 w-9">
+                            <div className="h-9 w-9 rounded-full bg-primary-100 flex items-center justify-center">
+                              <span className="text-xs font-medium text-primary-700">
+                                {getInitialsFromName(client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim())}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="ml-3">
+                            <div className="text-sm font-medium text-gray-900 truncate max-w-[150px]">
+                              {client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim()}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="text-sm text-gray-900 truncate max-w-[180px]" title={client.email}>
+                          {client.email}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="flex items-center text-sm text-gray-900">
+                          <MapPinIcon className="w-4 h-4 mr-1 text-gray-400 flex-shrink-0" />
+                          <span className="truncate max-w-[100px]">{client.country}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                        <div className="truncate max-w-[140px]">
+                          <ConferenceNameDisplay conference={client.conference} maxLength={20} />
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                        <div className="flex items-center">
+                          <EnvelopeIcon className="w-4 h-4 mr-1 text-gray-400 flex-shrink-0" />
                           <span className="font-medium">{client.engagement?.emailsSent || 0}</span>
                         </div>
                         {client.followUpCount > 0 && (
-                          <div className="text-xs text-gray-500">
+                          <div className="text-xs text-gray-500 mt-0.5">
                             {client.followUpCount} follow-ups
                           </div>
                         )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
                         <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStageColor(client.currentStage)}`}>
                           {getStageName(client.currentStage)}
                         </span>
@@ -994,38 +1083,190 @@ const getInitialsFromName = (name) => {
                             Last: {new Date(client.lastEmailSent).toLocaleDateString()}
                           </div>
                         )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <div className="flex items-center space-x-2">
-                        <button
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                        <div className="flex items-center">
+                          <CalendarIcon className="w-4 h-4 mr-1.5 text-gray-400 flex-shrink-0" />
+                          <div>
+                            <div className="font-medium text-xs">
+                              {client.createdAt ? new Date(client.createdAt).toLocaleDateString() : 'N/A'}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {client.createdAt ? new Date(client.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+                        <div className="flex items-center justify-end space-x-1">
+                          <button
                             onClick={() => handleView(client)}
-                            className="text-blue-600 hover:text-blue-900"
+                            className="text-blue-600 hover:text-blue-900 p-1.5 rounded hover:bg-blue-50 transition-colors"
                             title="View"
-                        >
+                          >
                             <EyeIcon className="w-4 h-4" />
-                        </button>
-                                <button
+                          </button>
+                          <button
                             onClick={() => handleEdit(client)}
-                            className="text-indigo-600 hover:text-indigo-900"
+                            className="text-indigo-600 hover:text-indigo-900 p-1.5 rounded hover:bg-indigo-50 transition-colors"
                             title="Edit"
-                                >
+                          >
                             <PencilIcon className="w-4 h-4" />
-                                </button>
-                                <button
+                          </button>
+                          <button
                             onClick={() => handleDelete(client)}
-                            className="text-red-600 hover:text-red-900"
+                            className="text-red-600 hover:text-red-900 p-1.5 rounded hover:bg-red-50 transition-colors"
                             title="Delete"
                           >
                             <TrashIcon className="w-4 h-4" />
-                              </button>
-                      </div>
-                    </td>
-                  </tr>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
                   ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Pagination - Always visible */}
+            <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex-shrink-0">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-sm text-gray-700 whitespace-nowrap">
+                    Showing <span className="font-medium">{(pagination.page - 1) * pagination.limit + 1}</span> to{' '}
+                    <span className="font-medium">
+                      {Math.min(pagination.page * pagination.limit, pagination.total)}
+                    </span>{' '}
+                    of <span className="font-medium">{pagination.total}</span> clients
+                  </span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                  >
+                    <option value={20}>20 per page</option>
+                    <option value={50}>50 per page</option>
+                    <option value={100}>100 per page</option>
+                    <option value={200}>200 per page</option>
+                  </select>
+                </div>
+                
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(1)}
+                    disabled={pagination.page === 1}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors bg-white"
+                    title="First page"
+                  >
+                    First
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(pagination.page - 1)}
+                    disabled={pagination.page === 1}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors flex items-center bg-white"
+                    title="Previous page"
+                  >
+                    <ChevronLeftIcon className="w-4 h-4 mr-1" />
+                    Previous
+                  </button>
+                  
+                  {/* Page number input for large datasets */}
+                  {pagination.totalPages > 10 && (
+                    <div className="flex items-center space-x-2">
+                      <span className="text-sm text-gray-600">Page</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max={pagination.totalPages}
+                        value={pagination.page}
+                        onChange={(e) => {
+                          const page = Math.max(1, Math.min(pagination.totalPages, parseInt(e.target.value) || 1));
+                          setCurrentPage(page);
+                        }}
+                        className="w-16 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent text-center bg-white"
+                      />
+                      <span className="text-sm text-gray-600">of {pagination.totalPages}</span>
+                    </div>
+                  )}
+                  
+                  {/* Page number buttons (only show if <= 10 pages) */}
+                  {pagination.totalPages <= 10 && (
+                    <div className="flex items-center space-x-1">
+                      {Array.from({ length: pagination.totalPages }, (_, i) => {
+                        const pageNum = i + 1;
+                        return (
+                          <button
+                            key={pageNum}
+                            onClick={() => setCurrentPage(pageNum)}
+                            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                              pagination.page === pageNum
+                                ? 'bg-primary-600 text-white'
+                                : 'border border-gray-300 hover:bg-gray-100 bg-white'
+                            }`}
+                          >
+                            {pageNum}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  
+                  {/* Show page range for > 10 pages */}
+                  {pagination.totalPages > 10 && (
+                    <div className="flex items-center space-x-1">
+                      {Array.from({ length: Math.min(5, pagination.totalPages) }, (_, i) => {
+                        let pageNum;
+                        if (pagination.totalPages <= 5) {
+                          pageNum = i + 1;
+                        } else if (pagination.page <= 3) {
+                          pageNum = i + 1;
+                        } else if (pagination.page >= pagination.totalPages - 2) {
+                          pageNum = pagination.totalPages - 4 + i;
+                        } else {
+                          pageNum = pagination.page - 2 + i;
+                        }
+                        
+                        return (
+                          <button
+                            key={pageNum}
+                            onClick={() => setCurrentPage(pageNum)}
+                            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                              pagination.page === pageNum
+                                ? 'bg-primary-600 text-white'
+                                : 'border border-gray-300 hover:bg-gray-100 bg-white'
+                            }`}
+                          >
+                            {pageNum}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  
+                  <button
+                    onClick={() => setCurrentPage(pagination.page + 1)}
+                    disabled={pagination.page >= pagination.totalPages}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors flex items-center bg-white"
+                    title="Next page"
+                  >
+                    Next
+                    <ChevronRightIcon className="w-4 h-4 ml-1" />
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(pagination.totalPages)}
+                    disabled={pagination.page >= pagination.totalPages}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 transition-colors bg-white"
+                    title="Last page"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         ) : (
           /* Cards View */
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1065,6 +1306,15 @@ const getInitialsFromName = (name) => {
                   <div className="flex items-center text-sm text-gray-600">
                     <GlobeAltIcon className="w-4 h-4 mr-2" />
                     <ConferenceNameDisplay conference={client.conference} maxLength={25} />
+                  </div>
+                  <div className="flex items-center text-sm text-gray-600">
+                    <CalendarIcon className="w-4 h-4 mr-2" />
+                    <div>
+                      <div>Added: {client.createdAt ? new Date(client.createdAt).toLocaleDateString() : 'N/A'}</div>
+                      <div className="text-xs text-gray-500">
+                        {client.createdAt ? new Date(client.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                      </div>
+                    </div>
                   </div>
                 </div>
 

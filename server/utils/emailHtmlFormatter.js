@@ -10,13 +10,27 @@ const FONT_FAMILY_MAP = {
   tahoma: "font-family: Tahoma, Geneva, sans-serif;",
   couriernew: "font-family: 'Courier New', Courier, monospace;",
   lucidasansunicode: "font-family: 'Lucida Sans Unicode', 'Lucida Grande', sans-serif;",
-  palatinolinotype: "font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif;"
+  palatinolinotype: "font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif;",
+  cambria: "font-family: Cambria, serif;",
+  calistomt: "font-family: 'Calisto MT', serif;"
 };
 
 const FONT_SIZE_MAP = {
   small: 'font-size: 12px;',
   large: 'font-size: 18px;',
-  huge: 'font-size: 26px;'
+  huge: 'font-size: 26px;',
+  // Pixel-based sizes from Quill SizeStyle attributor
+  '8px': 'font-size: 8px;',
+  '9px': 'font-size: 9px;',
+  '10px': 'font-size: 10px;',
+  '11px': 'font-size: 11px;',
+  '12px': 'font-size: 12px;',
+  '14px': 'font-size: 14px;',
+  '16px': 'font-size: 16px;',
+  '18px': 'font-size: 18px;',
+  '20px': 'font-size: 20px;',
+  '22px': 'font-size: 22px;',
+  '24px': 'font-size: 24px;'
 };
 
 const ALIGNMENT_MAP = {
@@ -28,7 +42,7 @@ const ALIGNMENT_MAP = {
 const WRAPPER_STYLE = [
   "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif",
   'font-size: 15px',
-  'line-height: 1.6',
+  'line-height: 1.15',
   'color: #111827',
   'word-break: break-word'
 ].join('; ');
@@ -81,7 +95,13 @@ const applyQuillClass = ($el, className) => {
 
   if (className.startsWith('ql-size-')) {
     const key = className.replace('ql-size-', '');
+    // Handle both class-based (ql-size-12px) and direct pixel values
     if (FONT_SIZE_MAP[key]) {
+      appendStyle($el, FONT_SIZE_MAP[key]);
+      return true;
+    }
+    // Also handle if the key itself is a pixel value (e.g., "12px")
+    if (key.endsWith('px') && FONT_SIZE_MAP[key]) {
       appendStyle($el, FONT_SIZE_MAP[key]);
       return true;
     }
@@ -117,6 +137,25 @@ const applyQuillClass = ($el, className) => {
     return true;
   }
 
+  // Handle Quill color classes (ql-color-*)
+  // Note: Quill typically uses inline styles for colors, but we handle classes too
+  if (className.startsWith('ql-color-')) {
+    const colorValue = className.replace('ql-color-', '');
+    // Quill stores colors as hex values without #, or as color names
+    const color = colorValue.startsWith('#') ? colorValue : `#${colorValue}`;
+    appendStyle($el, `color: ${color};`);
+    return true;
+  }
+
+  // Handle Quill background color classes (ql-bg-*)
+  if (className.startsWith('ql-bg-')) {
+    const bgColorValue = className.replace('ql-bg-', '');
+    // Quill stores colors as hex values without #, or as color names
+    const bgColor = bgColorValue.startsWith('#') ? bgColorValue : `#${bgColorValue}`;
+    appendStyle($el, `background-color: ${bgColor};`);
+    return true;
+  }
+
   return false;
 };
 
@@ -135,16 +174,53 @@ const formatEmailHtml = (inputHtml = '') => {
     decodeEntities: false
   });
 
+  // First pass: Convert Quill classes to inline styles and preserve existing inline styles
   $('#__email-rich-root *').each((_, element) => {
     const $el = $(element);
     const classAttr = $el.attr('class');
+    const existingStyle = $el.attr('style') || '';
+    
+    // Preserve ALL existing inline styles BEFORE processing classes
+    // This ensures Quill's inline styles (font-size, font-family, color, etc.) are preserved
+    const preservedStyles = {};
+    
+    if (existingStyle) {
+      // Parse all existing style properties
+      const stylePairs = existingStyle.split(';').filter(s => s.trim());
+      stylePairs.forEach(pair => {
+        const [prop, value] = pair.split(':').map(s => s.trim());
+        if (prop && value) {
+          preservedStyles[prop.toLowerCase()] = value;
+        }
+      });
+    }
+    
     if (!classAttr) {
+      // Even without classes, ensure line-height is set if not present
+      if (!preservedStyles['line-height']) {
+        ensureStyle($el, 'line-height', 'line-height: 1.15;');
+      }
+      // Preserve all existing styles
+      Object.keys(preservedStyles).forEach(prop => {
+        if (prop && preservedStyles[prop] && prop !== 'line-height') {
+          appendStyle($el, `${prop}: ${preservedStyles[prop]};`);
+        }
+      });
       return;
     }
 
     const classes = classAttr.split(/\s+/).filter(Boolean);
     if (classes.length === 0) {
       $el.removeAttr('class');
+      if (!preservedStyles['line-height']) {
+        ensureStyle($el, 'line-height', 'line-height: 1.15;');
+      }
+      // Restore all preserved styles
+      Object.keys(preservedStyles).forEach(prop => {
+        if (prop && preservedStyles[prop] && prop !== 'line-height') {
+          appendStyle($el, `${prop}: ${preservedStyles[prop]};`);
+        }
+      });
       return;
     }
 
@@ -156,24 +232,147 @@ const formatEmailHtml = (inputHtml = '') => {
       }
     });
 
+    // Restore preserved styles AFTER applying Quill classes
+    // This ensures inline styles from Quill take precedence, but we restore if missing
+    const currentStyle = $el.attr('style') || '';
+    Object.keys(preservedStyles).forEach(prop => {
+      if (prop && preservedStyles[prop] && !cssPropertyExists(currentStyle, prop)) {
+        appendStyle($el, `${prop}: ${preservedStyles[prop]};`);
+      }
+    });
+
     if (classesToKeep.length > 0) {
       $el.attr('class', classesToKeep.join(' '));
     } else {
       $el.removeAttr('class');
     }
+    
+    // Ensure line-height is set only if not already present (preserve user-defined spacing)
+    const finalStyle = $el.attr('style') || '';
+    if (!cssPropertyExists(finalStyle, 'line-height')) {
+      ensureStyle($el, 'line-height', 'line-height: 1.15;');
+    }
+    // Preserve margin-bottom if it exists (user-defined paragraph spacing)
+    // Don't override it with DEFAULT_PARAGRAPH_STYLE
   });
 
-  $('#__email-rich-root p').each((_, element) => ensureStyle($(element), 'margin', DEFAULT_PARAGRAPH_STYLE));
+  // Apply line-height 1.15 to all text elements only if not already set
+  // This preserves user-defined line spacing from the editor
+  $('#__email-rich-root p, #__email-rich-root div, #__email-rich-root span, #__email-rich-root li, #__email-rich-root td, #__email-rich-root th').each((_, element) => {
+    const $el = $(element);
+    const currentStyle = $el.attr('style') || '';
+    // Only apply if line-height is not already set (preserve user-defined spacing)
+    if (!cssPropertyExists(currentStyle, 'line-height')) {
+      ensureStyle($el, 'line-height', 'line-height: 1.15;');
+    }
+  });
+  
+  // Apply paragraph margin only if margin-bottom is not already set
+  // This preserves user-defined paragraph spacing from the editor
+  $('#__email-rich-root p').each((_, element) => {
+    const $el = $(element);
+    const currentStyle = $el.attr('style') || '';
+    // Only apply default margin if margin-bottom is not already set
+    if (!cssPropertyExists(currentStyle, 'margin-bottom')) {
+      ensureStyle($el, 'margin', DEFAULT_PARAGRAPH_STYLE);
+    }
+  });
   $('#__email-rich-root ul, #__email-rich-root ol').each((_, element) => ensureStyle($(element), 'margin', DEFAULT_LIST_MARGIN));
   $('#__email-rich-root ul, #__email-rich-root ol').each((_, element) => ensureStyle($(element), 'padding', DEFAULT_LIST_PADDING));
   $('#__email-rich-root li').each((_, element) => ensureStyle($(element), 'margin', DEFAULT_LIST_ITEM_STYLE));
-  $('#__email-rich-root li').each((_, element) => ensureStyle($(element), 'line-height', 'line-height: 1.6;'));
+
+  // Fix links for email client compatibility (especially Outlook and Yahoo)
+  $('#__email-rich-root a').each((_, element) => {
+    const $link = $(element);
+    let href = $link.attr('href');
+    
+    // Ensure href exists and is valid
+    if (!href || href.trim() === '' || href === '#') {
+      // If no valid href, try to extract from text content
+      const linkText = $link.text().trim();
+      if (linkText && (linkText.startsWith('http://') || linkText.startsWith('https://'))) {
+        href = linkText;
+        $link.attr('href', href);
+      } else if (linkText && linkText.match(/^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}/)) {
+        // Looks like a URL without protocol
+        href = `https://${linkText}`;
+        $link.attr('href', href);
+      } else {
+        // Remove invalid links and replace with plain text
+        $link.replaceWith($link.html() || $link.text());
+        return;
+      }
+    }
+    
+    // Ensure href is absolute (add protocol if missing)
+    let finalHref = href.trim();
+    if (finalHref && !finalHref.match(/^(https?|mailto|tel|ftp):/i)) {
+      // If it looks like a URL but missing protocol, add https://
+      if (finalHref.match(/^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}/)) {
+        finalHref = `https://${finalHref}`;
+        $link.attr('href', finalHref);
+      }
+    }
+    
+    // Clean up href - remove any whitespace or invalid characters
+    finalHref = finalHref.replace(/\s+/g, '').replace(/[<>"]/g, '');
+    $link.attr('href', finalHref);
+    
+    // Add email-client-friendly styles for links (Outlook/Yahoo compatible)
+    const linkStyle = $link.attr('style') || '';
+    const stylesToAdd = [];
+    
+    if (!cssPropertyExists(linkStyle, 'color')) {
+      stylesToAdd.push('color: #2563eb;');
+    }
+    if (!cssPropertyExists(linkStyle, 'text-decoration')) {
+      stylesToAdd.push('text-decoration: underline;');
+    }
+    
+    // Add styles if needed
+    if (stylesToAdd.length > 0) {
+      stylesToAdd.forEach(style => appendStyle($link, style));
+    }
+    
+    // Ensure link text is not empty (Outlook requirement)
+    const linkContent = $link.html().trim() || $link.text().trim();
+    if (!linkContent) {
+      $link.text(finalHref);
+    }
+    
+    // Handle target attribute for email clients
+    if ($link.attr('target') === '_blank') {
+      // Keep target="_blank" but ensure rel="noopener" for security
+      if (!$link.attr('rel')) {
+        $link.attr('rel', 'noopener noreferrer');
+      }
+    } else {
+      // Remove target if it's not _blank (some email clients don't like other targets)
+      $link.removeAttr('target');
+    }
+    
+    // Ensure link is not nested in a way that breaks Outlook
+    // Outlook doesn't like links inside certain block elements in certain ways
+    const parent = $link.parent();
+    if (parent.length && parent.is('p, div')) {
+      // Ensure the link has proper display for Outlook
+      const currentDisplay = parent.attr('style') || '';
+      if (!cssPropertyExists(currentDisplay, 'display')) {
+        // Don't modify parent, but ensure link itself is inline
+        if (!cssPropertyExists(linkStyle, 'display')) {
+          appendStyle($link, 'display: inline;');
+        }
+      }
+    }
+  });
 
   let formatted = $('#__email-rich-root').html();
   if (!formatted) {
     return '';
   }
 
+  // Wrap in container div, but don't override existing font styles
+  // The wrapper provides default styles, but inline styles on elements take precedence
   if (!/data-rich-email-wrapper/.test(formatted)) {
     formatted = `<div data-rich-email-wrapper="true" style="${WRAPPER_STYLE}">${formatted}</div>`;
   }

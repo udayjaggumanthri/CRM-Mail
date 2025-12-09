@@ -60,6 +60,22 @@ const SizeStyle = Quill.import('attributors/style/size');
 SizeStyle.whitelist = ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px'];
 Quill.register(SizeStyle, true);
 
+// Register line-height as style attributor using Parchment
+// Use BLOCK scope so it applies to entire paragraphs (like Word)
+const Parchment = Quill.import('parchment');
+const LineHeightAttributor = new Parchment.Attributor.Style('line-height', 'line-height', {
+  scope: Parchment.Scope.BLOCK,
+  whitelist: ['1.0', '1.15', '1.5', '1.75', '2.0', '2.5', '3.0']
+});
+Quill.register(LineHeightAttributor, true);
+
+// Register margin-bottom as style attributor using Parchment (paragraph spacing)
+const MarginBottomAttributor = new Parchment.Attributor.Style('margin-bottom', 'margin-bottom', {
+  scope: Parchment.Scope.BLOCK,
+  whitelist: ['0', '0.5em', '1em', '1.5em', '2em', '2.5em', '3em']
+});
+Quill.register(MarginBottomAttributor, true);
+
 // Register a custom Blot to preserve HTML content in contenteditable="false" divs
 const BlockEmbed = Quill.import('blots/block/embed');
 class PreservedHtmlBlot extends BlockEmbed {
@@ -937,17 +953,238 @@ const UnifiedEmail = () => {
 
   // Quill editor modules configuration
   const quillModules = {
-    toolbar: [
-      [{ header: [1, 2, 3, false] }],
-      [{ font: ['arial', 'calistomt', 'cambria', 'couriernew', 'georgia', 'helvetica', 'lucidasansunicode', 'palatinolinotype', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana'] }],
-      [{ size: ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px', false] }],
-      ['bold', 'italic', 'underline', 'strike'],
-      [{ color: [] }, { background: [] }],
-      [{ list: 'ordered'}, { list: 'bullet' }],
-      [{ align: [] }],
-      ['link', 'image'],
-      ['clean']
-    ],
+    toolbar: {
+      container: [
+        [{ header: [1, 2, 3, false] }],
+        [{ font: ['arial', 'calistomt', 'cambria', 'couriernew', 'georgia', 'helvetica', 'lucidasansunicode', 'palatinolinotype', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana'] }],
+        [{ size: ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px', false] }],
+        ['bold', 'italic', 'underline', 'strike'],
+        [{ color: [] }, { background: [] }],
+        [{ 'line-spacing': ['1.0', '1.15', '1.5', '1.75', '2.0', '2.5', '3.0'] }],
+        [{ 'paragraph-spacing': ['0', '0.5em', '1em', '1.5em', '2em', '2.5em', '3em'] }],
+        [{ list: 'ordered'}, { list: 'bullet' }],
+        [{ align: [] }],
+        ['link', 'image'],
+        ['clean']
+      ],
+      handlers: {
+        'line-spacing': function(value) {
+          const quill = this.quill;
+          const selection = quill.getSelection(true);
+          if (!selection) return;
+          
+          // Preserve selection to restore it after formatting
+          const savedSelection = { index: selection.index, length: selection.length };
+          
+          // Get all blocks in the selection to apply line-height to all paragraphs
+          const [startLine] = quill.getLine(selection.index);
+          const [endLine] = quill.getLine(selection.index + selection.length);
+          
+          if (startLine && endLine) {
+            const startIndex = quill.getIndex(startLine);
+            const endIndex = quill.getIndex(endLine);
+            
+            // Apply to all paragraphs in selection
+            for (let i = startIndex; i <= endIndex; i++) {
+              const [line] = quill.getLine(i);
+              if (line) {
+                const lineIdx = quill.getIndex(line);
+                const currentFormat = quill.getFormat(line);
+                const currentLineHeight = currentFormat['line-height'] || '1.15';
+                
+                if (value === currentLineHeight) {
+                  quill.formatLine(lineIdx, 'line-height', false, 'user');
+                } else {
+                  quill.formatLine(lineIdx, 'line-height', value, 'user');
+                }
+              }
+            }
+          } else if (startLine) {
+            // Single paragraph
+            const lineIndex = quill.getIndex(startLine);
+            const currentFormat = quill.getFormat(startLine);
+            const currentLineHeight = currentFormat['line-height'] || '1.15';
+            
+            if (value === currentLineHeight) {
+              quill.formatLine(lineIndex, 'line-height', false, 'user');
+            } else {
+              quill.formatLine(lineIndex, 'line-height', value, 'user');
+            }
+          }
+          
+          // Restore selection
+          setTimeout(() => {
+            quill.setSelection(savedSelection.index, savedSelection.length, 'user');
+          }, 0);
+        },
+        'paragraph-spacing': function(value) {
+          const quill = this.quill;
+          const selection = quill.getSelection(true);
+          if (!selection) return;
+          
+          // Preserve selection to restore it after formatting
+          const savedSelection = { index: selection.index, length: selection.length };
+          
+          // Get all blocks in the selection to apply margin-bottom to all paragraphs
+          const [startLine] = quill.getLine(selection.index);
+          const [endLine] = quill.getLine(selection.index + selection.length);
+          
+          if (startLine && endLine) {
+            const startIndex = quill.getIndex(startLine);
+            const endIndex = quill.getIndex(endLine);
+            
+            // Apply to all paragraphs in selection
+            for (let i = startIndex; i <= endIndex; i++) {
+              const [line] = quill.getLine(i);
+              if (line) {
+                const lineIdx = quill.getIndex(line);
+                const currentFormat = quill.getFormat(line);
+                const currentMargin = currentFormat['margin-bottom'] || '0';
+                
+                if (value === currentMargin) {
+                  quill.formatLine(lineIdx, 'margin-bottom', false, 'user');
+                } else {
+                  quill.formatLine(lineIdx, 'margin-bottom', value, 'user');
+                }
+              }
+            }
+          } else if (startLine) {
+            // Single paragraph
+            const lineIndex = quill.getIndex(startLine);
+            const currentFormat = quill.getFormat(startLine);
+            const currentMargin = currentFormat['margin-bottom'] || '0';
+            
+            if (value === currentMargin) {
+              quill.formatLine(lineIndex, 'margin-bottom', false, 'user');
+            } else {
+              quill.formatLine(lineIndex, 'margin-bottom', value, 'user');
+            }
+          }
+          
+          // Restore selection
+          setTimeout(() => {
+            quill.setSelection(savedSelection.index, savedSelection.length, 'user');
+          }, 0);
+        }
+      }
+    },
+    keyboard: {
+      bindings: {
+        // Override Enter key to create paragraph with spacing (like Word)
+        enter: {
+          key: 'Enter',
+          handler: function(range, context) {
+            const quill = this.quill;
+            
+            // Get current block format BEFORE Enter is processed
+            const [currentLine] = quill.getLine(range.index);
+            if (!currentLine) return true;
+            
+            // Get format from the DOM element directly to avoid Quill's format changes
+            const currentLineElement = currentLine.domNode || currentLine;
+            const currentStyle = currentLineElement.getAttribute('style') || '';
+            
+            // Extract margin-bottom and line-height from inline styles
+            let paragraphSpacing = '1em';
+            let lineHeight = '1.15';
+            
+            if (currentStyle) {
+              const marginMatch = currentStyle.match(/margin-bottom:\s*([^;]+)/i);
+              if (marginMatch) {
+                paragraphSpacing = marginMatch[1].trim();
+              }
+              const lineHeightMatch = currentStyle.match(/line-height:\s*([^;]+)/i);
+              if (lineHeightMatch) {
+                lineHeight = lineHeightMatch[1].trim();
+              }
+            }
+            
+            // Also try to get from Quill format as fallback
+            if (!paragraphSpacing || paragraphSpacing === '') {
+              const currentBlockFormat = quill.getFormat(currentLine);
+              paragraphSpacing = currentBlockFormat['margin-bottom'] || '1em';
+            }
+            if (!lineHeight || lineHeight === '') {
+              const currentBlockFormat = quill.getFormat(currentLine);
+              lineHeight = currentBlockFormat['line-height'] || '1.15';
+            }
+            
+            // Let Quill handle the default Enter behavior (creates new paragraph)
+            // Use a more reliable approach with multiple event listeners
+            let applied = false;
+            const applyFormatting = () => {
+              if (applied) return;
+              const newRange = quill.getSelection(true);
+              if (newRange) {
+                const [newLine] = quill.getLine(newRange.index);
+                if (newLine) {
+                  const lineIndex = quill.getIndex(newLine);
+                  // Apply both line-height and margin-bottom to new paragraph
+                  // Use setTimeout to ensure it happens after Quill's internal processing
+                  setTimeout(() => {
+                    quill.formatLine(lineIndex, 'line-height', lineHeight, 'user');
+                    quill.formatLine(lineIndex, 'margin-bottom', paragraphSpacing, 'user');
+                  }, 0);
+                  applied = true;
+                  quill.off('text-change', applyFormatting);
+                  quill.off('selection-change', applyFormatting);
+                }
+              }
+            };
+            
+            // Listen for both text-change and selection-change to catch the new paragraph
+            quill.once('text-change', applyFormatting);
+            quill.once('selection-change', applyFormatting);
+            
+            // Fallback timeout with longer delay
+            setTimeout(() => {
+              if (!applied) {
+                applyFormatting();
+                quill.off('text-change', applyFormatting);
+                quill.off('selection-change', applyFormatting);
+              }
+            }, 50);
+            
+            return true; // Allow default behavior
+          }
+        },
+        // Shift+Enter creates line break without paragraph spacing (like Word)
+        'shift enter': {
+          key: 'Enter',
+          shiftKey: true,
+          handler: function(range, context) {
+            const quill = this.quill;
+            
+            // Get current paragraph's line-height to preserve it
+            const [currentLine] = quill.getLine(range.index);
+            if (currentLine) {
+              const currentBlockFormat = quill.getFormat(currentLine);
+              const lineHeight = currentBlockFormat['line-height'] || '1.15';
+              
+              // After line break is created, ensure line-height is preserved
+              const handler = () => {
+                const newRange = quill.getSelection(true);
+                if (newRange) {
+                  // Line break stays in same paragraph, so apply line-height to current paragraph
+                  const [line] = quill.getLine(newRange.index);
+                  if (line) {
+                    const lineIndex = quill.getIndex(line);
+                    quill.formatLine(lineIndex, 'line-height', lineHeight, 'user');
+                  }
+                }
+                quill.off('text-change', handler);
+              };
+              
+              quill.once('text-change', handler);
+            }
+            
+            // Quill's default Shift+Enter behavior creates a line break (<br>)
+            // This stays within the same paragraph, so no paragraph spacing is added
+            return true; // Allow default behavior
+          }
+        }
+      }
+    },
     clipboard: {
       // Preserve HTML structure when pasting/loading
       matchVisual: false
@@ -964,6 +1201,8 @@ const UnifiedEmail = () => {
     'strike',
     'color',
     'background',
+    'line-height',
+    'margin-bottom',
     'list',
     'bullet',
     'align',
@@ -1402,18 +1641,24 @@ const UnifiedEmail = () => {
                     onChange={(e) => setFilters({...filters, toEmail: e.target.value})}
                     className="px-3 py-2 text-sm border border-gray-300 rounded-md"
                   />
-                  <input
-                    type="date"
-                    value={filters.startDate}
-                    onChange={(e) => setFilters({...filters, startDate: e.target.value})}
-                    className="px-3 py-2 text-sm border border-gray-300 rounded-md"
-                  />
-                  <input
-                    type="date"
-                    value={filters.endDate}
-                    onChange={(e) => setFilters({...filters, endDate: e.target.value})}
-                    className="px-3 py-2 text-sm border border-gray-300 rounded-md"
-                  />
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Email Date From</label>
+                    <input
+                      type="date"
+                      value={filters.startDate}
+                      onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+                      className="px-3 py-2 text-sm border border-gray-300 rounded-md w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Email Date To</label>
+                    <input
+                      type="date"
+                      value={filters.endDate}
+                      onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+                      className="px-3 py-2 text-sm border border-gray-300 rounded-md w-full"
+                    />
+                  </div>
                 </div>
                 <div className="flex space-x-2">
                   <button
@@ -1964,19 +2209,21 @@ const UnifiedEmail = () => {
                     min-height: 200px;
                     padding: 16px;
                     text-align: left;
-                    line-height: 1.8;
+                    line-height: 1.15;
                     word-wrap: break-word;
                     overflow-wrap: break-word;
                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
                     font-size: 14px;
                     color: #1f2937;
                   }
+                  /* Paragraph spacing will be controlled by inline styles from Quill */
                   .compose-editor .ql-editor p {
-                    margin: 0 0 12px 0;
-                    line-height: 1.8;
+                    margin: 0;
+                    /* Line-height and margin-bottom will be applied via inline styles from Quill */
                   }
-                  .compose-editor .ql-editor p:last-child {
-                    margin-bottom: 0;
+                  /* Ensure paragraphs with margin-bottom spacing are visible */
+                  .compose-editor .ql-editor p[style*="margin-bottom"] {
+                    display: block;
                   }
                   .compose-editor .ql-editor h1,
                   .compose-editor .ql-editor h2,
@@ -1992,7 +2239,7 @@ const UnifiedEmail = () => {
                   }
                   .compose-editor .ql-editor li {
                     margin: 4px 0;
-                    line-height: 1.8;
+                    line-height: 1.15;
                   }
                   .compose-editor .ql-editor blockquote {
                     margin: 16px 0;
@@ -2135,6 +2382,31 @@ const UnifiedEmail = () => {
                   .compose-editor .ql-toolbar .ql-formats {
                     margin-right: 12px;
                   }
+                  /* Line spacing and paragraph spacing picker styles */
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing,
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing {
+                    width: 140px;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-label::before {
+                    content: 'Line Spacing';
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.0"]::before { content: '1.0'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.15"]::before { content: '1.15'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.5"]::before { content: '1.5'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.75"]::before { content: '1.75'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="2.0"]::before { content: '2.0'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="2.5"]::before { content: '2.5'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="3.0"]::before { content: '3.0'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-label::before {
+                    content: 'Paragraph Spacing';
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="0"]::before { content: '0'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="0.5em"]::before { content: '0.5em'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="1em"]::before { content: '1em'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="1.5em"]::before { content: '1.5em'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="2em"]::before { content: '2em'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="2.5em"]::before { content: '2.5em'; }
+                  .compose-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="3em"]::before { content: '3em'; }
                   /* Keep font picker compact and avoid overflow */
                   .compose-editor .ql-toolbar .ql-picker.ql-font {
                     max-width: 160px;

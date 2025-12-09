@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   Plus,
   Edit,
   Trash2,
-  Eye,
   Mail,
   Paperclip,
   X,
@@ -18,10 +18,14 @@ import {
   Globe,
   Calendar,
   MapPin,
-  File
+  File,
+  ArrowLeft,
+  ChevronRight,
+  Search,
+  Filter,
+  Grid3x3,
+  List
 } from 'lucide-react';
-import { Dialog, Transition } from '@headlessui/react';
-import { Fragment } from 'react';
 import ReactQuill, { Quill } from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 
@@ -48,18 +52,296 @@ const SizeStyle = Quill.import('attributors/style/size');
 SizeStyle.whitelist = ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px'];
 Quill.register(SizeStyle, true);
 
+// Register line-height as style attributor using Parchment
+// Use BLOCK scope so it applies to entire paragraphs (like Word)
+const Parchment = Quill.import('parchment');
+const LineHeightAttributor = new Parchment.Attributor.Style('line-height', 'line-height', {
+  scope: Parchment.Scope.BLOCK,
+  whitelist: ['1.0', '1.15', '1.5', '1.75', '2.0', '2.5', '3.0']
+});
+Quill.register(LineHeightAttributor, true);
+
+// Register margin-bottom as style attributor using Parchment (paragraph spacing)
+const MarginBottomAttributor = new Parchment.Attributor.Style('margin-bottom', 'margin-bottom', {
+  scope: Parchment.Scope.BLOCK,
+  whitelist: ['0', '0.5em', '1em', '1.5em', '2em', '2.5em', '3em']
+});
+Quill.register(MarginBottomAttributor, true);
+
+// Create custom Picker for line spacing
+const Picker = Quill.import('ui/picker');
+class LineSpacingPicker extends Picker {
+  constructor(select, options) {
+    super(select);
+    this.options = options || {};
+  }
+  
+  static values = ['1.0', '1.15', '1.5', '1.75', '2.0', '2.5', '3.0'];
+  
+  static value(quill) {
+    const selection = quill.getSelection();
+    if (!selection) return null;
+    const format = quill.getFormat(selection);
+    return format['line-height'] || '1.15';
+  }
+}
+
+// Create custom Picker for paragraph spacing
+class ParagraphSpacingPicker extends Picker {
+  constructor(select, options) {
+    super(select);
+    this.options = options || {};
+  }
+  
+  static values = ['0', '0.5em', '1em', '1.5em', '2em', '2.5em', '3em'];
+  
+  static value(quill) {
+    const selection = quill.getSelection();
+    if (!selection) return null;
+    const format = quill.getFormat(selection);
+    return format['margin-bottom'] || '0';
+  }
+}
+
 const quillModules = {
-  toolbar: [
-    [{ header: [1, 2, 3, false] }],
-    [{ font: ['arial', 'calistomt', 'cambria', 'couriernew', 'georgia', 'helvetica', 'lucidasansunicode', 'palatinolinotype', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana'] }],
-    [{ size: ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px', false] }],
-    ['bold', 'italic', 'underline', 'strike'],
-    [{ color: [] }, { background: [] }],
-    [{ list: 'ordered' }, { list: 'bullet' }],
-    [{ align: [] }],
-    ['link', 'image'],
-    ['clean']
-  ]
+  toolbar: {
+    container: [
+      [{ header: [1, 2, 3, false] }],
+      [{ font: ['arial', 'calistomt', 'cambria', 'couriernew', 'georgia', 'helvetica', 'lucidasansunicode', 'palatinolinotype', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana'] }],
+      [{ size: ['8px', '9px', '10px', '11px', '12px', '14px', '16px', '18px', '20px', '22px', '24px', false] }],
+      ['bold', 'italic', 'underline', 'strike'],
+      [{ color: [] }, { background: [] }],
+      [{ 'line-spacing': ['1.0', '1.15', '1.5', '1.75', '2.0', '2.5', '3.0'] }],
+      [{ 'paragraph-spacing': ['0', '0.5em', '1em', '1.5em', '2em', '2.5em', '3em'] }],
+      [{ list: 'ordered' }, { list: 'bullet' }],
+      [{ align: [] }],
+      ['link', 'image'],
+      ['clean']
+    ],
+    handlers: {
+      'line-spacing': function(value) {
+        const quill = this.quill;
+        const selection = quill.getSelection(true);
+        if (!selection) return;
+        
+        // Preserve selection to restore it after formatting
+        const savedSelection = { index: selection.index, length: selection.length };
+        
+        // Get all blocks in the selection to apply line-height to all paragraphs
+        const [startLine] = quill.getLine(selection.index);
+        const [endLine] = quill.getLine(selection.index + selection.length);
+        
+        if (startLine && endLine) {
+          const startIndex = quill.getIndex(startLine);
+          const endIndex = quill.getIndex(endLine);
+          
+          // Apply to all paragraphs in selection
+          for (let i = startIndex; i <= endIndex; i++) {
+            const [line] = quill.getLine(i);
+            if (line) {
+              const lineIdx = quill.getIndex(line);
+              const currentFormat = quill.getFormat(line);
+              const currentLineHeight = currentFormat['line-height'] || '1.15';
+              
+              if (value === currentLineHeight) {
+                quill.formatLine(lineIdx, 'line-height', false, 'user');
+              } else {
+                quill.formatLine(lineIdx, 'line-height', value, 'user');
+              }
+            }
+          }
+        } else if (startLine) {
+          // Single paragraph
+          const lineIndex = quill.getIndex(startLine);
+          const currentFormat = quill.getFormat(startLine);
+          const currentLineHeight = currentFormat['line-height'] || '1.15';
+          
+          if (value === currentLineHeight) {
+            quill.formatLine(lineIndex, 'line-height', false, 'user');
+          } else {
+            quill.formatLine(lineIndex, 'line-height', value, 'user');
+          }
+        }
+        
+        // Restore selection
+        setTimeout(() => {
+          quill.setSelection(savedSelection.index, savedSelection.length, 'user');
+        }, 0);
+      },
+      'paragraph-spacing': function(value) {
+        const quill = this.quill;
+        const selection = quill.getSelection(true);
+        if (!selection) return;
+        
+        // Preserve selection to restore it after formatting
+        const savedSelection = { index: selection.index, length: selection.length };
+        
+        // Get all blocks in the selection to apply margin-bottom to all paragraphs
+        const [startLine] = quill.getLine(selection.index);
+        const [endLine] = quill.getLine(selection.index + selection.length);
+        
+        if (startLine && endLine) {
+          const startIndex = quill.getIndex(startLine);
+          const endIndex = quill.getIndex(endLine);
+          
+          // Apply to all paragraphs in selection
+          for (let i = startIndex; i <= endIndex; i++) {
+            const [line] = quill.getLine(i);
+            if (line) {
+              const lineIdx = quill.getIndex(line);
+              const currentFormat = quill.getFormat(line);
+              const currentMargin = currentFormat['margin-bottom'] || '0';
+              
+              if (value === currentMargin) {
+                quill.formatLine(lineIdx, 'margin-bottom', false, 'user');
+              } else {
+                quill.formatLine(lineIdx, 'margin-bottom', value, 'user');
+              }
+            }
+          }
+        } else if (startLine) {
+          // Single paragraph
+          const lineIndex = quill.getIndex(startLine);
+          const currentFormat = quill.getFormat(startLine);
+          const currentMargin = currentFormat['margin-bottom'] || '0';
+          
+          if (value === currentMargin) {
+            quill.formatLine(lineIndex, 'margin-bottom', false, 'user');
+          } else {
+            quill.formatLine(lineIndex, 'margin-bottom', value, 'user');
+          }
+        }
+        
+        // Restore selection
+        setTimeout(() => {
+          quill.setSelection(savedSelection.index, savedSelection.length, 'user');
+        }, 0);
+      }
+    }
+  },
+  keyboard: {
+    bindings: {
+      // Override Enter key to create paragraph with spacing (like Word)
+      enter: {
+        key: 'Enter',
+        handler: function(range, context) {
+          const quill = this.quill;
+          
+          // Get current block format BEFORE Enter is processed
+          const [currentLine] = quill.getLine(range.index);
+          if (!currentLine) return true;
+          
+          // Get format from the DOM element directly to avoid Quill's format changes
+          const currentLineElement = currentLine.domNode || currentLine;
+          const currentStyle = currentLineElement.getAttribute('style') || '';
+          
+          // Extract margin-bottom and line-height from inline styles
+          let paragraphSpacing = '1em';
+          let lineHeight = '1.15';
+          
+          if (currentStyle) {
+            const marginMatch = currentStyle.match(/margin-bottom:\s*([^;]+)/i);
+            if (marginMatch) {
+              paragraphSpacing = marginMatch[1].trim();
+            }
+            const lineHeightMatch = currentStyle.match(/line-height:\s*([^;]+)/i);
+            if (lineHeightMatch) {
+              lineHeight = lineHeightMatch[1].trim();
+            }
+          }
+          
+          // Also try to get from Quill format as fallback
+          if (!paragraphSpacing || paragraphSpacing === '') {
+            const currentBlockFormat = quill.getFormat(currentLine);
+            paragraphSpacing = currentBlockFormat['margin-bottom'] || '1em';
+          }
+          if (!lineHeight || lineHeight === '') {
+            const currentBlockFormat = quill.getFormat(currentLine);
+            lineHeight = currentBlockFormat['line-height'] || '1.15';
+          }
+          
+          // Let Quill handle the default Enter behavior (creates new paragraph)
+          // Use a more reliable approach with multiple event listeners
+          let applied = false;
+          const applyFormatting = () => {
+            if (applied) return;
+            const newRange = quill.getSelection(true);
+            if (newRange) {
+              const [newLine] = quill.getLine(newRange.index);
+              if (newLine) {
+                const lineIndex = quill.getIndex(newLine);
+                // Apply both line-height and margin-bottom to new paragraph
+                // Use setTimeout to ensure it happens after Quill's internal processing
+                setTimeout(() => {
+                  quill.formatLine(lineIndex, 'line-height', lineHeight, 'user');
+                  quill.formatLine(lineIndex, 'margin-bottom', paragraphSpacing, 'user');
+                }, 0);
+                applied = true;
+                quill.off('text-change', applyFormatting);
+                quill.off('selection-change', applyFormatting);
+              }
+            }
+          };
+          
+          // Listen for both text-change and selection-change to catch the new paragraph
+          quill.once('text-change', applyFormatting);
+          quill.once('selection-change', applyFormatting);
+          
+          // Fallback timeout with longer delay
+          setTimeout(() => {
+            if (!applied) {
+              applyFormatting();
+              quill.off('text-change', applyFormatting);
+              quill.off('selection-change', applyFormatting);
+            }
+          }, 50);
+          
+          return true; // Allow default behavior
+        }
+      },
+      // Shift+Enter creates line break without paragraph spacing (like Word)
+      'shift enter': {
+        key: 'Enter',
+        shiftKey: true,
+        handler: function(range, context) {
+          const quill = this.quill;
+          
+          // Get current paragraph's line-height to preserve it
+          const [currentLine] = quill.getLine(range.index);
+          if (currentLine) {
+            const currentBlockFormat = quill.getFormat(currentLine);
+            const lineHeight = currentBlockFormat['line-height'] || '1.15';
+            
+            // After line break is created, ensure line-height is preserved
+            const handler = () => {
+              const newRange = quill.getSelection(true);
+              if (newRange) {
+                // Line break stays in same paragraph, so apply line-height to current paragraph
+                const [line] = quill.getLine(newRange.index);
+                if (line) {
+                  const lineIndex = quill.getIndex(line);
+                  quill.formatLine(lineIndex, 'line-height', lineHeight, 'user');
+                }
+              }
+              quill.off('text-change', handler);
+            };
+            
+            quill.once('text-change', handler);
+          }
+          
+          // Quill's default Shift+Enter behavior creates a line break (<br>)
+          // This stays within the same paragraph, so no paragraph spacing is added
+          return true; // Allow default behavior
+        }
+      }
+    }
+  },
+  clipboard: {
+    // Preserve line breaks and formatting when pasting
+    matchVisual: false,
+    // Don't normalize HTML - preserve original formatting and spacing
+    preserveWhitespace: true
+  }
 };
 
 const quillFormats = [
@@ -72,11 +354,15 @@ const quillFormats = [
   'strike',
   'color',
   'background',
+  'line-height',
+  'margin-bottom',
   'list',
   'bullet',
   'align',
   'link',
-  'image'
+  'image',
+  'indent',
+  'direction'
 ];
 
 const TEMPLATE_EDITOR_STYLES = `
@@ -94,9 +380,28 @@ const TEMPLATE_EDITOR_STYLES = `
     min-height: 250px;
     padding: 12px;
     text-align: left;
-    line-height: 1.6;
+    line-height: 1.15;
     word-wrap: break-word;
     overflow-wrap: break-word;
+    white-space: pre-wrap; /* Preserve whitespace and line breaks */
+  }
+  /* Preserve spacing in paragraphs - margin-bottom will be applied via inline styles */
+  .template-editor .ql-editor p {
+    margin: 0;
+    white-space: pre-wrap;
+    /* Line-height will be applied via inline styles from Quill */
+  }
+  /* Ensure paragraphs with margin-bottom spacing are visible */
+  .template-editor .ql-editor p[style*="margin-bottom"] {
+    display: block;
+  }
+  /* Preserve empty paragraphs for spacing */
+  .template-editor .ql-editor p:empty {
+    min-height: 1em;
+  }
+  /* Preserve spacing in divs */
+  .template-editor .ql-editor div {
+    white-space: pre-wrap;
   }
   .template-editor .ql-editor.ql-blank::before {
     left: 12px;
@@ -116,6 +421,31 @@ const TEMPLATE_EDITOR_STYLES = `
   .template-editor .ql-toolbar .ql-formats {
     margin-right: 8px;
   }
+  /* Line spacing and paragraph spacing picker styles */
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing,
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing {
+    width: 140px;
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-label::before {
+    content: 'Line Spacing';
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.0"]::before { content: '1.0'; }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.15"]::before { content: '1.15'; }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.5"]::before { content: '1.5'; }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="1.75"]::before { content: '1.75'; }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="2.0"]::before { content: '2.0'; }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="2.5"]::before { content: '2.5'; }
+  .template-editor .ql-toolbar .ql-picker.ql-line-spacing .ql-picker-item[data-value="3.0"]::before { content: '3.0'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-label::before {
+    content: 'Paragraph Spacing';
+  }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="0"]::before { content: '0'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="0.5em"]::before { content: '0.5em'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="1em"]::before { content: '1em'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="1.5em"]::before { content: '1.5em'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="2em"]::before { content: '2em'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="2.5em"]::before { content: '2.5em'; }
+  .template-editor .ql-toolbar .ql-picker.ql-paragraph-spacing .ql-picker-item[data-value="3em"]::before { content: '3em'; }
   .template-editor .ql-toolbar .ql-picker.ql-font {
     max-width: 160px;
   }
@@ -435,17 +765,22 @@ const getInitialTemplateForm = () => ({
 });
 
 const Templates = () => {
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showPreviewModal, setShowPreviewModal] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState(null);
-  const [attachments, setAttachments] = useState([]);
-  const bodyEditorRef = useRef(null);
-  const [formData, setFormData] = useState(getInitialTemplateForm());
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { id } = useParams();
+  const isEditMode = location.pathname.includes('/edit');
+  const isNewMode = location.pathname.includes('/new');
+  const isEditorMode = isEditMode || isNewMode;
+  
   const [activeTab, setActiveTab] = useState('templates');
-  const [activeDraftId, setActiveDraftId] = useState(null);
   const [draftIdBeingDeleted, setDraftIdBeingDeleted] = useState(null);
   const queryClient = useQueryClient();
+  
+  // Search and filter states
+  const [searchTerm, setSearchTerm] = useState('');
+  const [stageFilter, setStageFilter] = useState('all');
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
+  const [showFilters, setShowFilters] = useState(false);
 
   // Dynamic variables available for templates
   const availableVariables = [
@@ -480,18 +815,9 @@ const Templates = () => {
     const response = await axios.post('/api/template-drafts', draftData);
     return response.data;
   }, {
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries('template-drafts');
-      setActiveDraftId(data.id);
       setActiveTab('drafts');
-      if (data.attachments) {
-        setAttachments(
-          data.attachments.map((att, idx) => ({
-            ...att,
-            id: att.id || `${data.id}-${idx}`
-          }))
-        );
-      }
       toast.success('Draft saved');
     },
     onError: (error) => {
@@ -503,18 +829,9 @@ const Templates = () => {
     const response = await axios.put(`/api/template-drafts/${id}`, data);
     return response.data;
   }, {
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries('template-drafts');
-      setActiveDraftId(data.id);
       setActiveTab('drafts');
-      if (data.attachments) {
-        setAttachments(
-          data.attachments.map((att, idx) => ({
-            ...att,
-            id: att.id || `${data.id}-${idx}`
-          }))
-        );
-      }
       toast.success('Draft updated');
     },
     onError: (error) => {
@@ -533,10 +850,6 @@ const Templates = () => {
       },
       onSuccess: (_, variables) => {
         queryClient.invalidateQueries('template-drafts');
-        if (variables?.closeOnSuccess) {
-          resetForm();
-          setShowAddModal(false);
-        }
         if (!variables?.silent) {
           toast.success('Draft deleted');
         }
@@ -550,7 +863,6 @@ const Templates = () => {
     }
   );
 
-  const isSavingDraft = createTemplateDraftMutation.isLoading || updateTemplateDraftMutation.isLoading;
   const isDeletingDraft = deleteTemplateDraftMutation.isLoading;
 
   const { data: templates, isLoading } = useQuery('templates', async () => {
@@ -558,20 +870,30 @@ const Templates = () => {
     return response.data;
   });
 
+  // Fetch single template when in edit mode
+  const { data: editTemplate, isLoading: isLoadingEditTemplate } = useQuery(
+    ['template', id],
+    async () => {
+      const response = await axios.get(`/api/templates/${id}`);
+      return response.data;
+    },
+    {
+      enabled: isEditMode && !!id,
+      onError: (error) => {
+        toast.error(error.response?.data?.error || 'Failed to load template');
+        navigate('/templates');
+      }
+    }
+  );
+
   const addTemplateMutation = useMutation(async (templateData) => {
     const response = await axios.post('/api/templates', templateData);
     return response.data;
   }, {
     onSuccess: () => {
       queryClient.invalidateQueries('templates');
-      setShowAddModal(false);
-      setActiveTab('templates');
+      navigate('/templates');
       toast.success('Template created successfully');
-      if (activeDraftId) {
-        deleteTemplateDraftMutation.mutate({ id: activeDraftId, silent: true });
-      }
-      setActiveDraftId(null);
-      resetForm();
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to create template');
@@ -582,12 +904,10 @@ const Templates = () => {
     const response = await axios.put(`/api/templates/${id}`, data);
     return response.data;
   }, {
-    onSuccess: () => {
-      queryClient.invalidateQueries('templates');
-      setShowEditModal(false);
-      setSelectedTemplate(null);
+    onSuccess: async () => {
+      await queryClient.invalidateQueries('templates');
+      navigate('/templates');
       toast.success('Template updated successfully');
-      setActiveDraftId(null);
     },
     onError: (error) => {
       toast.error(error.response?.data?.error || 'Failed to update template');
@@ -631,19 +951,7 @@ const Templates = () => {
 
   const handleEdit = (template) => {
     if (!template) return;
-    setActiveDraftId(null);
-    setActiveTab('templates');
-    // Map backend template to UI form.
-    // For "Initial" emails we keep backend stage as abstract_submission but
-    // show a virtual "initial" stage in the dropdown for clarity.
-    const isInitial =
-      template.stage === 'abstract_submission' &&
-      (template.followUpNumber === 0 || template.followUpNumber === 1);
-
-    const uiStage = isInitial ? 'initial' : template.stage;
-
-    setSelectedTemplate(template);
-    setShowEditModal(true);
+    navigate(`/templates/${template.id}/edit`);
   };
 
   const handleDelete = (template) => {
@@ -652,126 +960,9 @@ const Templates = () => {
     }
   };
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-  };
-
-  const handleBodyChange = (value) => {
-    setFormData(prev => ({
-      ...prev,
-      bodyHtml: value,
-      bodyText: stripHtml(value)
-    }));
-  };
-
-  const handleFileUpload = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) {
-      return;
-    }
-
-    try {
-      const processed = await Promise.all(
-        files.map(async (file) => {
-          const base64Content = await readFileAsBase64(file);
-          return {
-            id: `${Date.now()}-${Math.random()}`,
-            name: file.name,
-            filename: file.name,
-            size: file.size,
-            type: file.type || 'application/octet-stream',
-            contentType: file.type || 'application/octet-stream',
-            encoding: 'base64',
-            content: base64Content
-          };
-        })
-      );
-
-      setAttachments(prev => [...prev, ...processed]);
-    } catch (error) {
-      console.error('Error reading attachment:', error);
-      toast.error('Failed to read one or more attachments');
-    } finally {
-      if (e.target) {
-        e.target.value = '';
-      }
-    }
-  };
-
-  const removeAttachment = (id) => {
-    setAttachments(prev => prev.filter(att => att.id !== id));
-  };
-
-  const buildDraftPayload = () => ({
-    name: formData.name || '',
-    // Map virtual "initial" stage to backend "abstract_submission"
-    stage: formData.stage === 'initial' ? 'abstract_submission' : (formData.stage || null),
-    subject: formData.subject || '',
-    bodyHtml: formData.bodyHtml || '',
-    bodyText: stripHtml(formData.bodyHtml || ''),
-    description: formData.description || '',
-    variables: formData.variables || [],
-    sendAfterDays: formData.sendAfterDays || 1,
-    followUpNumber: formData.followUpNumber || 1,
-    attachments: attachments.map(att => ({
-      id: att.id,
-      name: att.name,
-      filename: att.filename || att.name,
-      size: att.size,
-      type: att.type,
-      contentType: att.contentType || att.type,
-      encoding: att.encoding || (att.content ? 'base64' : undefined),
-      content: att.content || null
-    }))
-  });
-
-  const handleSaveDraft = () => {
-    if (isSavingDraft) return;
-    const payload = buildDraftPayload();
-    if (!payload.bodyHtml || payload.bodyHtml.trim() === '') {
-      toast.error('Email body is required before saving a draft');
-      return;
-    }
-
-    if (activeDraftId) {
-      updateTemplateDraftMutation.mutate({ id: activeDraftId, data: payload });
-    } else {
-      createTemplateDraftMutation.mutate(payload);
-    }
-  };
-
   const handleEditDraft = (draft) => {
     if (!draft) return;
-    setActiveDraftId(draft.id);
-    const isInitial =
-      draft.stage === 'abstract_submission' &&
-      (draft.followUpNumber === 0 || draft.followUpNumber === 1);
-    const uiStage = isInitial ? 'initial' : (draft.stage || '');
-    setFormData({
-      name: draft.name || '',
-      stage: uiStage,
-      subject: draft.subject || '',
-      bodyHtml: draft.bodyHtml || '',
-      bodyText: draft.bodyText || '',
-      description: draft.description || '',
-      variables: draft.variables || [],
-      sendAfterDays: draft.sendAfterDays || 1,
-      followUpNumber: draft.followUpNumber || 1
-    });
-    setAttachments(
-      (draft.attachments || []).map((att, idx) => ({
-        ...att,
-        id: att.id || `${draft.id}-${idx}`,
-        filename: att.filename || att.name,
-        contentType: att.contentType || att.type,
-        encoding: att.encoding || (att.content ? 'base64' : att.encoding)
-      }))
-    );
-    setShowAddModal(true);
+    navigate('/templates/new');
   };
 
   const handleDeleteDraft = (id) => {
@@ -780,215 +971,127 @@ const Templates = () => {
       const confirmed = window.confirm('Delete this template draft permanently?');
       if (!confirmed) return;
     }
-    const closeOnSuccess = activeDraftId === id;
-    deleteTemplateDraftMutation.mutate({ id, closeOnSuccess });
+    deleteTemplateDraftMutation.mutate({ id });
   };
 
-  const insertVariable = (variable) => {
-    const notation = `{${variable}}`;
-    const quillInstance = bodyEditorRef.current?.getEditor?.();
-
-    if (quillInstance) {
-      const selection = quillInstance.getSelection(true);
-      let index = quillInstance.getLength();
-
-      if (selection) {
-        index = selection.index;
-        if (selection.length > 0) {
-          quillInstance.deleteText(selection.index, selection.length, 'user');
-        }
-      }
-
-      quillInstance.insertText(index, notation, 'user');
-      quillInstance.setSelection(index + notation.length, 0, 'user');
-      quillInstance.focus();
-      return;
-    }
-
-    // Fallback: update state directly
-    setFormData(prev => {
-      const updatedHtml = `${prev.bodyHtml || ''}${notation}`;
-      return {
-        ...prev,
-        bodyHtml: updatedHtml,
-        bodyText: stripHtml(updatedHtml)
-      };
-    });
-  };
-
-  const resetForm = () => {
-    setFormData(getInitialTemplateForm());
-    setAttachments([]);
-    setActiveDraftId(null);
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!formData.name?.trim()) {
-      toast.error('Template name is required');
-      return;
-    }
-    if (!formData.stage) {
-      toast.error('Please select a stage');
-      return;
-    }
-    if (!formData.subject?.trim()) {
-      toast.error('Subject is required');
-      return;
-    }
-    const bodyTextValue = stripHtml(formData.bodyHtml);
-    if (!bodyTextValue) {
-      toast.error('Email body is required');
-      return;
-    }
-    const templateData = {
-      ...formData,
-      // Map virtual "initial" stage to backend stage + ensure followUpNumber = 1
-      stage: formData.stage === 'initial' ? 'abstract_submission' : formData.stage,
-      followUpNumber: formData.stage === 'initial' ? 1 : (formData.followUpNumber || 1),
-      bodyText: bodyTextValue,
-      attachments: attachments.map(att => ({
-        id: att.id,
-        name: att.name,
-        filename: att.filename || att.name,
-        size: att.size,
-        type: att.type,
-        contentType: att.contentType || att.type,
-        encoding: att.encoding || (att.content ? 'base64' : undefined),
-        content: att.content || null
-      }))
-    };
+  // Filter templates based on search and stage filter
+  const filteredTemplates = React.useMemo(() => {
+    if (!templates || !Array.isArray(templates)) return [];
     
-    if (selectedTemplate) {
-      updateTemplateMutation.mutate({ id: selectedTemplate.id, data: templateData });
-    } else {
-      addTemplateMutation.mutate(templateData);
-    }
-  };
-
-  const handleCloseModal = () => {
-    setShowAddModal(false);
-    setShowEditModal(false);
-    setSelectedTemplate(null);
-    setActiveDraftId(null);
-    setActiveTab('templates');
-    resetForm();
-  };
-
-  const handleCloseModalWithAutoSave = () => {
-    // Check if there's any meaningful content to save
-    const hasContent = 
-      formData.name?.trim() || 
-      formData.subject?.trim() || 
-      formData.bodyHtml?.trim() || 
-      attachments.length > 0;
-
-    // If there's content and we're in add mode (not editing an existing template)
-    if (hasContent && showAddModal && !selectedTemplate) {
-      const bodyTextValue = stripHtml(formData.bodyHtml || '');
-      
-      // Only auto-save if there's body content (required for draft)
-      if (bodyTextValue.trim()) {
-        const payload = buildDraftPayload();
-        
-        if (activeDraftId) {
-          // Update existing draft silently
-          updateTemplateDraftMutation.mutate(
-            { id: activeDraftId, data: payload },
-            {
-              onSuccess: () => {
-                toast.success('Draft auto-saved');
-                handleCloseModal();
-              },
-              onError: (error) => {
-                console.error('Error auto-saving draft:', error);
-                // Close modal even if save fails
-                handleCloseModal();
-              }
-            }
-          );
-          return; // Don't close immediately, wait for mutation
-        } else {
-          // Create new draft silently
-          createTemplateDraftMutation.mutate(
-            payload,
-            {
-              onSuccess: () => {
-                toast.success('Draft auto-saved');
-                handleCloseModal();
-              },
-              onError: (error) => {
-                console.error('Error auto-saving draft:', error);
-                // Close modal even if save fails
-                handleCloseModal();
-              }
-            }
-          );
-          return; // Don't close immediately, wait for mutation
-        }
-      }
+    let filtered = [...templates];
+    
+    // Apply search filter
+    if (searchTerm.trim()) {
+      const searchLower = searchTerm.toLowerCase().trim();
+      filtered = filtered.filter(template => 
+        template.name?.toLowerCase().includes(searchLower) ||
+        template.subject?.toLowerCase().includes(searchLower) ||
+        template.bodyText?.toLowerCase().includes(searchLower) ||
+        template.bodyHtml?.toLowerCase().includes(searchLower)
+      );
     }
     
-    // Close the modal if no content to save
-    handleCloseModal();
-  };
+    // Apply stage filter
+    if (stageFilter !== 'all') {
+      filtered = filtered.filter(template => {
+        if (stageFilter === 'initial') {
+          return template.stage === 'abstract_submission' && 
+                 (template.followUpNumber === 0 || template.followUpNumber === 1);
+        }
+        return template.stage === stageFilter;
+      });
+    }
+    
+    return filtered;
+  }, [templates, searchTerm, stageFilter]);
 
-  const handlePreview = (template) => {
-    setSelectedTemplate(template);
-    setShowPreviewModal(true);
-  };
+  // Filter drafts based on search
+  const filteredDrafts = React.useMemo(() => {
+    if (!templateDrafts || !Array.isArray(templateDrafts)) return [];
+    
+    if (!searchTerm.trim()) return templateDrafts;
+    
+    const searchLower = searchTerm.toLowerCase().trim();
+    return templateDrafts.filter(draft => 
+      draft.name?.toLowerCase().includes(searchLower) ||
+      draft.subject?.toLowerCase().includes(searchLower) ||
+      draft.bodyText?.toLowerCase().includes(searchLower) ||
+      draft.bodyHtml?.toLowerCase().includes(searchLower)
+    );
+  }, [templateDrafts, searchTerm]);
 
-  const renderPreview = (template) => {
-    // Sample data for preview rendering
-    const sampleData = {
-      // Client variables
-      name: 'John Doe',
-      firstName: 'John',
-      lastName: 'Doe',
-      email: 'john.doe@example.com',
-      phone: '+1-555-0123',
-      country: 'United States',
-      organization: 'Example Corp',
-      position: 'Senior Manager',
-      // Conference variables
-      conferenceName: 'Tech Conference 2024',
-      conferenceShortName: 'TC24',
-      conferenceVenue: 'Convention Center, New York',
-      conferenceDate: 'December 15, 2024 to December 17, 2024',
-      conferenceStartDate: 'December 15, 2024',
-      conferenceEndDate: 'December 17, 2024',
-      abstractDeadline: 'November 30, 2024',
-      registrationDeadline: 'December 1, 2024',
-      conferenceWebsite: 'https://techconf2024.com',
-      conferenceAbstractSubmissionLink: 'https://techconf2024.com/abstracts',
-      conferenceRegistrationLink: 'https://techconf2024.com/register',
-      'conference.abstractSubmissionLink': 'https://techconf2024.com/abstracts',
-      'conference.registrationLink': 'https://techconf2024.com/register',
-      conference_abstract_submission_link: 'https://techconf2024.com/abstracts',
-      conference_registration_link: 'https://techconf2024.com/register',
-      conferenceDescription: 'Annual Technology Conference',
-      // System variables
-      currentDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-      currentYear: new Date().getFullYear()
-    };
 
-    let renderedSubject = template.subject || '';
-    let renderedBody = template.bodyHtml || '';
 
-    // Replace all variable formats: {var}, {{var}}, {{var.name}}, {{var_name}}
-    Object.keys(sampleData).forEach(key => {
-      const value = sampleData[key];
-      // Replace {variable}
-      renderedSubject = renderedSubject.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
-      renderedBody = renderedBody.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
-      // Replace {{variable}}
-      renderedSubject = renderedSubject.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
-      renderedBody = renderedBody.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
-    });
+  // If in editor mode, render full-page editor
+  if (isEditorMode) {
+    const currentTemplate = isEditMode ? editTemplate : null;
+    const isLoadingTemplate = isEditMode && isLoadingEditTemplate;
 
-    return { subject: renderedSubject, body: renderedBody };
-  };
+    if (isLoadingTemplate) {
+      return (
+        <div className="flex items-center justify-center min-h-screen">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+        </div>
+      );
+    }
 
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <style>{TEMPLATE_EDITOR_STYLES}</style>
+        {/* Navigation Header */}
+        <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={() => navigate('/templates')}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="Back to templates"
+                >
+                  <ArrowLeft className="h-5 w-5 text-gray-600" />
+                </button>
+                <div>
+                  <nav className="flex items-center space-x-2 text-sm text-gray-500 mb-1">
+                    <button
+                      onClick={() => navigate('/templates')}
+                      className="hover:text-gray-900"
+                    >
+                      Templates
+                    </button>
+                    <ChevronRight className="h-4 w-4" />
+                    <span className="text-gray-900 font-medium">
+                      {isNewMode ? 'Create New Template' : 'Edit Template'}
+                    </span>
+                  </nav>
+                  <h1 className="text-2xl font-bold text-gray-900">
+                    {isNewMode ? 'Create New Template' : currentTemplate?.name || 'Edit Template'}
+                  </h1>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Editor Content */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <TemplateForm
+            template={currentTemplate}
+            onSubmit={(data) => {
+              if (isNewMode) {
+                addTemplateMutation.mutate(data);
+              } else if (isEditMode && id) {
+                updateTemplateMutation.mutate({ id, data });
+              }
+            }}
+            onCancel={() => navigate('/templates')}
+            loading={addTemplateMutation.isLoading || updateTemplateMutation.isLoading}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Otherwise, render list view
   return (
     <div className="space-y-6">
       <style>{TEMPLATE_EDITOR_STYLES}</style>
@@ -1015,9 +1118,7 @@ const Templates = () => {
           </div>
           <button
             onClick={() => {
-              resetForm();
-              setActiveTab('templates');
-              setShowAddModal(true);
+              navigate('/templates/new');
             }}
             className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 font-medium shadow-sm flex items-center"
           >
@@ -1027,52 +1128,198 @@ const Templates = () => {
         </div>
       </div>
 
-      <div className="flex items-center justify-between">
-        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
-          <button
-            type="button"
-            onClick={() => setActiveTab('templates')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-              activeTab === 'templates'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
-          >
-            Templates
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('drafts')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-              activeTab === 'drafts'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-            }`}
-          >
-            Drafts
-          </button>
+      {/* Search, Filter, and View Controls */}
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+          {/* Tabs */}
+          <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('templates')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                activeTab === 'templates'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
+            >
+              Templates
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('drafts')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                activeTab === 'drafts'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+              }`}
+            >
+              Drafts
+            </button>
+          </div>
+
+          {/* Search and View Controls */}
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            {/* Search Bar */}
+            <div className="relative flex-1 sm:flex-initial sm:w-64">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search templates..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Filter Button (only for templates tab) */}
+            {activeTab === 'templates' && (
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={`px-4 py-2 border rounded-lg flex items-center gap-2 transition-colors ${
+                  showFilters || stageFilter !== 'all'
+                    ? 'bg-blue-50 border-blue-300 text-blue-700'
+                    : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Filter className="h-4 w-4" />
+                <span className="text-sm font-medium">Filter</span>
+                {stageFilter !== 'all' && (
+                  <span className="bg-blue-600 text-white text-xs px-1.5 py-0.5 rounded-full">
+                    1
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* View Toggle */}
+            <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode('grid')}
+                className={`p-2 rounded transition-colors ${
+                  viewMode === 'grid'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+                title="Grid View"
+              >
+                <Grid3x3 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={`p-2 rounded transition-colors ${
+                  viewMode === 'list'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+                title="List View"
+              >
+                <List className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </div>
-        {activeTab === 'drafts' && (
-          <p className="text-xs text-gray-500">
-            Drafts are private to you until published.
-          </p>
+
+        {/* Filter Panel */}
+        {showFilters && activeTab === 'templates' && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-gray-900">Filter Templates</h3>
+              <button
+                onClick={() => {
+                  setStageFilter('all');
+                  setShowFilters(false);
+                }}
+                className="text-xs text-blue-600 hover:text-blue-700"
+              >
+                Clear all
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Stage</label>
+                <div className="flex flex-wrap gap-2">
+                  {['all', 'initial', 'abstract_submission', 'registration'].map((stage) => (
+                    <button
+                      key={stage}
+                      onClick={() => setStageFilter(stage)}
+                      className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                        stageFilter === stage
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {stage === 'all' ? 'All Stages' : getStageName(stage)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         )}
+
+        {/* Results Count */}
+        <div className="text-sm text-gray-600">
+          {activeTab === 'templates' ? (
+            <>
+              Showing {filteredTemplates.length} of {templates?.length || 0} template{filteredTemplates.length !== 1 ? 's' : ''}
+              {(searchTerm || stageFilter !== 'all') && (
+                <button
+                  onClick={() => {
+                    setSearchTerm('');
+                    setStageFilter('all');
+                    setShowFilters(false);
+                  }}
+                  className="ml-2 text-blue-600 hover:text-blue-700 underline"
+                >
+                  Clear filters
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              Showing {filteredDrafts.length} of {templateDrafts.length} draft{filteredDrafts.length !== 1 ? 's' : ''}
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="ml-2 text-blue-600 hover:text-blue-700 underline"
+                >
+                  Clear search
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Templates / Drafts Grid */}
+      {/* Templates / Drafts Display */}
       {activeTab === 'templates' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {isLoading ? (
-            <div className="col-span-full flex justify-center py-8">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-            </div>
-          ) : templates?.length === 0 ? (
-            <div className="col-span-full text-center py-8">
-              <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No templates created yet</p>
-            </div>
-          ) : (
-            templates?.map((template) => (
+        viewMode === 'grid' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {isLoading ? (
+              <div className="col-span-full flex justify-center py-8">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+              </div>
+            ) : filteredTemplates.length === 0 ? (
+              <div className="col-span-full text-center py-8">
+                <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-500">
+                  {templates?.length === 0 
+                    ? 'No templates created yet' 
+                    : 'No templates match your search or filters'}
+                </p>
+              </div>
+            ) : (
+              filteredTemplates.map((template) => (
               <div key={template.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 p-6">
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex-1">
@@ -1110,13 +1357,6 @@ const Templates = () => {
                   </div>
                   <div className="flex space-x-2">
                     <button
-                      onClick={() => handlePreview(template)}
-                      className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200"
-                      title="Preview"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </button>
-                    <button
                       onClick={() => handleEdit(template)}
                       className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all duration-200"
                       title="Edit"
@@ -1134,23 +1374,100 @@ const Templates = () => {
                   </div>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+              ))
+            )}
+          </div>
+        ) : (
+          /* List View */
+          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+            {isLoading ? (
+              <div className="flex justify-center py-8">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+              </div>
+            ) : filteredTemplates.length === 0 ? (
+              <div className="text-center py-8">
+                <Mail className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-500">
+                  {templates?.length === 0 
+                    ? 'No templates created yet' 
+                    : 'No templates match your search or filters'}
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-200">
+                {filteredTemplates.map((template) => (
+                  <div key={template.id} className="p-4 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-2">
+                          <h3 className="text-lg font-semibold text-gray-900">{template.name}</h3>
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStageBadge(template.stage)}`}>
+                            {getStageName(template.stage)}
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Subject: </span>
+                            <span className="text-sm text-gray-600">{template.subject}</span>
+                          </div>
+                          <p className="text-sm text-gray-500 line-clamp-2">
+                            {template.bodyText?.substring(0, 200) || template.bodyHtml?.replace(/<[^>]*>/g, '').substring(0, 200)}...
+                          </p>
+                          <div className="flex items-center gap-4 text-xs text-gray-500">
+                            <span>Version {template.version}</span>
+                            {template.attachments && template.attachments.length > 0 && (
+                              <span className="flex items-center">
+                                <Paperclip className="h-3 w-3 mr-1" />
+                                {template.attachments.length} files
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 ml-4">
+                        <button
+                          onClick={() => handleEdit(template)}
+                          className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all duration-200"
+                          title="Edit"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(template)}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200"
+                          title="Delete"
+                          disabled={deleteTemplateMutation.isLoading}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {draftsLoading ? (
             <div className="col-span-full flex justify-center py-8">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
             </div>
-          ) : templateDrafts.length === 0 ? (
+          ) : filteredDrafts.length === 0 ? (
             <div className="col-span-full text-center py-8">
               <File className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No drafts saved yet</p>
-              <p className="text-sm text-gray-400 mt-1">Use “Save Draft” in the composer to keep work-in-progress templates.</p>
+              <p className="text-gray-500">
+                {templateDrafts.length === 0 
+                  ? 'No drafts saved yet' 
+                  : 'No drafts match your search'}
+              </p>
+              {templateDrafts.length === 0 && (
+                <p className="text-sm text-gray-400 mt-1">Use "Save Draft" in the composer to keep work-in-progress templates.</p>
+              )}
             </div>
           ) : (
-            templateDrafts.map((draft) => (
+            filteredDrafts.map((draft) => (
               <div key={draft.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 p-6">
                 <div className="flex justify-between items-start mb-3">
                   <div>
@@ -1212,374 +1529,7 @@ const Templates = () => {
         </div>
       )}
 
-      {/* Add Template Modal */}
-      <Transition appear show={showAddModal} as={Fragment}>
-        <Dialog as="div" className="relative z-50" onClose={handleCloseModalWithAutoSave}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-black bg-opacity-25" />
-          </Transition.Child>
 
-          <div className="fixed inset-0 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4 text-center">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-4xl transform overflow-hidden rounded-2xl bg-white shadow-2xl transition-all">
-                  {/* Modal Header */}
-                  <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-4 border-b border-gray-200">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Dialog.Title className="text-2xl font-bold text-gray-900">
-                          {activeDraftId ? 'Edit Template Draft' : 'Create New Template'}
-                        </Dialog.Title>
-                        <p className="text-sm text-gray-600 mt-1">
-                          {activeDraftId
-                            ? 'Update your draft and publish when it is ready.'
-                            : 'Create dynamic email templates with attachments and variables'}
-                        </p>
-                      </div>
-                      <button
-                        onClick={handleCloseModalWithAutoSave}
-                        className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-lg transition-colors duration-200"
-                      >
-                        <X className="h-6 w-6" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Modal Content */}
-                  <div className="p-6">
-                    <form onSubmit={handleSubmit} className="space-y-6">
-                      {/* Basic Information */}
-                      <div className="bg-gray-50 rounded-lg p-4">
-                        <h4 className="text-sm font-semibold text-gray-900 mb-4">Basic Information</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              Template Name *
-                            </label>
-                            <input
-                              type="text"
-                              name="name"
-                              value={formData.name}
-                              onChange={handleChange}
-                              required
-                              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
-                              placeholder="Enter template name"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              Stage *
-                            </label>
-                            <select
-                              name="stage"
-                              value={formData.stage}
-                              onChange={handleChange}
-                              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
-                            >
-                              <option value="">Select Stage</option>
-                              <option value="initial">Initial Email</option>
-                              <option value="abstract_submission">Abstract Submission</option>
-                              <option value="registration">Registration</option>
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Email Content */}
-                      <div className="bg-gray-50 rounded-lg p-4">
-                        <h4 className="text-sm font-semibold text-gray-900 mb-4">Email Content</h4>
-                        <div className="space-y-4">
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              Subject *
-                            </label>
-                            <input
-                              type="text"
-                              name="subject"
-                              value={formData.subject}
-                              onChange={handleChange}
-                              required
-                              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white"
-                              placeholder="Use {name}, {conferenceName} for variables"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              Email Body (HTML) *
-                            </label>
-                            <div className="border border-gray-300 rounded-lg bg-white overflow-hidden">
-                              <ReactQuill
-                                ref={bodyEditorRef}
-                                value={formData.bodyHtml}
-                                onChange={handleBodyChange}
-                                modules={quillModules}
-                                formats={quillFormats}
-                                placeholder="Use {name}, {conferenceName}, {email}, {country} for variables"
-                                className="template-editor"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Dynamic Variables */}
-                      <div className="bg-gray-50 rounded-lg p-4">
-                        <h4 className="text-sm font-semibold text-gray-900 mb-4">Dynamic Variables</h4>
-                        <p className="text-sm text-gray-600 mb-4">Click on any variable to insert it into your email body:</p>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          {availableVariables.map((variable) => {
-                            const IconComponent = variable.icon;
-                            return (
-                              <button
-                                key={variable.key}
-                                type="button"
-                                onClick={() => insertVariable(variable.key)}
-                                className="flex items-center p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:bg-blue-50 transition-all duration-200 group"
-                                title={variable.description}
-                              >
-                                <IconComponent className="h-4 w-4 text-gray-500 group-hover:text-blue-600 mr-2" />
-                                <span className="text-sm font-medium text-gray-700 group-hover:text-blue-900">
-                                  {variable.label}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                          <p className="text-xs text-blue-700">
-                            <strong>Available variables:</strong> {availableVariables.map(v => `{${v.key}}`).join(', ')}
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* File Attachments */}
-                      <div className="bg-gray-50 rounded-lg p-4">
-                        <h4 className="text-sm font-semibold text-gray-900 mb-4">File Attachments</h4>
-                        <div className="space-y-4">
-                          <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors duration-200">
-                            <input
-                              type="file"
-                              multiple
-                              onChange={handleFileUpload}
-                              className="hidden"
-                              id="file-upload"
-                            />
-                            <label htmlFor="file-upload" className="cursor-pointer">
-                              <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                              <p className="text-sm text-gray-600">Click to upload files or drag and drop</p>
-                              <p className="text-xs text-gray-500">PDF, DOC, DOCX, PNG, JPG up to 10MB each</p>
-                            </label>
-                          </div>
-                          
-                          {attachments.length > 0 && (
-                            <div className="space-y-2">
-                              <h5 className="text-sm font-medium text-gray-700">Attached Files:</h5>
-                              {attachments.map((attachment) => (
-                                <div key={attachment.id} className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg">
-                                  <div className="flex items-center">
-                                    <Paperclip className="h-4 w-4 text-gray-400 mr-2" />
-                                    <span className="text-sm text-gray-700">{attachment.name}</span>
-                                    <span className="text-xs text-gray-500 ml-2">
-                                      ({(attachment.size / 1024).toFixed(1)} KB)
-                                    </span>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => removeAttachment(attachment.id)}
-                                    className="text-red-400 hover:text-red-600 p-1"
-                                  >
-                                    <X className="h-4 w-4" />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Form Actions */}
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-6 border-t border-gray-200">
-                        {activeDraftId && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteDraft(activeDraftId)}
-                            disabled={isDeletingDraft && draftIdBeingDeleted === activeDraftId}
-                            className="inline-flex items-center justify-center px-4 py-2 text-sm text-red-600 bg-red-50 hover:bg-red-100 border border-red-100 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {isDeletingDraft && draftIdBeingDeleted === activeDraftId ? 'Deleting Draft…' : 'Delete Draft'}
-                          </button>
-                        )}
-                        <div className="flex items-center justify-end gap-3 sm:ml-auto">
-                          <button
-                            type="button"
-                            onClick={handleCloseModalWithAutoSave}
-                            className="px-6 py-3 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-all duration-200 font-medium"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleSaveDraft}
-                            disabled={isSavingDraft}
-                            className="px-6 py-3 text-blue-600 bg-blue-50 border border-blue-100 rounded-lg hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {isSavingDraft ? 'Saving…' : activeDraftId ? 'Update Draft' : 'Save Draft'}
-                          </button>
-                          <button
-                            type="submit"
-                            disabled={addTemplateMutation.isLoading}
-                            className="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-sm"
-                          >
-                            {addTemplateMutation.isLoading ? 'Creating...' : 'Create Template'}
-                          </button>
-                        </div>
-                      </div>
-                    </form>
-                  </div>
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition>
-
-      {/* Edit Template Modal */}
-      <Transition appear show={showEditModal} as={Fragment}>
-        <Dialog as="div" className="relative z-50" onClose={() => setShowEditModal(false)}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-black bg-opacity-25" />
-          </Transition.Child>
-
-          <div className="fixed inset-0 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4 text-center">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-2xl transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
-                  <Dialog.Title as="h3" className="text-lg font-medium leading-6 text-gray-900 mb-4">
-                    Edit Template
-                  </Dialog.Title>
-                  
-                  {selectedTemplate ? (
-                    <TemplateForm
-                      template={selectedTemplate}
-                      onSubmit={(data) => updateTemplateMutation.mutate({ id: selectedTemplate.id, data })}
-                      onCancel={() => {
-                        setShowEditModal(false);
-                        setSelectedTemplate(null);
-                      }}
-                      loading={updateTemplateMutation.isLoading}
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center py-8 text-sm text-gray-500">
-                      Select a template to edit.
-                    </div>
-                  )}
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition>
-
-      {/* Preview Modal */}
-      <Transition appear show={showPreviewModal} as={Fragment}>
-        <Dialog as="div" className="relative z-50" onClose={() => setShowPreviewModal(false)}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-black bg-opacity-25" />
-          </Transition.Child>
-
-          <div className="fixed inset-0 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4 text-center">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-2xl transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
-                  <Dialog.Title as="h3" className="text-lg font-medium leading-6 text-gray-900 mb-4">
-                    Template Preview
-                  </Dialog.Title>
-                  
-                  {selectedTemplate && (
-                    <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Subject
-                        </label>
-                        <div className="p-3 bg-gray-50 rounded-lg">
-                          {renderPreview(selectedTemplate).subject}
-                        </div>
-                      </div>
-                      
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Body
-                        </label>
-                        <div 
-                          className="p-3 bg-gray-50 rounded-lg max-h-96 overflow-y-auto"
-                          dangerouslySetInnerHTML={{ __html: renderPreview(selectedTemplate).body }}
-                        />
-                      </div>
-                      
-                      <div className="flex justify-end pt-4">
-                        <button
-                          onClick={() => setShowPreviewModal(false)}
-                          className="btn-secondary"
-                        >
-                          Close
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition>
     </div>
   );
 };
@@ -1621,25 +1571,100 @@ const formatBytes = (bytes) => {
 const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
+  const isInitializedRef = useRef(false);
 
-  const [formData, setFormData] = useState({
-    name: template?.name || '',
-    stage: template?.stage || '',
-    subject: template?.subject || '',
-    bodyHtml: template?.bodyHtml || '',
-    bodyText: template?.bodyText || stripHtml(template?.bodyHtml || '')
-  });
-  const [attachments, setAttachments] = useState(normalizeExistingAttachments(template));
+  // Initialize formData with template data immediately - use function to ensure fresh data
+  const getInitialFormData = (templateData) => {
+    if (templateData) {
+      // Map backend stage to UI stage
+      const isInitial = templateData.stage === 'abstract_submission' && 
+                        (templateData.followUpNumber === 0 || templateData.followUpNumber === 1);
+      const uiStage = isInitial ? 'initial' : (templateData.stage || '');
+      
+      return {
+        name: templateData.name || '',
+        stage: uiStage,
+        subject: templateData.subject || '',
+        bodyHtml: templateData.bodyHtml || '',
+        bodyText: templateData.bodyText || stripHtml(templateData.bodyHtml || ''),
+        followUpNumber: templateData.followUpNumber || 1
+      };
+    }
+    return {
+      name: '',
+      stage: '',
+      subject: '',
+      bodyHtml: '',
+      bodyText: '',
+      followUpNumber: 1
+    };
+  };
+
+  const [formData, setFormData] = useState(() => getInitialFormData(template));
+  const [attachments, setAttachments] = useState(() => normalizeExistingAttachments(template));
 
   useEffect(() => {
-    setFormData({
-      name: template?.name || '',
-      stage: template?.stage || '',
-      subject: template?.subject || '',
-      bodyHtml: template?.bodyHtml || '',
-      bodyText: template?.bodyText || stripHtml(template?.bodyHtml || '')
-    });
-    setAttachments(normalizeExistingAttachments(template));
+    if (template) {
+      const templateBodyHtml = template.bodyHtml || '';
+      
+      // Map backend stage to UI stage
+      // If stage is abstract_submission with followUpNumber 0 or 1, show as "initial" in UI
+      const isInitial = template.stage === 'abstract_submission' && 
+                        (template.followUpNumber === 0 || template.followUpNumber === 1);
+      const uiStage = isInitial ? 'initial' : (template.stage || '');
+      
+      const newFormData = {
+        name: template.name || '',
+        stage: uiStage,
+        subject: template.subject || '',
+        bodyHtml: templateBodyHtml,
+        bodyText: template.bodyText || stripHtml(templateBodyHtml),
+        followUpNumber: template.followUpNumber || 1
+      };
+      setFormData(newFormData);
+      setAttachments(normalizeExistingAttachments(template));
+      
+      // Force ReactQuill to load the HTML content with all spacing preserved
+      // Use a small delay to ensure the editor is fully mounted and initialized
+      const timer = setTimeout(() => {
+        if (editorRef.current && templateBodyHtml) {
+          const quill = editorRef.current.getEditor();
+          if (quill) {
+            // Get current content to check if it needs updating
+            const currentContent = quill.root.innerHTML.trim();
+            const newContent = templateBodyHtml.trim();
+            
+            // Only update if content is different
+            if (currentContent !== newContent) {
+              // Use dangerouslyPasteHTML to preserve all HTML formatting and spacing
+              // This method preserves the original HTML structure better than the value prop
+              try {
+                // Clear existing content first
+                quill.setText('');
+                // Paste the HTML at the beginning, preserving all formatting
+                quill.clipboard.dangerouslyPasteHTML(0, templateBodyHtml);
+              } catch (error) {
+                console.error('Error pasting HTML into Quill:', error);
+                // Fallback: set HTML directly
+                quill.root.innerHTML = templateBodyHtml;
+              }
+            }
+          }
+        }
+      }, 200);
+      
+      return () => clearTimeout(timer);
+    } else {
+      // Reset form when template is null
+      setFormData({
+        name: '',
+        stage: '',
+        subject: '',
+        bodyHtml: '',
+        bodyText: ''
+      });
+      setAttachments([]);
+    }
   }, [template]);
 
   const handleSubmit = (e) => {
@@ -1661,8 +1686,15 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
       content: att.content || null
     }));
 
+    // Map "initial" stage to "abstract_submission" for backend
+    // "initial" is a UI-only stage that maps to abstract_submission with followUpNumber = 1
+    const backendStage = formData.stage === 'initial' ? 'abstract_submission' : formData.stage;
+    const followUpNumber = formData.stage === 'initial' ? 1 : (formData.followUpNumber || 1);
+
     onSubmit({
       ...formData,
+      stage: backendStage,
+      followUpNumber: followUpNumber,
       bodyText: bodyTextValue,
       attachments: attachmentPayload
     });
@@ -1676,10 +1708,14 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
   };
 
   const handleBodyChange = (value) => {
+    // Ensure line breaks are properly preserved
+    // Quill automatically converts Enter key to <p> or <br> tags
+    // We ensure the value is always a string to prevent issues
+    const htmlValue = value || '';
     setFormData({
       ...formData,
-      bodyHtml: value,
-      bodyText: stripHtml(value)
+      bodyHtml: htmlValue,
+      bodyText: stripHtml(htmlValue)
     });
   };
 
@@ -1808,13 +1844,16 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
         </label>
         <div className="border border-gray-300 rounded-lg bg-white overflow-hidden">
           <ReactQuill
+            key={`template-form-editor-${template?.id || 'new'}`}
             ref={editorRef}
-            value={formData.bodyHtml}
+            value={formData.bodyHtml || ''}
             onChange={handleBodyChange}
             modules={quillModules}
             formats={quillFormats}
             placeholder="Use {Name}, {ConferenceName}, {Email}, {Country} for variables"
             className="template-editor"
+            theme="snow"
+            bounds="self"
           />
         </div>
         <p className="text-xs text-gray-500 mt-1">
