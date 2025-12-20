@@ -6,6 +6,7 @@ const { Op } = require('sequelize');
 const { prepareAttachmentsForSending } = require('../utils/attachmentUtils');
 const { normalizeEmailList } = require('../utils/emailListUtils');
 const { formatEmailHtml, logEmailHtmlPayload } = require('../utils/emailHtmlFormatter');
+const { normalizeMessageId, normalizeSubject } = require('../utils/messageIdUtils');
 const stripHtml = (input = '') => input.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
 const formatDateForQuote = (dateInput) => {
@@ -27,14 +28,17 @@ const buildQuotedHtml = (email) => {
   }
 
   const sentAt = formatDateForQuote(email.date || email.createdAt);
-  const fromLine = email.from || 'our team';
+  const fromLine = email.from || email.fromName || 'our team';
+  // Use the FULL bodyHtml which should already include all previous quotes
+  // If bodyHtml exists, use it (it contains the full conversation chain)
+  // Otherwise, use bodyText as fallback
   const previousHtml = email.bodyHtml || '';
-  const previousText = email.bodyText ? `<p style="margin:0;">${email.bodyText}</p>` : '';
+  const previousText = email.bodyText ? `<p style="margin:0; white-space: pre-wrap;">${email.bodyText}</p>` : '';
 
   return `
     <div style="margin-top: 16px; padding-left: 16px; border-left: 3px solid #d1d5db; color: #4b5563; font-size: 14px;">
-      <p style="margin: 0 0 8px 0;">On ${sentAt}, ${fromLine} wrote:</p>
-      <div>${previousHtml || previousText}</div>
+      <p style="margin: 0 0 8px 0; font-weight: 500;">On ${sentAt}, ${fromLine} wrote:</p>
+      <div style="color: #6b7280;">${previousHtml || previousText}</div>
     </div>
   `;
 };
@@ -45,10 +49,65 @@ const buildQuotedText = (email) => {
   }
 
   const sentAt = formatDateForQuote(email.date || email.createdAt);
-  const fromLine = email.from || 'our team';
+  const fromLine = email.from || email.fromName || 'our team';
   const previousText = email.bodyText || stripHtml(email.bodyHtml || '');
 
-  return `---- On ${sentAt}, ${fromLine} wrote ----\n${previousText}`;
+  return `\n\n---- On ${sentAt}, ${fromLine} wrote ----\n${previousText}`;
+};
+
+// Build Gmail-style nested quote chain from all emails in thread
+const buildFullThreadQuote = async (allThreadEmails, Email) => {
+  if (!allThreadEmails || allThreadEmails.length === 0) {
+    return { html: '', text: '' };
+  }
+
+  // Get full email data (not just messageId, but bodyHtml, bodyText, etc.)
+  const fullEmails = await Email.findAll({
+    where: {
+      id: allThreadEmails.map(e => e.id).filter(Boolean),
+      isSent: true,
+      status: 'sent'
+    },
+    order: [['createdAt', 'ASC']],
+    attributes: ['id', 'bodyHtml', 'bodyText', 'from', 'fromName', 'date', 'createdAt', 'subject']
+  });
+
+  if (fullEmails.length === 0) {
+    return { html: '', text: '' };
+  }
+
+  // Build nested quote structure (most recent first, but nested)
+  // In Gmail, the quote shows: newest email at top, then nested quotes of all previous
+  let quotedHtml = '';
+  let quotedText = '';
+
+  // Start from the most recent email and work backwards
+  for (let i = fullEmails.length - 1; i >= 0; i--) {
+    const email = fullEmails[i];
+    const sentAt = formatDateForQuote(email.date || email.createdAt);
+    const fromLine = email.from || email.fromName || 'our team';
+    
+    // Extract just the original body (without previous quotes) for the first email
+    // For subsequent emails, use the full bodyHtml which may already include quotes
+    const emailBodyHtml = email.bodyHtml || '';
+    const emailBodyText = email.bodyText || stripHtml(email.bodyHtml || '');
+
+    // Build quote block
+    const quoteBlockHtml = `
+      <div style="margin-top: 16px; padding-left: 16px; border-left: 3px solid #d1d5db; color: #4b5563; font-size: 14px;">
+        <p style="margin: 0 0 8px 0; font-weight: 500;">On ${sentAt}, ${fromLine} wrote:</p>
+        <div style="color: #6b7280;">${emailBodyHtml || `<p style="margin:0; white-space: pre-wrap;">${emailBodyText}</p>`}</div>
+        ${quotedHtml}
+      </div>
+    `;
+    
+    const quoteBlockText = `\n\n---- On ${sentAt}, ${fromLine} wrote ----\n${emailBodyText}${quotedText}`;
+
+    quotedHtml = quoteBlockHtml;
+    quotedText = quoteBlockText;
+  }
+
+  return { html: quotedHtml, text: quotedText };
 };
 
 const getTemplateIdForAttempt = (sequence, attemptIndex, fallbackId) => {
@@ -373,28 +432,64 @@ class EmailJobScheduler {
         conferenceContext?.id || conference?.id
       );
 
-      // Use the exact subject from the template - no modifications or prefixes
-      let templateSubject = renderedTemplate.subject && renderedTemplate.subject.trim()
-        ? renderedTemplate.subject.trim()
-        : (activeTemplate.subject && activeTemplate.subject.trim() ? activeTemplate.subject.trim() : '');
-
-      if (!templateSubject) {
-        throw new Error(`Email subject cannot be empty for template ${activeTemplate.id}`);
-      }
-
       // Get threading headers from previous emails
       // NOTE: Job was already reloaded at the start of this function (line 136) to get latest settings
       // Build proper threading chain: use most recent email's messageId as inReplyTo
       // and build References chain with all previous message IDs
       // Thread emails from the same job/stage together using threadRootMessageId
-      const threadRootMessageId = job.settings?.threadRootMessageId; // May be set from initial email when client was added
+      // Priority: 1) client.customFields.initialThreadMessageId (from post-send Add Client flow)
+      //           2) job.settings.threadRootMessageId (from previous follow-up emails)
+      const clientCustomFields = freshClient.customFields || {};
+      const clientThreadRoot = normalizeMessageId(clientCustomFields.initialThreadMessageId);
+      const jobThreadRoot = normalizeMessageId(job.settings?.threadRootMessageId);
+      const threadRootMessageId = clientThreadRoot || jobThreadRoot; // Prefer client's thread root (from manual send)
 
-      // USER REQUIREMENT: Each follow-up keeps the exact subject defined on its template
-      // We'll quote the previous email content inside the body so recipients can see the history
-      const finalSubject = templateSubject;
-      console.log(`📧 [Threading] Follow-up email #${job.currentAttempt + 1} - Using template subject: "${finalSubject}"`);
+      // SUBJECT STRATEGY (per-template subjects with looser threading):
+      // - Prefer the rendered template subject so each stage can have its own subject line
+      // - Fallbacks: activeTemplate.subject, then any stored initialEmailSubject
+      // - Still prefix with "Re:" when missing to help Gmail thread when possible
+      const rawTemplateSubject = (renderedTemplate.subject && renderedTemplate.subject.trim())
+        ? renderedTemplate.subject.trim()
+        : (activeTemplate.subject && activeTemplate.subject.trim() ? activeTemplate.subject.trim() : '');
 
-      console.log(`📧 Sending follow-up with subject: "${finalSubject}" (Template: ${activeTemplate.name}, Stage: ${job.stage})`);
+      const storedInitialSubject =
+        clientCustomFields.initialEmailSubject ||
+        job.settings?.initialEmailSubject ||
+        null;
+
+      const subjectBase =
+        rawTemplateSubject ||
+        storedInitialSubject ||
+        ''; // allow empty here, we validate below
+
+      if (!subjectBase) {
+        throw new Error(`Email subject cannot be empty for template ${activeTemplate.id}`);
+      }
+
+      // USER REQUEST: Separate emails with their own subjects (no threading)
+      // Add unique identifier to break Gmail's threading algorithm
+      // Format: [Template Subject] - Follow-up #[number] - [timestamp]
+      // This ensures each email has a completely unique subject while keeping template content readable
+      const followUpNumber = job.currentAttempt + 1;
+      const timestamp = Date.now().toString().slice(-6); // Last 6 digits of timestamp for uniqueness
+      const uniqueIdentifier = `[Follow-up #${followUpNumber}-${timestamp}]`;
+      
+      // Remove any existing "Re:" or "Fwd:" prefix from template subject to prevent threading
+      let cleanSubject = subjectBase.replace(/^(Re:\s*|Fwd:\s*|RE:\s*|FWD:\s*)/i, '').trim();
+      
+      // Add unique identifier to make subject completely unique (prevents Gmail threading)
+      const finalSubject = `${cleanSubject} ${uniqueIdentifier}`;
+
+      console.log(
+        `📧 [Separate Emails] Follow-up email #${followUpNumber} - Unique subject: "${finalSubject}"`
+      );
+
+      console.log(`📧 [Email Content] Sending follow-up email:`);
+      console.log(`   - Template: ${activeTemplate.name} (ID: ${activeTemplate.id})`);
+      console.log(`   - Template Subject: "${rawTemplateSubject || '(empty)'}"`);
+      console.log(`   - Final Subject: "${finalSubject}"`);
+      console.log(`   - Stage: ${job.stage}`);
+      console.log(`   - Body length (before quotes): ${(renderedTemplate.bodyHtml || '').length} chars`);
 
       // Send email using nodemailer directly
       const nodemailer = require('nodemailer');
@@ -410,102 +505,197 @@ class EmailJobScheduler {
           pass: decryptEmailPassword(smtpAccount.smtpPassword)
         }
       });
+      // USER REQUEST: Separate emails (no threading) but with full quote chain in body
+      // Strategy: Do NOT set In-Reply-To or References headers to prevent Gmail threading
+      // Each email will appear as a separate email in Gmail inbox
+      // But the body will contain the full nested quote chain of all previous emails
       const threadingHeaders = {};
       
-      // CRITICAL FIX: Build proper threading headers to ensure ALL follow-ups are in ONE thread
-      // Strategy:
-      // 1. If threadRootMessageId exists, find ALL emails in this thread from database
-      // 2. Set In-Reply-To to the most recent email in the thread
-      // 3. Set References to the full chain: root + all messageIds in chronological order
-      // 4. This ensures Gmail threads all emails together even with different subjects
-      
-      if (threadRootMessageId) {
-        // This is a subsequent email - find ALL emails in this thread from database
-        // Query for emails that are part of this thread (by messageId, inReplyTo, or references)
-        const allThreadEmails = await Email.findAll({
-          where: {
-            clientId: freshClient.id,
-            isSent: true,
-            status: 'sent',
-            [Op.or]: [
-              { messageId: threadRootMessageId },
-              { inReplyTo: threadRootMessageId },
-              { references: { [Op.like]: `%${threadRootMessageId}%` } }
-            ]
-          },
-          order: [['createdAt', 'ASC']],
-          attributes: ['messageId', 'inReplyTo', 'references', 'createdAt'],
-          limit: 50
-        });
-
-        if (allThreadEmails.length > 0) {
-          // Find the most recent email in the thread (last in chronological order)
-          const mostRecentEmail = allThreadEmails[allThreadEmails.length - 1];
-          threadingHeaders.inReplyTo = mostRecentEmail.messageId;
-
-          // Build References chain: root + all messageIds in chronological order
-          const referencesChain = [threadRootMessageId];
-          allThreadEmails.forEach(email => {
-            if (email.messageId && email.messageId !== threadRootMessageId && !referencesChain.includes(email.messageId)) {
-              referencesChain.push(email.messageId);
-            }
-          });
-          threadingHeaders.references = referencesChain.join(' ');
-
-          console.log(`🔗 [Threading] Subsequent email - Root: ${threadRootMessageId.substring(0, 30)}... | InReplyTo: ${mostRecentEmail.messageId.substring(0, 30)}... | Chain: ${referencesChain.length} emails`);
-        } else {
-          // Thread root exists but no emails found yet - this shouldn't happen, but handle it
-          // Reference the root email directly
-          threadingHeaders.inReplyTo = threadRootMessageId;
-          threadingHeaders.references = threadRootMessageId;
-          console.log(`🔗 [Threading] Thread root exists but no emails found - using root as InReplyTo`);
-        }
-      } else {
-        // This is the FIRST follow-up email - no threading headers needed
-        // The threadRootMessageId will be set after this email is sent
-        console.log(`🔗 [Threading] First follow-up email - no threading headers (will set thread root after send)`);
-      }
+      // Intentionally leaving threadingHeaders empty to make each email appear as separate
+      // The quote chain in the body will maintain the conversation history
+      console.log(`📧 [Separate Emails] Not setting threading headers - each email will appear as separate in Gmail`);
+      console.log(`📧 [Separate Emails] Quote chain will be included in email body to maintain conversation history`);
 
       const formattedBodyHtml = formatEmailHtml(renderedTemplate.bodyHtml || '');
       logEmailHtmlPayload('follow-up', formattedBodyHtml);
 
-      const previousEmailForQuote = await Email.findOne({
-        where: {
-          clientId: freshClient.id,
-          isSent: true,
-          status: 'sent'
-        },
-        order: [['createdAt', 'DESC']]
-      });
-
+      // Build Gmail-style nested quote chain from ALL previous emails in the thread
       let finalBodyHtml = formattedBodyHtml;
       let finalBodyText = renderedTemplate.bodyText || stripHtml(renderedTemplate.bodyHtml || '');
 
-      if (previousEmailForQuote) {
-        const quotedHtml = buildQuotedHtml(previousEmailForQuote);
-        const quotedText = buildQuotedText(previousEmailForQuote);
-        if (quotedHtml) {
-          finalBodyHtml = `${formattedBodyHtml}<div style="margin: 20px 0;"></div>${quotedHtml}`;
+      // Get ALL emails in the thread (if threading exists) or just the most recent email
+      let allThreadEmailsForQuote = [];
+      
+      if (threadRootMessageId) {
+        // CRITICAL: The initial email might not have a clientId when sent before adding the client
+        // So we need to find it by messageId first, then find all follow-ups by clientId + threading headers
+        
+        // Step 1: Find the initial email by messageId (may not have clientId)
+        const initialEmail = await Email.findOne({
+          where: {
+            messageId: threadRootMessageId,
+            isSent: true,
+            status: 'sent'
+          },
+          attributes: ['id', 'bodyHtml', 'bodyText', 'from', 'fromName', 'date', 'createdAt', 'subject', 'clientId']
+        });
+
+        // Step 2: Find all follow-up emails for this client
+        // Since we're not using threading headers, find all emails for this client sent after the initial email
+        const followUpEmails = await Email.findAll({
+          where: {
+            clientId: freshClient.id,
+            isSent: true,
+            status: 'sent',
+            messageId: { [Op.ne]: threadRootMessageId }, // Exclude the initial email itself
+            createdAt: initialEmail ? { [Op.gte]: initialEmail.createdAt } : undefined // Only emails after initial
+          },
+          order: [['createdAt', 'ASC']],
+          attributes: ['id', 'bodyHtml', 'bodyText', 'from', 'fromName', 'date', 'createdAt', 'subject', 'clientId'],
+          limit: 50
+        });
+
+        // Step 3: Combine initial email + follow-ups, ensuring initial email is first
+        allThreadEmailsForQuote = [];
+        if (initialEmail) {
+          allThreadEmailsForQuote.push(initialEmail);
+          console.log(`📧 [Quoting] Found initial email by messageId: ${threadRootMessageId.substring(0, 30)}...`);
         }
-        if (quotedText) {
-          finalBodyText = `${finalBodyText}\n\n${quotedText}`;
+        allThreadEmailsForQuote.push(...followUpEmails);
+        
+        // Sort by createdAt to ensure chronological order
+        allThreadEmailsForQuote.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+        
+        console.log(`📧 [Quoting] Found ${allThreadEmailsForQuote.length} email(s) in thread (initial: ${initialEmail ? 'yes' : 'no'}, follow-ups: ${followUpEmails.length})`);
+      } else {
+        // No thread root yet - this is the first follow-up
+        // Get the most recent email (should be the initial email sent manually)
+        const mostRecentEmail = await Email.findOne({
+          where: {
+            clientId: freshClient.id,
+            isSent: true,
+            status: 'sent'
+          },
+          order: [['createdAt', 'DESC']],
+          attributes: ['id', 'bodyHtml', 'bodyText', 'from', 'fromName', 'date', 'createdAt', 'subject']
+        });
+        if (mostRecentEmail) {
+          allThreadEmailsForQuote = [mostRecentEmail];
+          console.log(`📧 [Quoting] First follow-up - quoting initial email (ID: ${mostRecentEmail.id})`);
+        } else {
+          console.log(`⚠️  [Quoting] No previous emails found for client ${freshClient.id} - cannot build quote chain`);
         }
       }
 
-      // Send the email with threading headers
+      // Build nested quote chain (Gmail-style: most recent email at the top, nested quotes below)
+      if (allThreadEmailsForQuote.length > 0) {
+        // Start with the most recent email and build nested quotes going backwards
+        let nestedQuoteHtml = '';
+        let nestedQuoteText = '';
+
+        // Process emails in reverse chronological order (newest first)
+        // Extract just the original content from each email (before any quotes) and build fresh nested structure
+        for (let i = allThreadEmailsForQuote.length - 1; i >= 0; i--) {
+          const email = allThreadEmailsForQuote[i];
+          
+          // Get the full body content
+          let emailBodyHtml = email.bodyHtml || '';
+          let emailBodyText = email.bodyText || stripHtml(email.bodyHtml || '');
+
+          // Extract just the original content (before any existing quotes) to avoid double-quoting
+          // The initial email won't have quotes, but follow-ups might
+          const isInitialEmail = (i === 0); // First email in chronological order is the initial email
+          
+          if (!isInitialEmail) {
+            // For follow-up emails, try to extract just the new content (before quotes)
+            // Look for quote markers that indicate where quoted content begins
+            const quoteMarkers = [
+              '<div style="margin-top: 16px; padding-left: 16px; border-left: 3px solid',
+              '<div style="margin-top: 16px; padding-left: 16px; border-left:',
+              'On ',
+              '---- On',
+              '<blockquote',
+              '<div class="gmail_quote"'
+            ];
+
+            // Try to find where quoted content starts
+            let quoteStartIndex = -1;
+            for (const marker of quoteMarkers) {
+              const index = emailBodyHtml.indexOf(marker);
+              if (index > 0 && (quoteStartIndex === -1 || index < quoteStartIndex)) {
+                quoteStartIndex = index;
+              }
+            }
+
+            // If we found a quote marker, extract only content before it
+            if (quoteStartIndex > 0) {
+              emailBodyHtml = emailBodyHtml.substring(0, quoteStartIndex).trim();
+              // Also update text version
+              const textQuoteIndex = emailBodyText.indexOf('---- On');
+              if (textQuoteIndex > 0) {
+                emailBodyText = emailBodyText.substring(0, textQuoteIndex).trim();
+              } else {
+                // Re-extract text from cleaned HTML
+                emailBodyText = stripHtml(emailBodyHtml) || emailBodyText;
+              }
+            }
+          }
+          // For initial email, use full bodyHtml (it won't have quotes)
+
+          // If bodyHtml is empty after extraction, fall back to bodyText formatted as HTML
+          if (!emailBodyHtml && emailBodyText) {
+            emailBodyHtml = `<p style="margin:0; white-space: pre-wrap;">${emailBodyText}</p>`;
+          }
+
+          const sentAt = formatDateForQuote(email.date || email.createdAt);
+          // Extract name from "Name <email@example.com>" format or use fromName
+          let fromLine = email.fromName || email.from || 'our team';
+          if (email.from && email.from.includes('<')) {
+            fromLine = email.from.split('<')[0].trim() || email.fromName || email.from;
+          }
+
+          // Build nested quote structure: each email quotes all previous ones
+          nestedQuoteHtml = `
+            <div style="margin-top: 16px; padding-left: 16px; border-left: 3px solid #d1d5db; color: #4b5563; font-size: 14px;">
+              <p style="margin: 0 0 8px 0; font-weight: 500;">On ${sentAt}, ${fromLine} wrote:</p>
+              <div style="color: #6b7280;">${emailBodyHtml}</div>
+              ${nestedQuoteHtml}
+            </div>
+          `;
+          nestedQuoteText = `\n\n---- On ${sentAt}, ${fromLine} wrote ----\n${emailBodyText}${nestedQuoteText}`;
+        }
+
+        console.log(`📧 [Quoting] Built nested quote chain with ${allThreadEmailsForQuote.length} email(s) from thread`);
+
+        // Append the nested quote chain to the new email body
+        // CRITICAL: Email's own content comes FIRST, then quotes are appended
+        if (nestedQuoteHtml) {
+          finalBodyHtml = `${formattedBodyHtml}<div style="margin: 20px 0;"></div>${nestedQuoteHtml}`;
+          console.log(`📧 [Quoting] Appended quote chain to email body (new content length: ${formattedBodyHtml.length}, quote length: ${nestedQuoteHtml.length})`);
+        }
+        if (nestedQuoteText) {
+          finalBodyText = `${finalBodyText}${nestedQuoteText}`;
+        }
+      } else {
+        console.log(`📧 [Quoting] No previous emails to quote - using template body only`);
+      }
+
+      // Send the email WITHOUT threading headers (separate emails)
+      // Explicitly do NOT set inReplyTo or references to prevent Gmail threading
       const mailOptions = {
         from: `${smtpAccount.name || 'Conference CRM'} <${smtpAccount.email}>`,
         to: freshClient.email,
         subject: finalSubject,
         text: finalBodyText,
-        html: finalBodyHtml,
-        ...threadingHeaders
+        html: finalBodyHtml
+        // Intentionally NOT including threadingHeaders (empty object) to prevent threading
       };
       
       // CRITICAL DEBUG: Log the final subject being sent and verify it's correct
       console.log(`📧 [Subject Debug] ==========================================`);
       console.log(`📧 [Subject Debug] Final subject being sent: "${finalSubject}"`);
-      console.log(`📧 [Subject Debug] Template subject was: "${templateSubject}"`);
+      console.log(`📧 [Subject Debug] Raw rendered template subject: "${rawTemplateSubject || '(empty)'}"`);
+      console.log(`📧 [Subject Debug] Stored initial subject (if any): "${storedInitialSubject || '(none)'}"`);
       console.log(`📧 [Subject Debug] Thread root exists: ${!!threadRootMessageId}`);
       console.log(`📧 [Subject Debug] ==========================================`);
 
@@ -524,12 +714,24 @@ class EmailJobScheduler {
       console.log(`📤 [Email Send] Preparing to send email:`, {
         to: mailOptions.to,
         subject: mailOptions.subject,
+        subjectSource: rawTemplateSubject ? 'template' : 'fallback',
+        bodyLength: finalBodyHtml.length,
+        bodyHasOwnContent: formattedBodyHtml.length > 0,
+        bodyHasQuotes: finalBodyHtml.length > formattedBodyHtml.length,
         hasHtml: !!mailOptions.html,
         hasText: !!mailOptions.text,
         hasAttachments: normalizedAttachments.length > 0,
         hasInReplyTo: !!mailOptions.inReplyTo,
         hasReferences: !!mailOptions.references
       });
+      
+      // CRITICAL VERIFICATION: Ensure email has its own content (not just quotes)
+      if (formattedBodyHtml.length === 0) {
+        console.warn(`⚠️  [Email Send] WARNING: Email body is empty! Only quotes will be sent.`);
+      }
+      if (!mailOptions.subject || mailOptions.subject.trim().length === 0) {
+        console.warn(`⚠️  [Email Send] WARNING: Email subject is empty!`);
+      }
 
       let mailResult;
       try {
@@ -542,6 +744,7 @@ class EmailJobScheduler {
       }
 
       // Create email record in database
+      // For separate emails: Don't store threading headers (inReplyTo, references) to prevent Gmail threading
       await Email.create({
         from: smtpAccount.email,
         to: freshClient.email,
@@ -556,8 +759,9 @@ class EmailJobScheduler {
         isSent: true,
         status: 'sent',
         messageId: mailResult.messageId,
-        inReplyTo: threadingHeaders.inReplyTo || threadRootMessageId || null,
-        references: threadingHeaders.references || threadRootMessageId || null,
+        // Intentionally set to null to prevent Gmail threading - each email appears as separate
+        inReplyTo: null,
+        references: null,
         deliveredAt: new Date()
       });
 
@@ -577,6 +781,12 @@ class EmailJobScheduler {
         updatedSettings.stage = job.stage; // Store stage for reference
         needsUpdate = true;
         console.log(`🔗 [Threading] Setting thread root for ${job.stage}: ${mailResult.messageId.substring(0, 30)}... | Subject: "${finalSubject}"`);
+      }
+
+      // Store initialEmailSubject if provided
+      if (!updatedSettings.initialEmailSubject && subjectBase) {
+        updatedSettings.initialEmailSubject = subjectBase;
+        needsUpdate = true;
       }
       
       // Note: We don't store threadSubject anymore because each follow-up uses its own template subject with "Re:" prefix

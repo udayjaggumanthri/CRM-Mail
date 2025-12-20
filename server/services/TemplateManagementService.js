@@ -4,6 +4,7 @@ const TemplateEngine = require('./TemplateEngine');
 class TemplateManagementService {
   constructor() {
     this.templateEngine = new TemplateEngine();
+    this.validStages = new Set(['abstract_submission', 'registration']);
   }
 
   /**
@@ -30,6 +31,12 @@ class TemplateManagementService {
         throw new Error('Missing required fields: name, subject, bodyHtml, bodyText');
       }
 
+      // Validate stage
+      const resolvedStage = stage || 'abstract_submission';
+      if (!this.validStages.has(resolvedStage)) {
+        throw new Error('Stage must be abstract_submission or registration');
+      }
+
       // Extract variables from template content
       const extractedVariables = this.templateEngine.extractVariables(bodyHtml + bodyText);
       const templateVariables = variables || extractedVariables;
@@ -41,7 +48,7 @@ class TemplateManagementService {
         subject,
         bodyHtml,
         bodyText,
-        stage: stage || 'general',
+        stage: resolvedStage,
         category: category || 'standard',
         variables: templateVariables,
         attachments: attachments || null,

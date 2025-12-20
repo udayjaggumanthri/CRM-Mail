@@ -3,6 +3,8 @@ const router = express.Router();
 const { EmailTemplateDraft } = require('../models');
 const { sanitizeAttachmentsForStorage } = require('../utils/attachmentUtils');
 
+const VALID_TEMPLATE_STAGES = new Set(['abstract_submission', 'registration']);
+
 const buildOwnershipClause = (req) => {
   const clause = {};
   if (req.user?.organizationId) {
@@ -50,6 +52,13 @@ router.post('/', async (req, res) => {
       organizationId: req.user?.organizationId || req.body.organizationId || null
     };
 
+    if (payload.stage && !VALID_TEMPLATE_STAGES.has(payload.stage)) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Stage must be either abstract_submission or registration'
+      });
+    }
+
     if (payload.attachments !== undefined) {
       const parsedAttachments = parseAttachmentInput(payload.attachments);
       payload.attachments = sanitizeAttachmentsForStorage(parsedAttachments);
@@ -96,6 +105,13 @@ router.put('/:id', async (req, res) => {
       organizationId: req.user?.organizationId || req.body.organizationId || draft.organizationId,
       createdBy: draft.createdBy || req.user?.id || req.body.createdBy
     };
+
+    if (payload.stage && !VALID_TEMPLATE_STAGES.has(payload.stage)) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Stage must be either abstract_submission or registration'
+      });
+    }
 
     if (payload.attachments !== undefined) {
       const parsedAttachments = parseAttachmentInput(payload.attachments);

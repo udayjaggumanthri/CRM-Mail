@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -150,6 +150,318 @@ const UnifiedEmail = () => {
   const [isSending, setIsSending] = useState(false); // Track sending state to prevent multiple clicks
   const quillEditorRef = useRef(null); // Ref for ReactQuill editor to set HTML content properly
   const [pendingReplyHtml, setPendingReplyHtml] = useState(null); // Store HTML to set after editor mounts
+  const [showAddClientModal, setShowAddClientModal] = useState(false);
+  const [addClientData, setAddClientData] = useState({
+    name: '',
+    email: '',
+    country: '',
+    conferenceId: '',
+    threadRootMessageId: '',
+    initialEmailSubject: ''
+  });
+
+  const focusEditor = () => {
+    const ed = quillEditorRef.current?.getEditor?.();
+    const root = ed?.root;
+    if (ed && root && root.isConnected) {
+      root.setAttribute('contenteditable', 'true');
+      root.style.pointerEvents = 'auto';
+      root.style.userSelect = 'text';
+      try {
+        // Only focus, don't try to set selection - let Quill handle it naturally
+        // Setting selection too early causes "addRange(): The given range isn't in document" errors
+        if (document.activeElement !== root) {
+          root.focus();
+        }
+      } catch (e) {
+        // ignore focus errors
+      }
+    }
+  };
+
+  const ensureEditorActive = () => {
+    // Try multiple ways to access the Quill editor instance
+    let editor = null;
+    if (quillEditorRef.current) {
+      // ReactQuill exposes getEditor() method
+      if (typeof quillEditorRef.current.getEditor === 'function') {
+        editor = quillEditorRef.current.getEditor();
+      }
+      // Alternative: access via internal structure
+      if (!editor && quillEditorRef.current.editor) {
+        editor = quillEditorRef.current.editor;
+      }
+      // Try accessing via the underlying Quill instance
+      if (!editor && quillEditorRef.current.quill) {
+        editor = quillEditorRef.current.quill;
+      }
+    }
+    
+    if (editor) {
+      // Enable the editor
+      if (typeof editor.enable === 'function') {
+        try {
+          editor.enable(true);
+        } catch (e) {
+          // Editor might already be enabled
+        }
+      }
+      
+      // Ensure contenteditable is set
+      const root = editor.root || editor.container?.querySelector('.ql-editor');
+      if (root && root.isConnected) {
+        root.setAttribute('contenteditable', 'true');
+        root.style.pointerEvents = 'auto';
+        root.style.userSelect = 'text';
+        root.style.webkitUserSelect = 'text';
+        root.style.mozUserSelect = 'text';
+        root.style.msUserSelect = 'text';
+      }
+    } else {
+      // Fallback: directly access DOM element
+      const editorElement = document.querySelector('.compose-editor .ql-editor');
+      if (editorElement && editorElement.isConnected) {
+        editorElement.setAttribute('contenteditable', 'true');
+        editorElement.style.pointerEvents = 'auto';
+        editorElement.style.userSelect = 'text';
+        editorElement.style.webkitUserSelect = 'text';
+        editorElement.style.mozUserSelect = 'text';
+        editorElement.style.msUserSelect = 'text';
+      }
+    }
+  };
+
+  // Manual fallback to force-enable and focus the editor (used by help button)
+  const forceEnableEditor = () => {
+    ensureEditorActive();
+    const editorElement = document.querySelector('.compose-editor .ql-editor');
+    if (editorElement && editorElement.isConnected) {
+      editorElement.setAttribute('contenteditable', 'true');
+      editorElement.style.pointerEvents = 'auto';
+      editorElement.style.userSelect = 'text';
+      try {
+        editorElement.focus();
+      } catch (e) {
+        // ignore focus errors
+      }
+    }
+  };
+
+  // Stronger force: enable Quill, focus root, and set selection safely
+  const forceFocusAndEnableEditor = () => {
+    const quill = quillEditorRef.current?.getEditor?.();
+    const root = quill?.root || document.querySelector('.compose-editor .ql-editor');
+    if (quill) {
+      try {
+        quill.enable(true);
+      } catch (_) {}
+    }
+    if (root && root.isConnected) {
+      root.setAttribute('contenteditable', 'true');
+      root.style.pointerEvents = 'auto';
+      root.style.userSelect = 'text';
+      try {
+        root.focus();
+      } catch (_) {}
+    }
+    if (quill) {
+      try {
+        const len = quill.getLength();
+        const safeIndex = Math.max(0, Math.min(len - 1, len));
+        quill.setSelection(safeIndex, 0, 'user');
+      } catch (_) {}
+    }
+  };
+
+  // Enterprise-level editor initialization - ensures editor is ready when compose opens
+  useEffect(() => {
+    if (!showCompose) return;
+    
+    // Wait for ReactQuill to mount, then ensure it's enabled and ready
+    const timer = setTimeout(() => {
+      try {
+        const quill = quillEditorRef.current?.getEditor?.();
+        if (quill) {
+          quill.enable(true);
+          // Ensure editor is visible and editable
+          const editorElement = quill.root;
+          if (editorElement) {
+            editorElement.setAttribute('contenteditable', 'true');
+            editorElement.style.pointerEvents = 'auto';
+            editorElement.style.visibility = 'visible';
+            editorElement.style.opacity = '1';
+          }
+        }
+      } catch (e) {
+        // Silently handle errors - editor should work without this
+      }
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [showCompose]);
+  
+  // Simple editor initialization on compose open (only when compose opens, not when account changes)
+  useEffect(() => {
+    if (!showCompose) return;
+    
+    // Give ReactQuill time to mount and initialize
+    const timer = setTimeout(() => {
+      try {
+        const quill = quillEditorRef.current?.getEditor?.();
+        if (quill) {
+          quill.enable(true);
+        }
+      } catch (e) {
+        console.warn('Editor initialization warning:', e);
+      }
+    }, 300);
+    
+    return () => clearTimeout(timer);
+  }, [showCompose]);
+
+  // Removed aggressive editor activation - ReactQuill works without it
+
+
+  // Simple editor initialization - ReactQuill should work without aggressive hacks
+  useEffect(() => {
+    if (!showCompose) return;
+
+    // Just ensure editor is initialized when compose opens
+    const timer = setTimeout(() => {
+      const quill = quillEditorRef.current?.getEditor?.();
+      if (quill) {
+        try {
+          quill.enable(true);
+        } catch (e) {
+          // Ignore errors
+        }
+      }
+    }, 100);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [showCompose]);
+
+  // Harden Quill selection APIs to avoid addRange errors
+  useEffect(() => {
+    if (!showCompose) return;
+    const quill = quillEditorRef.current?.getEditor?.();
+    if (!quill || quill.__safeSelectionPatched) return;
+
+    // Helper to check if editor is ready
+    const isEditorReady = () => {
+      try {
+        const root = quill.root || quill.container?.querySelector('.ql-editor');
+        if (!root || !root.isConnected) return false;
+        const len = quill.getLength();
+        return Number.isFinite(len);
+      } catch {
+        return false;
+      }
+    };
+
+    const origSetSelection = quill.setSelection.bind(quill);
+    quill.setSelection = (index = 0, length = 0, source) => {
+      try {
+        if (!isEditorReady()) return; // Skip if editor not ready
+        const len = quill.getLength();
+        if (len <= 0) return; // Skip if document is empty
+        const safeIndex = Math.max(0, Math.min(Number(index) || 0, Math.max(0, len - 1)));
+        const safeLength = Math.max(0, Math.min(Number(length) || 0, Math.max(0, len - safeIndex)));
+        if (!Number.isFinite(safeIndex) || !Number.isFinite(safeLength)) return;
+        return origSetSelection(safeIndex, safeLength, source);
+      } catch (e) {
+        // ignore selection errors silently
+        return;
+      }
+    };
+
+    if (quill.selection && quill.selection.setRange) {
+      const origSetRange = quill.selection.setRange.bind(quill.selection);
+      quill.selection.setRange = (range, source, format) => {
+        try {
+          if (!isEditorReady()) return; // Skip if editor not ready
+          if (!range) {
+            // Allow null/undefined range to pass through
+            return origSetRange(range, source, format);
+          }
+          const len = quill.getLength();
+          if (len <= 0) return; // Skip if document is empty
+          const safeIndex = Math.max(0, Math.min(Number(range.index) || 0, Math.max(0, len - 1)));
+          const safeLength = Math.max(0, Math.min(Number(range.length) || 0, Math.max(0, len - safeIndex)));
+          if (!Number.isFinite(safeIndex) || !Number.isFinite(safeLength)) return;
+          return origSetRange({ index: safeIndex, length: safeLength }, source, format);
+        } catch (e) {
+          // ignore selection errors silently
+          return;
+        }
+      };
+    }
+
+    quill.__safeSelectionPatched = true;
+  }, [showCompose]);
+
+  // Retry patching selection if Quill mounted late (extra safety against addRange)
+  useEffect(() => {
+    if (!showCompose) return;
+    const timer = setTimeout(() => {
+      const quill = quillEditorRef.current?.getEditor?.();
+      if (!quill || quill.__safeSelectionPatched) return;
+
+      // Helper to check if editor is ready
+      const isEditorReady = () => {
+        try {
+          const root = quill.root || quill.container?.querySelector('.ql-editor');
+          if (!root || !root.isConnected) return false;
+          const len = quill.getLength();
+          return len > 0 && Number.isFinite(len);
+        } catch {
+          return false;
+        }
+      };
+
+      const origSetSelection = quill.setSelection.bind(quill);
+      quill.setSelection = (index = 0, length = 0, source) => {
+        try {
+          if (!isEditorReady()) return;
+          const len = quill.getLength();
+          if (len <= 0) return;
+          const safeIndex = Math.max(0, Math.min(Number(index) || 0, Math.max(0, len - 1)));
+          const safeLength = Math.max(0, Math.min(Number(length) || 0, Math.max(0, len - safeIndex)));
+          if (!Number.isFinite(safeIndex) || !Number.isFinite(safeLength)) return;
+          return origSetSelection(safeIndex, safeLength, source);
+        } catch (e) {
+          return;
+        }
+      };
+
+      if (quill.selection && quill.selection.setRange) {
+        const origSetRange = quill.selection.setRange.bind(quill.selection);
+        quill.selection.setRange = (range, source, format) => {
+          try {
+            if (!isEditorReady()) return;
+            if (!range) {
+              return origSetRange(range, source, format);
+            }
+            const len = quill.getLength();
+            if (len <= 0) return;
+            const safeIndex = Math.max(0, Math.min(Number(range.index) || 0, Math.max(0, len - 1)));
+            const safeLength = Math.max(0, Math.min(Number(range.length) || 0, Math.max(0, len - safeIndex)));
+            if (!Number.isFinite(safeIndex) || !Number.isFinite(safeLength)) return;
+            return origSetRange({ index: safeIndex, length: safeLength }, source, format);
+          } catch (e) {
+            return;
+          }
+        };
+      }
+
+      quill.__safeSelectionPatched = true;
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [showCompose]);
+
 
   // Prevent background scroll when compose window is open (like Gmail)
   useEffect(() => {
@@ -198,7 +510,7 @@ const UnifiedEmail = () => {
       }
         if (activeEmailAccountId && activeEmailAccountId !== 'all') {
           params.append('accountId', activeEmailAccountId);
-        }
+      }
       
       const response = await axios.get(`/api/emails?${params.toString()}`);
       return response.data;
@@ -407,7 +719,7 @@ const UnifiedEmail = () => {
       const response = await axios.put(`/api/emails/${emailId}`, { 
         isRead: true
       });
-      return response.data;
+    return response.data;
     },
     {
       onSuccess: (data) => {
@@ -462,7 +774,7 @@ const UnifiedEmail = () => {
       return response.data;
     },
     {
-      onSuccess: () => {
+    onSuccess: () => {
         queryClient.invalidateQueries(['emails', activeFolder]);
         toast.success('Email archived');
         setSelectedEmail(null); // Close email view
@@ -510,8 +822,8 @@ const UnifiedEmail = () => {
         setSelectedEmail(null); // Close email view
         // If we were editing this draft, close compose modal
         if (editingDraftId === emailId) {
-          setShowCompose(false);
-          resetComposeData();
+      setShowCompose(false);
+      resetComposeData();
         }
       },
       onError: () => {
@@ -520,21 +832,8 @@ const UnifiedEmail = () => {
     }
   );
 
-  const sendEmailMutation = useMutation(async (emailData) => {
-    const response = await axios.post('/api/emails/send', emailData);
-    return response.data;
-  }, {
-    onSuccess: () => {
-      toast.success('Email sent successfully');
-      setShowCompose(false);
-      resetComposeData();
-      refetch();
-    },
-    onError: (error) => {
-      const errorMessage = error.response?.data?.error || error.response?.data?.details || 'Failed to send email';
-      toast.error(errorMessage);
-    }
-  });
+  // Note: sendEmailMutation is not used - handleSendEmail directly calls axios.post
+  // The post-send "Add Client" flow is handled in handleSendEmail's success handler
 
   const saveDraftMutation = useMutation(
     async () => {
@@ -598,12 +897,12 @@ const UnifiedEmail = () => {
         resetComposeData();
         setShowDraftConfirm(false);
         setPendingCloseAction(null);
-        refetch();
-      },
-      onError: (error) => {
+      refetch();
+    },
+    onError: (error) => {
         const errorMessage = error.response?.data?.error || error.message || 'Failed to save draft';
-        toast.error(errorMessage);
-      }
+      toast.error(errorMessage);
+    }
     }
   );
 
@@ -630,6 +929,14 @@ const UnifiedEmail = () => {
     const parts = value.split(',').map(p => p.trim());
     const currentInput = parts[parts.length - 1];
     
+    // Keep editor active while typing in To field
+    ensureEditorActive();
+    const editorElement = document.querySelector('.compose-editor .ql-editor');
+    if (editorElement) {
+      editorElement.setAttribute('contenteditable', 'true');
+      editorElement.style.pointerEvents = 'auto';
+    }
+    
     if (currentInput && currentInput.length >= 2) {
       setSuggestionInput(currentInput);
       setActiveSuggestionIndex(-1);
@@ -648,6 +955,11 @@ const UnifiedEmail = () => {
     setShowSuggestions(false);
     setSuggestionInput('');
     setActiveSuggestionIndex(-1);
+    // Ensure editor is active after selecting suggestion
+    // Don't force focus - let user click naturally to avoid range errors
+    setTimeout(() => {
+      ensureEditorActive();
+    }, 50);
   };
 
   const handleToInputKeyDown = (e) => {
@@ -663,10 +975,21 @@ const UnifiedEmail = () => {
       } else if (e.key === 'Enter' && activeSuggestionIndex >= 0) {
         e.preventDefault();
         handleSuggestionSelect(emailSuggestions[activeSuggestionIndex]);
+        // Editor activation is handled in handleSuggestionSelect
       } else if (e.key === 'Escape') {
         setShowSuggestions(false);
         setActiveSuggestionIndex(-1);
+        // Ensure editor is active after closing suggestions
+        setTimeout(() => {
+          ensureEditorActive();
+        }, 50);
       }
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      // When Tab or Enter is pressed in To field (without suggestions), ensure editor is ready
+      // Don't force focus - let Tab/Enter naturally move focus
+      setTimeout(() => {
+        ensureEditorActive();
+      }, 50);
     }
   };
 
@@ -674,6 +997,11 @@ const UnifiedEmail = () => {
     // Delay hiding suggestions to allow click on suggestion
     setTimeout(() => {
       setShowSuggestions(false);
+      // Ensure editor is active after To field loses focus
+      // Don't force focus - let user click naturally
+      setTimeout(() => {
+        ensureEditorActive();
+      }, 50);
     }, 250);
   };
 
@@ -748,18 +1076,6 @@ const UnifiedEmail = () => {
             const index = range ? range.index : 0;
             
             quill.clipboard.dangerouslyPasteHTML(index, pendingReplyHtml, 'user');
-            
-            // Move cursor to end after insertion
-            setTimeout(() => {
-              try {
-                const length = quill.getLength();
-                if (length > 1) {
-                  quill.setSelection(length - 1, 'silent');
-                }
-              } catch (e) {
-                // Ignore selection errors
-              }
-            }, 100);
             
             setPendingReplyHtml(null);
           } catch (error) {
@@ -908,8 +1224,35 @@ const UnifiedEmail = () => {
       }
       
       toast.success('Email sent successfully');
+      
+      // Always close compose window first
       setShowCompose(false);
-      resetComposeData();
+      
+      // Show "Add Client" modal with pre-filled threading info
+      const messageId = response?.data?.messageId || '';
+      const subject = response?.data?.subject || composeData.subject || '';
+      // Extract first email address (toEmail already contains trimmed value, but may have multiple emails)
+      const firstEmail = toEmail.split(',')[0]?.trim() || '';
+      
+      if (messageId && firstEmail) {
+        // Pre-fill the Add Client form with threading info
+        setAddClientData({
+          name: firstEmail.split('@')[0] || '', // Extract name from email
+          email: firstEmail,
+          country: '',
+          conferenceId: '',
+          threadRootMessageId: messageId,
+          initialEmailSubject: subject
+        });
+        // Show modal after a brief delay to allow compose window to close smoothly
+        setTimeout(() => {
+          setShowAddClientModal(true);
+        }, 300);
+      } else {
+        // No threading info available, just reset compose data
+        resetComposeData();
+      }
+      
       refetch();
     } catch (error) {
       console.error('Send email error:', error);
@@ -1186,8 +1529,10 @@ const UnifiedEmail = () => {
       }
     },
     clipboard: {
-      // Preserve HTML structure when pasting/loading
-      matchVisual: false
+      // Preserve line breaks and formatting when pasting
+      matchVisual: false,
+      // Don't normalize HTML - preserve original formatting and spacing
+      preserveWhitespace: true
     }
   };
 
@@ -1213,6 +1558,7 @@ const UnifiedEmail = () => {
     'indent',
     'preserved-html' // Our custom Blot for preserving HTML structure
   ];
+
 
   const formatDate = (dateString) => {
     const date = new Date(dateString);
@@ -1270,21 +1616,45 @@ const UnifiedEmail = () => {
     { id: 'trash', icon: Trash2, label: 'Trash', count: 0 }
   ];
 
+  // Enterprise-level onChange handler - matches Templates.js pattern exactly
+  const handleBodyChange = useCallback((html) => {
+    // Simple direct update - ReactQuill handles focus internally
+    // This matches the working pattern in Templates.js
+    const htmlValue = html || '';
+    setComposeData(prev => ({
+      ...prev,
+      body: htmlValue
+    }));
+  }, []); // Stable function reference
+
   const openComposeWindow = (preferredAccountId = null) => {
-    if (preferredAccountId && preferredAccountId !== 'all' && visibleEmailAccounts.some(acc => acc.id === preferredAccountId)) {
-      setSelectedEmailAccountId(preferredAccountId);
-    } else if (!selectedEmailAccountId && visibleEmailAccounts.length) {
-      setSelectedEmailAccountId(visibleEmailAccounts[0].id);
+    try {
+      if (preferredAccountId && preferredAccountId !== 'all' && visibleEmailAccounts.some(acc => acc.id === preferredAccountId)) {
+        setSelectedEmailAccountId(preferredAccountId);
+      } else if (!selectedEmailAccountId && visibleEmailAccounts.length) {
+        setSelectedEmailAccountId(visibleEmailAccounts[0].id);
+      }
+      setShowCompose(true);
+      setIsComposeMaximized(false);
+    } catch (error) {
+      console.error('Error in openComposeWindow:', error);
+      // Force open the window even if there's an error
+      setShowCompose(true);
     }
-    setShowCompose(true);
-    setIsComposeMaximized(false);
   };
 
   const startNewCompose = () => {
-    resetComposeData();
-    const preferredAccount = activeEmailAccountId !== 'all' ? activeEmailAccountId : null;
-    openComposeWindow(preferredAccount);
-    setSelectedEmail(null);
+    try {
+      console.log('Compose button clicked');
+      resetComposeData();
+      const preferredAccount = activeEmailAccountId !== 'all' ? activeEmailAccountId : null;
+      openComposeWindow(preferredAccount);
+      setSelectedEmail(null);
+    } catch (error) {
+      console.error('Error opening compose window:', error);
+      // Still try to open the window even if there's an error
+      setShowCompose(true);
+    }
   };
 
   const pagination = emailsData?.pagination || { total: 0, page: 1, pages: 0, hasMore: false };
@@ -1534,7 +1904,10 @@ const UnifiedEmail = () => {
             </h4>
             <div className="space-y-1">
               <button
-                onClick={() => setActiveEmailAccountId('all')}
+                onClick={() => {
+                  setActiveEmailAccountId('all');
+                  ensureEditorActive();
+                }}
                 className={`w-full text-left px-3 py-2 text-sm rounded-md transition-colors ${
                   activeEmailAccountId === 'all'
                     ? 'bg-blue-100 text-blue-800 font-medium'
@@ -1563,7 +1936,10 @@ const UnifiedEmail = () => {
                         return (
                           <button
                             key={account.id}
-                            onClick={() => setActiveEmailAccountId(account.id)}
+                            onClick={() => {
+                              setActiveEmailAccountId(account.id);
+                              ensureEditorActive();
+                            }}
                             className={`w-full px-3 py-2 text-sm rounded-md transition-colors flex items-center justify-between ${
                               isSelected
                                 ? 'bg-blue-100 text-blue-800 font-medium'
@@ -1643,21 +2019,21 @@ const UnifiedEmail = () => {
                   />
                   <div>
                     <label className="block text-xs text-gray-600 mb-1">Email Date From</label>
-                    <input
-                      type="date"
-                      value={filters.startDate}
-                      onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+                  <input
+                    type="date"
+                    value={filters.startDate}
+                    onChange={(e) => setFilters({...filters, startDate: e.target.value})}
                       className="px-3 py-2 text-sm border border-gray-300 rounded-md w-full"
-                    />
+                  />
                   </div>
                   <div>
                     <label className="block text-xs text-gray-600 mb-1">Email Date To</label>
-                    <input
-                      type="date"
-                      value={filters.endDate}
-                      onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+                  <input
+                    type="date"
+                    value={filters.endDate}
+                    onChange={(e) => setFilters({...filters, endDate: e.target.value})}
                       className="px-3 py-2 text-sm border border-gray-300 rounded-md w-full"
-                    />
+                  />
                   </div>
                 </div>
                 <div className="flex space-x-2">
@@ -1990,7 +2366,22 @@ const UnifiedEmail = () => {
             isComposeMaximized
               ? 'top-20 left-[280px] right-8 bottom-8'
               : 'bottom-4 right-4 w-[600px] h-[600px] max-h-[calc(100vh-2rem)]'
-          } z-50 bg-white shadow-2xl rounded-lg border border-gray-300 flex flex-col transition-all duration-300`}
+        } z-50 bg-white shadow-2xl rounded-lg border border-gray-300 flex flex-col transition-all duration-300`}
+          style={{ display: 'flex' }}
+        onMouseDown={(e) => {
+          // Only handle if clicking on the compose window itself, not child elements
+          if (e.target === e.currentTarget) {
+            // Focus the editor when clicking the compose window background
+            const editorElement = document.querySelector('.compose-editor .ql-editor');
+            if (editorElement) {
+              try {
+                editorElement.focus();
+              } catch (e) {
+                // Ignore focus errors
+              }
+            }
+          }
+        }}
         >
           {/* Header */}
           <div className="bg-gray-50 px-4 py-3 flex items-center justify-between border-b border-gray-200 rounded-t-lg">
@@ -2033,7 +2424,10 @@ const UnifiedEmail = () => {
                   ) : (
                   <select
                     value={selectedEmailAccountId || ''}
-                    onChange={(e) => setSelectedEmailAccountId(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedEmailAccountId(e.target.value);
+                      // Editor should remain stable - no need to re-initialize
+                    }}
                     className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
                   >
                     {[
@@ -2069,7 +2463,9 @@ const UnifiedEmail = () => {
                             setShowSuggestions(emailSuggestions.length > 0);
                           }
                         }}
-                        onBlur={handleToInputBlur}
+                        onBlur={(e) => {
+                          handleToInputBlur();
+                        }}
                         className="w-full px-2 py-1 text-sm border-0 focus:ring-0 placeholder-gray-400"
                         autoComplete="off"
                       />
@@ -2163,67 +2559,200 @@ const UnifiedEmail = () => {
                 </div>
 
                 {/* Subject */}
-                <div className="flex items-center pt-2 border-t border-gray-100">
+            <div className="flex items-center pt-2 border-t border-gray-100">
                       <input
                         type="text"
                         placeholder="Subject"
                         value={composeData.subject}
-                        onChange={(e) => setComposeData({ ...composeData, subject: e.target.value })}
-                    className="flex-1 px-2 py-1 text-sm border-0 focus:ring-0 placeholder-gray-400"
-                      />
-                </div>
+                onChange={(e) => {
+                  setComposeData({ ...composeData, subject: e.target.value });
+                }}
+                className="flex-1 px-2 py-1 text-sm border-0 focus:ring-0 placeholder-gray-400"
+              />
+            </div>
                     </div>
 
-              {/* Rich Text Editor */}
-              <div className="flex-1 flex-shrink-0 overflow-hidden flex flex-col min-h-[300px]">
-                <ReactQuill
-                  ref={quillEditorRef}
-                  theme="snow"
-                      value={composeData.body}
-                  onChange={(value) => setComposeData({ ...composeData, body: value })}
-                  modules={quillModules}
-                  formats={quillFormats}
-                  placeholder="Compose your message..."
-                  style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}
-                  className="compose-editor"
-                />
+              {/* Rich Text Editor - Enterprise-level implementation matching Templates.js */}
+              <div className="flex-1 flex flex-col min-h-[300px]" style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
+                <div className="border border-gray-300 rounded-lg bg-white overflow-visible" style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: '300px', position: 'relative' }}>
+                  <ReactQuill
+                    key="compose-editor-stable"
+                    ref={quillEditorRef}
+                    value={composeData.body || ''}
+                    onChange={handleBodyChange}
+                    modules={quillModules}
+                    formats={quillFormats}
+                    placeholder="Compose your message..."
+                    className="compose-editor"
+                    theme="snow"
+                    bounds="self"
+                    preserveWhitespace={true}
+                  />
+                </div>
                 <style>{`
                   .compose-editor {
-                    display: flex;
-                    flex-direction: column;
-                    height: 100%;
-                    flex: 1;
+                    display: flex !important;
+                    flex-direction: column !important;
+                    position: relative !important;
+                    width: 100% !important;
+                    height: 100% !important;
+                  }
+                  .compose-editor .ql-toolbar {
+                    display: flex !important;
+                    flex-wrap: wrap !important;
+                    align-items: center !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    border-top: 1px solid #e5e7eb !important;
+                    border-left: 1px solid #e5e7eb !important;
+                    border-right: 1px solid #e5e7eb !important;
+                    border-bottom: 1px solid #e5e7eb !important;
+                    padding: 8px !important;
+                    border-radius: 0.5rem 0.5rem 0 0 !important;
+                    position: relative !important;
+                    z-index: 10 !important;
+                    pointer-events: auto !important;
+                    background-color: #ffffff !important;
+                    box-sizing: border-box !important;
+                    width: 100% !important;
+                    flex-shrink: 0 !important;
+                  }
+                  .compose-editor .ql-toolbar * {
+                    pointer-events: auto !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-formats {
+                    display: inline-flex !important;
+                    align-items: center !important;
+                    vertical-align: middle !important;
+                    margin-right: 8px !important;
+                  }
+                  .compose-editor .ql-toolbar button,
+                  .compose-editor .ql-toolbar .ql-picker {
+                    display: inline-block !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    vertical-align: middle !important;
+                    margin: 0 2px !important;
+                  }
+                  .compose-editor .ql-toolbar button.ql-active {
+                    opacity: 1 !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker-label {
+                    display: inline-flex !important;
+                    align-items: center !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker {
+                    position: relative !important;
+                    z-index: auto !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-expanded {
+                    z-index: 1000 !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker.ql-expanded .ql-picker-options {
+                    display: block !important;
+                    visibility: visible !important;
+                    z-index: 1000 !important;
+                    position: absolute !important;
+                    background-color: #ffffff !important;
+                    border: 1px solid #e5e7eb !important;
+                    border-radius: 0.25rem !important;
+                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+                    margin-top: 2px !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-picker:not(.ql-expanded) .ql-picker-options {
+                    display: none !important;
+                  }
+                  .compose-editor .ql-toolbar .ql-color-picker.ql-expanded .ql-picker-options,
+                  .compose-editor .ql-toolbar .ql-background.ql-expanded .ql-picker-options {
+                    z-index: 1001 !important;
+                    width: 152px !important;
                   }
                   .compose-editor .ql-container {
-                    flex: 1;
-                    display: flex;
-                    flex-direction: column;
-                    overflow-y: auto;
-                    font-size: 14px;
-                    min-height: 0;
-                    height: 100%;
-                    border: none;
+                    flex: 1 !important;
+                    display: flex !important;
+                    flex-direction: column !important;
+                    overflow-y: auto !important;
+                    overflow-x: hidden !important;
+                    font-size: 14px !important;
+                    min-height: 0 !important;
+                    border-radius: 0 0 0.5rem 0.5rem !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    position: relative !important;
+                    pointer-events: auto !important;
+                    background-color: #ffffff !important;
+                    border: 1px solid #e5e7eb !important;
+                    border-top: none !important;
+                    box-sizing: border-box !important;
+                    z-index: 1 !important;
+                  }
+                  .compose-editor .ql-container.ql-snow {
+                    border: 1px solid #e5e7eb !important;
+                    border-top: none !important;
                   }
                   .compose-editor .ql-editor {
-                    flex: 1;
-                    min-height: 200px;
-                    padding: 16px;
-                    text-align: left;
-                    line-height: 1.15;
-                    word-wrap: break-word;
-                    overflow-wrap: break-word;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                    font-size: 14px;
-                    color: #1f2937;
+                    flex: 1 !important;
+                    min-height: 250px !important;
+                    padding: 12px !important;
+                    text-align: left !important;
+                    line-height: 1.15 !important;
+                    word-wrap: break-word !important;
+                    overflow-wrap: break-word !important;
+                    white-space: pre-wrap !important;
+                    display: block !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    position: relative !important;
+                    pointer-events: auto !important;
+                    color: #000000 !important;
+                    background-color: #ffffff !important;
+                    overflow-y: auto !important;
+                    overflow-x: hidden !important;
+                    z-index: 1 !important;
                   }
-                  /* Paragraph spacing will be controlled by inline styles from Quill */
+                  .compose-editor .ql-editor:focus {
+                    outline: none !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                  }
+                  .compose-editor .ql-editor * {
+                    color: inherit !important;
+                    visibility: visible !important;
+                  }
+                  .compose-editor .ql-editor p,
+                  .compose-editor .ql-editor div,
+                  .compose-editor .ql-editor span,
+                  .compose-editor .ql-editor strong,
+                  .compose-editor .ql-editor em,
+                  .compose-editor .ql-editor u {
+                    color: #000000 !important;
+                    visibility: visible !important;
+                    display: inline !important;
+                  }
                   .compose-editor .ql-editor p {
-                    margin: 0;
-                    /* Line-height and margin-bottom will be applied via inline styles from Quill */
+                    margin: 0 !important;
+                    white-space: pre-wrap !important;
+                    display: block !important;
                   }
-                  /* Ensure paragraphs with margin-bottom spacing are visible */
                   .compose-editor .ql-editor p[style*="margin-bottom"] {
-                    display: block;
+                    display: block !important;
+                  }
+                  .compose-editor .ql-editor p:empty {
+                    min-height: 1em !important;
+                    display: block !important;
+                  }
+                  .compose-editor .ql-editor div {
+                    white-space: pre-wrap !important;
+                  }
+                  .compose-editor .ql-editor.ql-blank::before {
+                    left: 12px !important;
+                    right: 12px !important;
+                    text-align: left !important;
+                    font-style: normal !important;
+                    color: #9ca3af !important;
+                    visibility: visible !important;
                   }
                   .compose-editor .ql-editor h1,
                   .compose-editor .ql-editor h2,
@@ -3031,12 +3560,163 @@ const UnifiedEmail = () => {
                   >
                     {saveDraftMutation.isLoading ? 'Saving...' : 'Save as Draft'}
                   </button>
-                </div>
-              </div>
+            </div>
+          </div>
             </div>
           )}
 
           {/* End of Compose Window */}
+        </div>
+      )}
+
+      {/* Add Client Modal - Post-Send Flow */}
+      {showAddClientModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto mx-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  Add Client to CRM
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowAddClientModal(false);
+                    setShowCompose(false);
+                    resetComposeData();
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-6">
+                Add this recipient as a client to enable automated follow-ups. Threading information has been captured from the email you just sent.
+              </p>
+
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                try {
+                  const submitData = {
+                    name: addClientData.name || addClientData.email.split('@')[0] || 'Client',
+                    email: addClientData.email,
+                    country: addClientData.country || undefined,
+                    conferenceId: addClientData.conferenceId || undefined,
+                    threadRootMessageId: addClientData.threadRootMessageId,
+                    initialEmailSubject: addClientData.initialEmailSubject
+                  };
+
+                  await axios.post('/api/clients', submitData);
+                  toast.success('Client added successfully with threading info');
+                  setShowAddClientModal(false);
+                  setShowCompose(false);
+                  resetComposeData();
+                } catch (error) {
+                  console.error('Add client error:', error);
+                  const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to add client';
+                  toast.error(errorMessage);
+                }
+              }} className="space-y-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={addClientData.name}
+                    onChange={(e) => setAddClientData({ ...addClientData, name: e.target.value })}
+                    required
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="Enter client name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    value={addClientData.email}
+                    onChange={(e) => setAddClientData({ ...addClientData, email: e.target.value })}
+                    required
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="email@example.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Country
+                  </label>
+                  <input
+                    type="text"
+                    value={addClientData.country}
+                    onChange={(e) => setAddClientData({ ...addClientData, country: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="Enter country (optional)"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Conference
+                  </label>
+                  <select
+                    value={addClientData.conferenceId}
+                    onChange={(e) => setAddClientData({ ...addClientData, conferenceId: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="">No Conference Selected</option>
+                    {assignedConferences?.map(conference => (
+                      <option key={conference.id} value={conference.id}>
+                        {conference.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Select a conference to enable automated follow-up emails
+                  </p>
+                </div>
+
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h3 className="text-sm font-semibold text-blue-900 mb-2">Threading Information (Auto-filled)</h3>
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <span className="font-medium text-blue-800">Thread Root Message-ID:</span>
+                      <p className="text-blue-700 break-all mt-1">{addClientData.threadRootMessageId || 'Not available'}</p>
+                    </div>
+                    <div>
+                      <span className="font-medium text-blue-800">Initial Email Subject:</span>
+                      <p className="text-blue-700 break-words mt-1">{addClientData.initialEmailSubject || 'Not available'}</p>
+                    </div>
+                    <p className="text-blue-600 text-xs mt-2">
+                      Follow-up emails will use this information to maintain a single Gmail thread.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end space-x-3 pt-4 border-t">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAddClientModal(false);
+                      resetComposeData();
+                    }}
+                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-6 py-2 text-sm text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    Add Client
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
         </div>
       )}
     </div>

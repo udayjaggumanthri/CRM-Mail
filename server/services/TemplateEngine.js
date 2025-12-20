@@ -96,6 +96,13 @@ class TemplateEngine {
           variables.client_country = client.country || '';
           variables.client_organization = client.organization || '';
           variables.client_position = client.position || '';
+
+          // Legacy/simple aliases to support older template syntax
+          // e.g. {{clientName}} instead of {{name}} or {{client.name}}
+          variables.clientName = fullName;
+          variables.clientEmail = client.email || '';
+          variables.clientCountry = client.country || '';
+          variables.clientOrganization = client.organization || '';
         }
       }
 
@@ -170,6 +177,12 @@ class TemplateEngine {
           // Direct accessors for backward compatibility
           variables.abstractSubmissionLink = abstractSubmissionLink;
           variables.registrationLink = registrationLink;
+
+          // Legacy/simple aliases to support older template syntax
+          // e.g. {{startDate}}, {{endDate}}, {{venue}} used in existing templates
+          variables.startDate = formattedStartDate;
+          variables.endDate = formattedEndDate;
+          variables.venue = conference.venue || '';
         }
       }
 

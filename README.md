@@ -1,4 +1,4 @@
-# Conference CRM
+# Conference CRM - Enterprise Email Management System
 
 A comprehensive Customer Relationship Management (CRM) system designed for conference management, email automation, and client communication. This application provides real-time email synchronization with Gmail/IMAP, automated follow-up sequences, template management, and advanced analytics.
 
@@ -6,10 +6,12 @@ A comprehensive Customer Relationship Management (CRM) system designed for confe
 
 - **Email Management**
   - Real-time IMAP/Gmail synchronization
+  - Rich text email composer with ReactQuill
   - Compose, send, and manage emails
   - Draft management with auto-save
   - Email threading and conversation view
   - Attachment support
+  - Multiple SMTP account management
 
 - **Client Management**
   - Comprehensive client profiles
@@ -17,79 +19,90 @@ A comprehensive Customer Relationship Management (CRM) system designed for confe
   - Bulk client import/export
   - Client notes and task management
   - Advanced filtering and search
+  - Conference-based client organization
 
 - **Conference Management**
   - Create and manage conferences
   - Conference-specific client assignments
   - Revenue tracking
   - Conference analytics
+  - Template associations
 
 - **Email Templates**
-  - Rich text email templates
-  - Variable substitution
-  - Template sequences
-  - Draft auto-save
+  - Rich text email templates with variable substitution
+  - Template sequences for follow-ups
+  - Draft auto-save functionality
+  - Template variables: {Name}, {ConferenceName}, {Email}, {Country}
 
 - **Follow-up Automation**
   - Automated email sequences
-  - Smart scheduling
-  - Custom intervals and working hours
-  - Follow-up tracking
+  - Smart scheduling with custom intervals
+  - Working hours configuration
+  - Follow-up tracking and analytics
+  - Pause/resume functionality
 
 - **User Management**
   - Role-based access control (CEO, TeamLead, Member)
   - User authentication and authorization
   - Password management
   - Activity tracking
+  - Organization-based access
 
 - **Dashboard & Analytics**
   - Real-time metrics
   - Email statistics
   - Client conversion tracking
   - Revenue reports
+  - Conference-specific dashboards
 
 - **Real-time Updates**
   - WebSocket integration
   - Live email synchronization
   - Real-time notifications
+  - Instant UI updates
 
 ## 🛠️ Tech Stack
 
 ### Frontend
-- **React 18** - UI framework
-- **React Router** - Routing
-- **React Query** - Data fetching and caching
-- **Tailwind CSS** - Styling
+- **React 18** - Modern UI framework
+- **React Router v6** - Client-side routing
+- **React Query v3** - Data fetching and caching
+- **Tailwind CSS** - Utility-first styling
 - **Socket.io Client** - Real-time communication
-- **React Quill** - Rich text editor
+- **React Quill** - Rich text editor for email composition
 - **Axios** - HTTP client
+- **React Hot Toast** - User notifications
+- **Headless UI** - Accessible UI components
+- **Lucide React** - Icon library
 
 ### Backend
 - **Node.js** - Runtime environment
 - **Express.js** - Web framework
-- **PostgreSQL** - Database
-- **Sequelize** - ORM
-- **Socket.io** - WebSocket server
-- **IMAPflow** - IMAP client
-- **Nodemailer** - Email sending
-- **JWT** - Authentication
+- **PostgreSQL** - Relational database
+- **Sequelize** - ORM for database operations
+- **Socket.io** - WebSocket server for real-time features
+- **IMAPflow** - Modern IMAP client for email sync
+- **Nodemailer** - Email sending service
+- **JWT** - Token-based authentication
 - **Bcrypt** - Password hashing
+- **Node-cron** - Scheduled tasks
+- **Multer** - File upload handling
 
 ## 📋 Prerequisites
 
 Before you begin, ensure you have the following installed:
 
-- **Node.js** (v16 or higher)
+- **Node.js** (v16 or higher recommended)
 - **npm** (v8 or higher) or **yarn**
 - **PostgreSQL** (v12 or higher)
-- **Git**
+- **Git** (for version control)
 
 ## 📦 Installation
 
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/conference-crm.git
+git clone <repository-url>
 cd conference-crm/crm1
 ```
 
@@ -140,8 +153,8 @@ cp env.example .env
 
 ```env
 # Server Configuration
-PORT=3001
 NODE_ENV=development
+PORT=3001
 
 # Database Configuration
 DB_HOST=localhost
@@ -151,7 +164,7 @@ DB_USER=your_db_user
 DB_PASSWORD=your_db_password
 
 # JWT Secret
-JWT_SECRET=your_jwt_secret_key_here
+JWT_SECRET=your_jwt_secret_key_here_change_in_production
 
 # Email Configuration (for SMTP)
 SMTP_HOST=smtp.gmail.com
@@ -242,27 +255,56 @@ crm1/
 ├── client/                 # React frontend application
 │   ├── public/            # Static files
 │   ├── src/
-│   │   ├── components/   # React components
-│   │   ├── contexts/     # React contexts
+│   │   ├── components/    # React components
+│   │   │   ├── UnifiedEmail.js    # Main email client component
+│   │   │   ├── Templates.js      # Email template management
+│   │   │   ├── Clients.js        # Client management
+│   │   │   ├── ConferenceManagement.js
+│   │   │   └── ...              # Other components
+│   │   ├── contexts/     # React contexts (AuthContext)
 │   │   ├── hooks/        # Custom React hooks
+│   │   │   ├── useRealtimeEmail.js
+│   │   │   └── useRealtimeSync.js
 │   │   └── index.js      # Entry point
-│   ├── build/            # Production build output
+│   ├── build/            # Production build output (gitignored)
 │   └── package.json
 │
 ├── server/                # Node.js backend application
 │   ├── config/           # Configuration files
-│   ├── database/        # Database migrations and seeds
+│   │   ├── database.js
+│   │   └── sequelize-cli.js
+│   ├── database/         # Database migrations and seeds
+│   │   └── migrations/   # Sequelize migrations
 │   ├── middleware/      # Express middleware
-│   ├── models/          # Sequelize models
-│   ├── routes/          # API routes
-│   ├── services/        # Business logic services
-│   ├── utils/           # Utility functions
-│   └── index.js         # Server entry point
+│   │   └── rbac.js      # Role-based access control
+│   ├── models/           # Sequelize models
+│   │   ├── User.js
+│   │   ├── Client.js
+│   │   ├── Email.js
+│   │   ├── EmailAccount.js
+│   │   └── ...          # Other models
+│   ├── routes/           # API routes
+│   │   ├── emailRoutes.js
+│   │   ├── clientRoutes.js
+│   │   └── ...          # Other routes
+│   ├── services/         # Business logic services
+│   │   ├── EmailService.js
+│   │   ├── ImapService.js
+│   │   ├── FollowUpService.js
+│   │   └── ...          # Other services
+│   ├── utils/            # Utility functions
+│   └── index.js          # Server entry point
 │
 ├── scripts/              # Deployment and utility scripts
 ├── .env                  # Environment variables (not in git)
 ├── env.example           # Example environment file
-└── package.json          # Root package.json
+├── .gitignore            # Git ignore rules
+├── package.json          # Root package.json
+├── start.sh              # Linux/Mac startup script
+├── start-windows.bat      # Windows startup script
+├── deploy.sh             # Linux/Mac deployment script
+├── deploy-windows.bat     # Windows deployment script
+└── README.md             # This file
 ```
 
 ## 🔐 Default Login Credentials
@@ -286,149 +328,306 @@ API endpoints are documented in:
 - `POST /api/emails/send` - Send email
 - `GET /api/conferences` - Get conferences
 - `POST /api/conferences` - Create conference
+- `GET /api/templates` - Get email templates
+- `POST /api/templates` - Create email template
 
-## 🚢 Deployment
+## 🔄 Git Workflow & Code Management
 
-### Deploying to GitHub
+### Initial Git Setup
 
-#### Step 1: Initialize Git Repository
-
-If not already initialized:
+If this is a new repository:
 
 ```bash
+# Initialize Git repository
 git init
-```
 
-#### Step 2: Create .gitignore
-
-Ensure you have a `.gitignore` file (create if missing):
-
-```gitignore
-# Dependencies
-node_modules/
-package-lock.json
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Build outputs
-client/build/
-dist/
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Database
-*.sqlite
-*.db
-
-# Temporary files
-*.tmp
-*.temp
-```
-
-#### Step 3: Add Files to Git
-
-```bash
-# Add all files
-git add .
-
-# Commit changes
-git commit -m "Initial commit: Conference CRM application"
-```
-
-#### Step 4: Create GitHub Repository
-
-1. Go to [GitHub](https://github.com) and sign in
-2. Click the "+" icon in the top right
-3. Select "New repository"
-4. Name your repository (e.g., `conference-crm`)
-5. Choose visibility (Public or Private)
-6. **Do NOT** initialize with README, .gitignore, or license (we already have these)
-7. Click "Create repository"
-
-#### Step 5: Connect Local Repository to GitHub
-
-```bash
-# Add remote repository (replace with your GitHub username and repo name)
-git remote add origin https://github.com/yourusername/conference-crm.git
+# Add remote repository
+git remote add origin <your-repository-url>
 
 # Verify remote
 git remote -v
 ```
 
-#### Step 6: Push to GitHub
+### Daily Development Workflow
+
+#### 1. Before Starting Work
+
+Always pull the latest changes:
 
 ```bash
-# Push to main branch
-git branch -M main
-git push -u origin main
+# Switch to main branch
+git checkout main
+
+# Pull latest changes
+git pull origin main
 ```
 
-#### Step 7: Set Up GitHub Actions (Optional)
+#### 2. Create a Feature Branch
 
-Create `.github/workflows/ci.yml` for continuous integration:
+Never commit directly to `main`. Always create a feature branch:
 
-```yaml
-name: CI
+```bash
+# Create and switch to new branch
+git checkout -b feature/your-feature-name
 
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
-    
-    - name: Install dependencies
-      run: |
-        npm install
-        cd server && npm install
-        cd ../client && npm install
-    
-    - name: Run tests (if available)
-      run: npm test --if-present
+# Or for bug fixes
+git checkout -b fix/bug-description
 ```
 
-### Deploying to Production
+**Branch Naming Conventions:**
+- `feature/` - New features (e.g., `feature/email-composer-improvements`)
+- `fix/` - Bug fixes (e.g., `fix/editor-focus-issue`)
+- `refactor/` - Code refactoring (e.g., `refactor/email-service`)
+- `docs/` - Documentation updates (e.g., `docs/update-readme`)
 
-#### Option 1: Using PM2 (Recommended)
+#### 3. Make Your Changes
+
+- Write clean, maintainable code
+- Follow existing code style
+- Add comments for complex logic
+- Test your changes locally
+
+#### 4. Stage Your Changes
+
+```bash
+# Check what files have changed
+git status
+
+# Stage specific files (recommended)
+git add path/to/file1.js
+git add path/to/file2.js
+
+# Or stage all changes (use carefully)
+git add .
+```
+
+**Important:** Never commit:
+- `.env` files
+- `node_modules/` directory
+- `build/` or `dist/` directories
+- Log files
+- Temporary files
+
+#### 5. Commit Your Changes
+
+Write clear, descriptive commit messages:
+
+```bash
+# Good commit message format
+git commit -m "feat: improve email composer focus handling
+
+- Fixed ReactQuill editor losing focus during typing
+- Removed unnecessary memo wrapper causing re-renders
+- Simplified onChange handler to match Templates.js pattern
+- Added enterprise-level error handling"
+
+# Or shorter format
+git commit -m "fix: resolve editor focus loss issue in compose window"
+```
+
+**Commit Message Guidelines:**
+- Use conventional commit format: `type: description`
+- Types: `feat`, `fix`, `refactor`, `docs`, `style`, `test`, `chore`
+- First line should be concise (50 chars or less)
+- Add detailed description if needed (separated by blank line)
+- Use imperative mood ("fix" not "fixed" or "fixes")
+
+#### 6. Push to Remote
+
+```bash
+# Push your branch to remote
+git push origin feature/your-feature-name
+
+# If branch doesn't exist on remote, set upstream
+git push -u origin feature/your-feature-name
+```
+
+#### 7. Create Pull Request
+
+1. Go to your repository on GitHub/GitLab
+2. Click "New Pull Request" or "Create Merge Request"
+3. Select your feature branch
+4. Add description of changes
+5. Request review if needed
+6. Wait for approval before merging
+
+### Code Review Checklist
+
+Before submitting a PR, ensure:
+
+- [ ] Code follows existing style and patterns
+- [ ] No console.log statements left in code
+- [ ] No commented-out code
+- [ ] All new features are tested
+- [ ] No breaking changes (or documented if necessary)
+- [ ] Environment variables are documented in `env.example`
+- [ ] README updated if needed
+- [ ] No sensitive data in code
+
+### Merging to Main
+
+After PR approval:
+
+```bash
+# Switch to main
+git checkout main
+
+# Pull latest changes
+git pull origin main
+
+# Merge your feature branch
+git merge feature/your-feature-name
+
+# Push to remote
+git push origin main
+
+# Delete local branch (optional)
+git branch -d feature/your-feature-name
+
+# Delete remote branch (optional)
+git push origin --delete feature/your-feature-name
+```
+
+### Handling Merge Conflicts
+
+If you encounter conflicts:
+
+```bash
+# Pull latest changes
+git pull origin main
+
+# Resolve conflicts in your editor
+# Look for conflict markers: <<<<<<<, =======, >>>>>>>
+
+# After resolving, stage the files
+git add conflicted-file.js
+
+# Complete the merge
+git commit -m "merge: resolve conflicts with main branch"
+```
+
+### Undoing Changes
+
+**Before committing:**
+```bash
+# Discard changes to a file
+git checkout -- path/to/file.js
+
+# Discard all changes
+git checkout -- .
+```
+
+**After committing (but not pushed):**
+```bash
+# Undo last commit, keep changes
+git reset --soft HEAD~1
+
+# Undo last commit, discard changes
+git reset --hard HEAD~1
+```
+
+**After pushing:**
+```bash
+# Create a new commit that reverts changes
+git revert <commit-hash>
+```
+
+### Best Practices
+
+1. **Commit Often**: Make small, logical commits rather than one large commit
+2. **Test Before Committing**: Always test your changes locally
+3. **Write Good Messages**: Clear commit messages help team understand changes
+4. **Keep Branches Updated**: Regularly merge `main` into your feature branch
+5. **Don't Commit Secrets**: Never commit `.env` files or API keys
+6. **Review Your Changes**: Use `git diff` before committing
+7. **Use .gitignore**: Ensure sensitive files are ignored
+
+### Git Configuration
+
+Set up your Git identity:
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+```
+
+Enable helpful aliases:
+
+```bash
+git config --global alias.st status
+git config --global alias.co checkout
+git config --global alias.br branch
+git config --global alias.unstage 'reset HEAD --'
+```
+
+## 🚢 Deployment
+
+### Pre-Deployment Checklist
+
+Before deploying to production:
+
+- [ ] All tests pass
+- [ ] Environment variables configured
+- [ ] Database migrations run
+- [ ] Build succeeds without errors
+- [ ] No console errors in browser
+- [ ] Security review completed
+- [ ] Backup current production data
+
+### Deployment Process
+
+#### Option 1: Using Deployment Scripts (Recommended)
+
+**Windows:**
+```bash
+.\deploy-windows.bat
+```
+
+**Linux/Mac:**
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+#### Option 2: Manual Deployment
+
+1. **Pull latest code:**
+   ```bash
+   git pull origin main
+   ```
+
+2. **Install/update dependencies:**
+   ```bash
+   npm run install-all
+   ```
+
+3. **Run database migrations:**
+   ```bash
+   cd server
+   npx sequelize-cli db:migrate
+   ```
+
+4. **Build client:**
+   ```bash
+   cd client
+   npm run build
+   cd ..
+   ```
+
+5. **Restart application:**
+   ```bash
+   # Stop current processes
+   # Then restart using your process manager (PM2, systemd, etc.)
+   ```
+
+### Production Deployment with PM2
 
 1. Install PM2 globally:
-
 ```bash
 npm install -g pm2
 ```
 
-2. Create `ecosystem.config.js` in the root:
-
+2. Create `ecosystem.config.js` in root:
 ```javascript
 module.exports = {
   apps: [
@@ -438,81 +637,26 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3001
-      }
-    },
-    {
-      name: 'crm-client',
-      script: './client/serve-build.js',
-      env: {
-        NODE_ENV: 'production',
-        PORT: 5000
-      }
+      },
+      instances: 1,
+      exec_mode: 'fork',
+      watch: false,
+      max_memory_restart: '1G',
+      error_file: './logs/server-error.log',
+      out_file: './logs/server-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z'
     }
   ]
 };
 ```
 
 3. Build and start:
-
 ```bash
-# Build client
-cd client
-npm run build
-cd ..
-
-# Start with PM2
+cd client && npm run build && cd ..
 pm2 start ecosystem.config.js
 pm2 save
 pm2 startup
 ```
-
-#### Option 2: Using Docker (Optional)
-
-Create `Dockerfile` in the root:
-
-```dockerfile
-FROM node:18-alpine
-
-WORKDIR /app
-
-COPY package*.json ./
-COPY server/package*.json ./server/
-COPY client/package*.json ./client/
-
-RUN npm run install-all
-
-COPY . .
-
-RUN cd client && npm run build
-
-EXPOSE 3001 5000
-
-CMD ["npm", "start"]
-```
-
-#### Option 3: Deploy to Cloud Platforms
-
-**Heroku:**
-1. Install Heroku CLI
-2. Create `Procfile`:
-```
-web: cd server && npm start
-```
-3. Deploy:
-```bash
-heroku create your-app-name
-git push heroku main
-```
-
-**Vercel/Netlify (Frontend only):**
-- Build the React app
-- Deploy the `client/build` folder
-- Set API URL in environment variables
-
-**AWS/DigitalOcean:**
-- Use PM2 or Docker
-- Set up reverse proxy (Nginx)
-- Configure SSL certificates
 
 ## 🔧 Configuration
 
@@ -535,19 +679,21 @@ module.exports = {
 
 ### Email Account Setup
 
-1. Go to Settings > Email Accounts
+1. Go to Settings > Email Accounts in the UI
 2. Add your SMTP account
 3. Configure IMAP settings for email sync
 4. Test the connection
 
 ### Security Considerations
 
-- Change default JWT secret
+- Change default JWT secret in production
 - Use strong database passwords
 - Enable HTTPS in production
 - Set up CORS properly
-- Use environment variables for secrets
+- Use environment variables for all secrets
 - Regularly update dependencies
+- Review and update `.gitignore` regularly
+- Never commit sensitive data
 
 ## 🧪 Testing
 
@@ -568,21 +714,39 @@ npm test
 - `DEPLOYMENT.md` - Detailed deployment guide
 - `QUICK_DEPLOY.md` - Quick deployment instructions
 - `ENTERPRISE_ARCHITECTURE.md` - Architecture documentation
+- `CHANGELOG.md` - Version history and changes
 
 ## 🤝 Contributing
 
-1. Fork the repository
+### Development Workflow
+
+1. Fork the repository (if external contributor)
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. Make your changes
+4. Test thoroughly
+5. Commit your changes (`git commit -m 'feat: Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
 
-### Code Style
+### Code Style Guidelines
 
-- Follow existing code style
-- Use meaningful variable names
+- Follow existing code style and patterns
+- Use meaningful variable and function names
 - Add comments for complex logic
 - Write descriptive commit messages
+- Keep functions small and focused
+- Use ES6+ features where appropriate
+- Follow React best practices
+- Use async/await for asynchronous code
+
+### Pull Request Guidelines
+
+- Provide clear description of changes
+- Reference related issues
+- Include screenshots for UI changes
+- Ensure all tests pass
+- Update documentation if needed
+- Get at least one code review approval
 
 ## 🐛 Troubleshooting
 
@@ -592,11 +756,13 @@ npm test
 - Check PostgreSQL is running
 - Verify database credentials in `.env`
 - Ensure database exists
+- Check network connectivity
 
 **Email Sync Not Working:**
 - Verify IMAP credentials
 - Check firewall settings
 - Ensure App Password is used for Gmail
+- Check IMAP service is enabled
 
 **Port Already in Use:**
 - Change PORT in `.env`
@@ -614,6 +780,19 @@ npm test
 - Clear node_modules and reinstall
 - Check Node.js version compatibility
 - Verify all dependencies are installed
+- Clear build cache: `rm -rf client/build`
+
+**Editor Focus Issues:**
+- Clear browser cache
+- Hard refresh (Ctrl+Shift+R / Cmd+Shift+R)
+- Check browser console for errors
+- Verify ReactQuill is properly initialized
+
+**Git Issues:**
+- Check `.gitignore` is properly configured
+- Verify you're on the correct branch
+- Ensure remote is set correctly
+- Check for merge conflicts
 
 ## 📄 License
 
@@ -621,23 +800,25 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 👥 Authors
 
-- Your Name - Initial work
+- Development Team
 
 ## 🙏 Acknowledgments
 
 - React team for the amazing framework
 - Express.js for the robust backend framework
 - All open-source contributors
+- Quill.js for the rich text editor
 
 ## 📞 Support
 
-For support, email support@yourdomain.com or create an issue in the GitHub repository.
+For support, create an issue in the GitHub repository or contact the development team.
 
 ## 🔄 Changelog
 
-See `CHANGELOG.md` for detailed changelog.
+See `CHANGELOG.md` for detailed changelog and version history.
 
 ---
 
-**Made with ❤️ for conference management**
+**Made with ❤️ for enterprise conference management**
 
+**Last Updated:** December 2025

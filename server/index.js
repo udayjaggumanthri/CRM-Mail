@@ -30,6 +30,9 @@ const { rescheduleConferenceFollowUps } = clientRoutes;
 const { router: imapRoutes, realTimeImapService } = require('./routes/imapRoutes');
 const templateDraftRoutes = require('./routes/templateDraftRoutes');
 const { sanitizeAttachmentsForStorage } = require('./utils/attachmentUtils');
+const { normalizeMessageId, normalizeSubject } = require('./utils/messageIdUtils');
+const VALID_TEMPLATE_STAGES = new Set(['abstract_submission', 'registration']);
+
 const { normalizeEmailList } = require('./utils/emailListUtils');
 const { formatEmailHtml, logEmailHtmlPayload } = require('./utils/emailHtmlFormatter');
 const { requireRole, requireConferenceAccess, requireUserManagement, requireClientAccess } = require('./middleware/rbac');
@@ -509,21 +512,25 @@ app.post('/api/auth/login', async (req, res) => {
     // Find user in database
     const user = await User.findOne({ 
       where: { email: email.toLowerCase() },
-      include: [{ model: Role, as: 'roleDetails' }]
+      include: [{ 
+        model: Role, 
+        as: 'roleDetails',
+        required: false // Make it a LEFT JOIN so it doesn't fail if role doesn't exist
+      }]
     });
 
-  if (!user) {
+    if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
-  }
+    }
 
     // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     // Generate JWT token
-  const token = jwt.sign(
+    const token = jwt.sign(
       { 
         id: user.id, 
         email: user.email, 
@@ -531,22 +538,27 @@ app.post('/api/auth/login', async (req, res) => {
         name: user.name,
         organizationId: user.organizationId
       },
-    JWT_SECRET,
-    { expiresIn: '24h' }
-  );
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
 
-  res.json({
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
         role: user.roleDetails?.name || user.role || 'Member'
-    }
-  });
+      }
+    });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -558,10 +570,14 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
     }
 
     const user = await User.findByPk(req.user.id, {
-      include: [{ model: Role, as: 'roleDetails' }]
+      include: [{ 
+        model: Role, 
+        as: 'roleDetails',
+        required: false // Make it a LEFT JOIN so it doesn't fail if role doesn't exist
+      }]
     });
 
-  if (!user) {
+    if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
@@ -1569,6 +1585,20 @@ app.post('/api/templates', authenticateToken, async (req, res) => {
     const payload = {
       ...req.body
     };
+
+    if (payload.stage && !VALID_TEMPLATE_STAGES.has(payload.stage)) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Stage must be either abstract_submission or registration'
+      });
+    }
+
+    if (!payload.stage || !VALID_TEMPLATE_STAGES.has(payload.stage)) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Stage must be either abstract_submission or registration'
+      });
+    }
 
     if (payload.attachments !== undefined) {
       const parsedAttachments = parseAttachmentInput(payload.attachments);

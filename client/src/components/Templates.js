@@ -929,22 +929,16 @@ const Templates = () => {
 
   const getStageBadge = (stage) => {
     const stageClasses = {
-      // Internal stages used by backend
       'abstract_submission': 'bg-blue-100 text-blue-800',
-      'registration': 'bg-green-100 text-green-800',
-      // Virtual stage for UI only – mapped to abstract_submission + followUpNumber=1
-      'initial': 'bg-purple-100 text-purple-800'
+      'registration': 'bg-green-100 text-green-800'
     };
     return `status-badge ${stageClasses[stage] || 'bg-gray-100 text-gray-800'}`;
   };
 
   const getStageName = (stage) => {
     const stageNames = {
-      // Internal stages
       'abstract_submission': 'Abstract Submission',
-      'registration': 'Registration',
-      // Virtual stage for first email in the sequence
-      'initial': 'Initial Email'
+      'registration': 'Registration'
     };
     return stageNames[stage] || stage;
   };
@@ -993,13 +987,7 @@ const Templates = () => {
     
     // Apply stage filter
     if (stageFilter !== 'all') {
-      filtered = filtered.filter(template => {
-        if (stageFilter === 'initial') {
-          return template.stage === 'abstract_submission' && 
-                 (template.followUpNumber === 0 || template.followUpNumber === 1);
-        }
-        return template.stage === stageFilter;
-      });
+      filtered = filtered.filter(template => template.stage === stageFilter);
     }
     
     return filtered;
@@ -1248,7 +1236,7 @@ const Templates = () => {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Stage</label>
                 <div className="flex flex-wrap gap-2">
-                  {['all', 'initial', 'abstract_submission', 'registration'].map((stage) => (
+                  {['all', 'abstract_submission', 'registration'].map((stage) => (
                     <button
                       key={stage}
                       onClick={() => setStageFilter(stage)}
@@ -1576,14 +1564,9 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
   // Initialize formData with template data immediately - use function to ensure fresh data
   const getInitialFormData = (templateData) => {
     if (templateData) {
-      // Map backend stage to UI stage
-      const isInitial = templateData.stage === 'abstract_submission' && 
-                        (templateData.followUpNumber === 0 || templateData.followUpNumber === 1);
-      const uiStage = isInitial ? 'initial' : (templateData.stage || '');
-      
       return {
         name: templateData.name || '',
-        stage: uiStage,
+        stage: templateData.stage || '',
         subject: templateData.subject || '',
         bodyHtml: templateData.bodyHtml || '',
         bodyText: templateData.bodyText || stripHtml(templateData.bodyHtml || ''),
@@ -1607,15 +1590,9 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
     if (template) {
       const templateBodyHtml = template.bodyHtml || '';
       
-      // Map backend stage to UI stage
-      // If stage is abstract_submission with followUpNumber 0 or 1, show as "initial" in UI
-      const isInitial = template.stage === 'abstract_submission' && 
-                        (template.followUpNumber === 0 || template.followUpNumber === 1);
-      const uiStage = isInitial ? 'initial' : (template.stage || '');
-      
       const newFormData = {
         name: template.name || '',
-        stage: uiStage,
+        stage: template.stage || '',
         subject: template.subject || '',
         bodyHtml: templateBodyHtml,
         bodyText: template.bodyText || stripHtml(templateBodyHtml),
@@ -1686,15 +1663,10 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
       content: att.content || null
     }));
 
-    // Map "initial" stage to "abstract_submission" for backend
-    // "initial" is a UI-only stage that maps to abstract_submission with followUpNumber = 1
-    const backendStage = formData.stage === 'initial' ? 'abstract_submission' : formData.stage;
-    const followUpNumber = formData.stage === 'initial' ? 1 : (formData.followUpNumber || 1);
-
     onSubmit({
       ...formData,
-      stage: backendStage,
-      followUpNumber: followUpNumber,
+      stage: formData.stage,
+      followUpNumber: formData.followUpNumber || 1,
       bodyText: bodyTextValue,
       attachments: attachmentPayload
     });
@@ -1816,7 +1788,6 @@ const TemplateForm = ({ template, onSubmit, onCancel, loading }) => {
             className="input-field"
           >
             <option value="">Select Stage</option>
-            <option value="initial">Initial Email</option>
             <option value="abstract_submission">Abstract Submission</option>
             <option value="registration">Registration</option>
           </select>

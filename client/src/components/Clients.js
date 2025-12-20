@@ -98,10 +98,10 @@ const Clients = () => {
     manualStage2Count: 0,
     // Optional: Message-ID of the first manual email sent outside CRM.
     // When provided, all automated follow-ups will reply to this message.
-    initialThreadMessageId: '',
-    // Optional: Subject of the first manual email (e.g., "one").
-    // When provided, follow-ups can use this subject (with "Re:") to improve Gmail threading.
-    initialThreadSubject: ''
+    threadRootMessageId: '',
+    // Optional: Subject of the first manual email (e.g., "Re: Invitation ...").
+    // When provided, follow-ups will use this subject (with "Re:") to improve Gmail threading.
+    initialEmailSubject: ''
   });
 
   // Country combobox state (Add/Edit modal only) - placed after formData so it can read formData.country safely
@@ -413,13 +413,13 @@ const Clients = () => {
     // Prepare data for submission
     const stage1Count = normalizeManualCount(formData.manualStage1Count);
     const stage2Count = normalizeManualCount(formData.manualStage2Count);
-    const initialThreadMessageId =
-      typeof formData.initialThreadMessageId === 'string'
-        ? formData.initialThreadMessageId.trim()
+    const threadRootMessageId =
+      typeof formData.threadRootMessageId === 'string'
+        ? formData.threadRootMessageId.trim()
         : '';
-    const initialThreadSubject =
-      typeof formData.initialThreadSubject === 'string'
-        ? formData.initialThreadSubject.trim()
+    const initialEmailSubject =
+      typeof formData.initialEmailSubject === 'string'
+        ? formData.initialEmailSubject.trim()
         : '';
 
     const submitData = {
@@ -428,8 +428,8 @@ const Clients = () => {
       manualStage2Count: stage2Count,
       manualEmailsCount: stage1Count,
       conferenceId: formData.conferenceId || null, // Convert empty string to null
-      initialThreadMessageId: initialThreadMessageId || undefined,
-      initialThreadSubject: initialThreadSubject || undefined
+      threadRootMessageId: threadRootMessageId || undefined,
+      initialEmailSubject: initialEmailSubject || undefined
     };
     
     if (showEditForm && selectedClient) {
@@ -450,8 +450,8 @@ const Clients = () => {
         ? String(client.customFields.initialThreadMessageId)
         : '';
     const initialThreadSubject =
-      client.customFields && client.customFields.initialThreadSubject
-        ? String(client.customFields.initialThreadSubject)
+      client.customFields && client.customFields.initialEmailSubject
+        ? String(client.customFields.initialEmailSubject)
         : '';
     setFormData({
       name: client.name || `${client.firstName || ''} ${client.lastName || ''}`.trim(),
@@ -463,8 +463,8 @@ const Clients = () => {
       notes: client.notes || '',
       manualStage1Count: stage1Manual,
       manualStage2Count: stage2Manual,
-      initialThreadMessageId,
-      initialThreadSubject
+      threadRootMessageId: initialThreadMessageId,
+      initialEmailSubject: initialThreadSubject
     });
     setShowEditForm(true);
   };
@@ -1560,6 +1560,37 @@ const getInitialsFromName = (name) => {
               Automation starts at attempt {formData.manualStage2Count + 1} once Stage 2 begins.
             </p>
           </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Thread root Message-ID (optional)
+          </label>
+          <input
+            type="text"
+            name="threadRootMessageId"
+            value={formData.threadRootMessageId}
+            onChange={handleInputChange}
+            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
+            placeholder="Paste the Message-ID of the first email (we'll normalize to <...>)"
+          />
+          <p className="mt-1 text-sm text-gray-500">
+            Keeps all follow-ups in one thread. If left empty, a new thread will be started.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Initial email subject (optional)
+          </label>
+          <input
+            type="text"
+            name="initialEmailSubject"
+            value={formData.initialEmailSubject}
+            onChange={handleInputChange}
+            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors bg-white"
+            placeholder='Example: "Invitation to ..."' />
+          <p className="mt-1 text-sm text-gray-500">
+            Follow-ups will use "Re: &lt;this subject&gt;" for stable Gmail threading.
+          </p>
+        </div>
         </div>
       </div>
       {/* Notes Section */}

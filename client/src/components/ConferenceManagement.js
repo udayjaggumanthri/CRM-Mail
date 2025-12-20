@@ -1642,98 +1642,48 @@ const ConferenceManagement = () => {
                   <p className="text-sm text-gray-600">Configure email templates for each stage of your conference workflow</p>
                 </div>
                 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  {/* Initial Email Template Selection */}
-                  <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-6 border border-purple-100">
-                    <div className="flex items-center mb-4">
-                      <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center mr-3">
-                        <span className="text-purple-600 font-semibold text-sm">1</span>
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-semibold text-gray-900">Initial Email</h4>
-                        <p className="text-xs text-gray-600">
-                          First email sent immediately when a client is assigned to this conference
-                        </p>
-                      </div>
+                <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex items-start">
+                    <div className="flex-shrink-0">
+                      <svg className="h-5 w-5 text-blue-600 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
                     </div>
-
-                    <div className="space-y-4">
-                      {(() => {
-                        const slots = getTemplateSlots('stage1');
-                        const initialTemplateId = slots[0] || '';
-                        const selectedTemplate = initialTemplateId ? templatesById[initialTemplateId] : null;
-                        return (
-                          <div className="bg-white border border-purple-100 rounded-lg p-4 shadow-sm">
-                            <div className="flex items-center justify-between mb-3">
-                              <div>
-                                <p className="text-sm font-semibold text-gray-900">Initial Email Template</p>
-                                <p className="text-xs text-gray-500">Sent as soon as the workflow starts</p>
-                              </div>
-                              {selectedTemplate && (
-                                <span className="text-xs font-medium text-purple-600 bg-purple-50 px-2 py-1 rounded-full">
-                                  {selectedTemplate.name}
-                                </span>
-                              )}
-                            </div>
-                            <select
-                              value={initialTemplateId}
-                              onChange={(e) => handleTemplateSlotChange('stage1', 0, e.target.value)}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200 bg-white text-sm"
-                            >
-                              <option value="">Select a template</option>
-                              {stageTemplateOptions.stage1.map((template) => (
-                                <option key={template.id} value={template.id}>
-                                  {template.name}
-                                </option>
-                              ))}
-                            </select>
-                            {selectedTemplate ? (
-                              <div className="mt-3 text-xs text-gray-600 bg-gray-50 p-3 rounded border border-gray-100">
-                                <p className="font-medium text-gray-800">Subject: {selectedTemplate.subject}</p>
-                                <p className="mt-1 line-clamp-2">
-                                  {selectedTemplate.bodyText || selectedTemplate.bodyHtml?.replace(/<[^>]*>/g, '')}
-                                </p>
-                              </div>
-                            ) : (
-                              <p className="mt-3 text-xs text-gray-400">
-                                No initial template selected. The first Stage 1 template will be used instead.
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })()}
-                      {stageTemplateOptions.stage1.length === 0 && (
-                        <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg p-3">
-                          No Initial / Stage 1 templates available. Please create templates in the Templates page.
-                        </p>
-                      )}
+                    <div className="ml-3">
+                      <p className="text-sm font-medium text-blue-800">
+                        Initial Email
+                      </p>
+                      <p className="text-xs text-blue-700 mt-1">
+                        The initial email is sent manually via the Compose feature. After sending, you can add the client to start automated follow-ups.
+                      </p>
                     </div>
                   </div>
+                </div>
 
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   {/* Stage 1 Template Selection (Abstract Submission follow-ups) */}
                   <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-6 border border-blue-100">
                     <div className="flex items-center mb-4">
                       <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-                        <span className="text-blue-600 font-semibold text-sm">2</span>
+                        <span className="text-blue-600 font-semibold text-sm">1</span>
                       </div>
                       <div>
                         <h4 className="text-sm font-semibold text-gray-900">Abstract Submission</h4>
-                        <p className="text-xs text-gray-600">Stage 2 follow-up emails for abstract submissions</p>
+                        <p className="text-xs text-gray-600">Stage 1 follow-up emails for abstract submissions</p>
                       </div>
                     </div>
                     
                     <div className="space-y-4">
                       {getTemplateSlots('stage1')
-                        .slice(1)
                         .map((templateId, index) => {
-                        const actualIndex = index + 1;
+                        const actualIndex = index;
                         const selectedTemplate = templateId ? templatesById[templateId] : null;
                         return (
                           <div key={`stage1-slot-${actualIndex}`} className="bg-white border border-blue-100 rounded-lg p-4 shadow-sm">
                             <div className="flex items-center justify-between mb-3">
                               <div>
                                 <p className="text-sm font-semibold text-gray-900">Follow-up {index + 1}</p>
-                                <p className="text-xs text-gray-500">Attempt #{actualIndex + 1}</p>
+                                <p className="text-xs text-gray-500">Attempt #{index + 1}</p>
                               </div>
                               {selectedTemplate && (
                                 <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded-full">

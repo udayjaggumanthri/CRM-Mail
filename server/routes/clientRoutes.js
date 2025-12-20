@@ -10,6 +10,7 @@ const XLSX = require('xlsx');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 const EmailJobScheduler = require('../services/EmailJobScheduler');
+const { normalizeMessageId, normalizeSubject } = require('../utils/messageIdUtils');
 
 const DEFAULT_STAGE1_INTERVAL = { value: 7, unit: 'days' };
 const DEFAULT_STAGE2_INTERVAL = { value: 3, unit: 'days' };
@@ -118,6 +119,36 @@ const deriveManualCountsForCreate = (payload = {}) => {
     manualStage1Count: stage1Count,
     manualStage2Count: stage2Count,
     manualEmailsCount: stage1Count
+  };
+};
+
+const normalizeThreadingPayload = (payload = {}) => {
+  // Normalize provided thread root and initial subject (accept legacy field initialThreadSubject)
+  const customFields = payload.customFields || {};
+  const normalizedRoot = normalizeMessageId(
+    payload.threadRootMessageId ||
+    customFields.initialThreadMessageId
+  );
+  const initialEmailSubject =
+    normalizeSubject(payload.initialEmailSubject) ||
+    normalizeSubject(payload.initialThreadSubject) ||
+    normalizeSubject(customFields.initialEmailSubject) ||
+    normalizeSubject(customFields.initialThreadSubject) ||
+    null;
+
+  if (normalizedRoot || initialEmailSubject) {
+    return {
+      ...payload,
+      customFields: {
+        ...customFields,
+        initialThreadMessageId: normalizedRoot || customFields.initialThreadMessageId || null,
+        initialEmailSubject: initialEmailSubject || customFields.initialEmailSubject || null
+      }
+    };
+  }
+  return {
+    ...payload,
+    customFields: { ...customFields }
   };
 };
 
@@ -726,17 +757,6 @@ router.post('/', authenticateToken, async (req, res) => {
       nextEmailDate = null
     } = req.body;
 
-    // Optional: Message-ID of the first manual email (from Gmail) to be used as thread root
-    const rawInitialThreadMessageId =
-      typeof req.body.initialThreadMessageId === 'string'
-        ? req.body.initialThreadMessageId.trim()
-        : '';
-    // Optional: Subject of the first manual email (e.g., "one") to align follow-up subjects
-    const rawInitialThreadSubject =
-      typeof req.body.initialThreadSubject === 'string'
-        ? req.body.initialThreadSubject.trim()
-        : '';
-
     // Construct name from legacy fields if not provided
     const resolvedName = (name && String(name).trim()) || `${firstName || ''} ${lastName || ''}`.trim();
 
@@ -780,18 +800,11 @@ router.post('/', authenticateToken, async (req, res) => {
     console.log('📝 Creating client in database...');
 
     const manualCountConfig = deriveManualCountsForCreate(req.body);
+    const normalizedPayload = normalizeThreadingPayload(req.body);
     const existingCustomFields =
-      req.body.customFields && typeof req.body.customFields === 'object'
-        ? { ...req.body.customFields }
+      normalizedPayload.customFields && typeof normalizedPayload.customFields === 'object'
+        ? { ...normalizedPayload.customFields }
         : {};
-
-    if (rawInitialThreadMessageId) {
-      // Limit length to avoid oversized headers / DB values
-      existingCustomFields.initialThreadMessageId = rawInitialThreadMessageId.slice(0, 255);
-    }
-    if (rawInitialThreadSubject) {
-      existingCustomFields.initialThreadSubject = rawInitialThreadSubject.slice(0, 255);
-    }
     
     // Create client with owner assignment
     const client = await Client.create({
@@ -867,48 +880,9 @@ router.put('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    // Handle optional initialThread* fields for threading with manual Gmail email
-    const rawInitialThreadMessageId =
-      typeof updateData.initialThreadMessageId === 'string'
-        ? updateData.initialThreadMessageId.trim()
-        : undefined;
-    const rawInitialThreadSubject =
-      typeof updateData.initialThreadSubject === 'string'
-        ? updateData.initialThreadSubject.trim()
-        : undefined;
-
-    if (rawInitialThreadMessageId !== undefined || rawInitialThreadSubject !== undefined) {
-      const existingCustomFields =
-        client.customFields && typeof client.customFields === 'object'
-          ? { ...client.customFields }
-          : {};
-      const incomingCustomFields =
-        updateData.customFields && typeof updateData.customFields === 'object'
-          ? { ...updateData.customFields }
-          : {};
-      const mergedCustomFields = { ...existingCustomFields, ...incomingCustomFields };
-
-      if (rawInitialThreadMessageId !== undefined) {
-        if (rawInitialThreadMessageId) {
-          mergedCustomFields.initialThreadMessageId = rawInitialThreadMessageId.slice(0, 255);
-        } else {
-          // Allow clearing the field by sending an empty string
-          delete mergedCustomFields.initialThreadMessageId;
-        }
-      }
-
-      if (rawInitialThreadSubject !== undefined) {
-        if (rawInitialThreadSubject) {
-          mergedCustomFields.initialThreadSubject = rawInitialThreadSubject.slice(0, 255);
-        } else {
-          delete mergedCustomFields.initialThreadSubject;
-        }
-      }
-
-      updateData.customFields = mergedCustomFields;
-      delete updateData.initialThreadMessageId;
-      delete updateData.initialThreadSubject;
-    }
+    // Normalize threading fields (thread root + initial email subject)
+    const normalizedUpdate = normalizeThreadingPayload(updateData);
+    Object.assign(updateData, normalizedUpdate);
 
     // Role-based authorization check
     if (req.user.role !== 'CEO' && client.conferenceId) {
@@ -1606,9 +1580,12 @@ async function createStage2FollowUpJobs(client, conference) {
     const clientCustomFields = client.customFields || {};
     const rootMessageIdFromClient =
       clientCustomFields.initialThreadMessageId &&
-      String(clientCustomFields.initialThreadMessageId).trim();
+      normalizeMessageId(String(clientCustomFields.initialThreadMessageId));
+    const initialEmailSubject =
+      clientCustomFields.initialEmailSubject &&
+      normalizeSubject(String(clientCustomFields.initialEmailSubject));
 
-    const threadRootMessageId = rootMessageIdFromClient || latestEmail?.messageId || null;
+    const threadRootMessageId = rootMessageIdFromClient || normalizeMessageId(initialEmail?.messageId) || null;
 
     const manualStage2Progress = getStage2ManualProgress(client);
     const startingAttempt = Math.min(Math.max(0, manualStage2Progress), stage2MaxAttempts);
@@ -1650,7 +1627,8 @@ async function createStage2FollowUpJobs(client, conference) {
         intervalConfig: stage2Interval,
         // Continue the email thread starting from the manually provided initial
         // Gmail Message-ID when available, otherwise from the last sent email.
-        threadRootMessageId,
+          threadRootMessageId,
+          initialEmailSubject,
         stageTemplateSequence: stage2TemplateSequence
       }
     });
@@ -1724,37 +1702,23 @@ async function scheduleFollowUpEmails(client, conference) {
     const stage1TemplateSequence = getStageTemplateSequence(conference, 'stage1');
     console.log(`🎯 Stage 1 template sequence for conference ${conference.id}: ${stage1TemplateSequence.join(', ') || 'none defined'}`);
 
-    // Get Stage 1 (Abstract Submission) template - USE CONFERENCE'S ASSIGNED TEMPLATE(S)
-    let stage1Template = null;
-
-    for (const templateId of stage1TemplateSequence) {
-      stage1Template = await EmailTemplate.findByPk(templateId);
-      if (stage1Template) {
-        console.log(`✅ Using Stage 1 template for follow-up 1: ${stage1Template.name} (ID: ${stage1Template.id})`);
-        break;
-      } else {
-        console.warn(`⚠️ Stage 1 template ${templateId} not found; trying next slot`);
-      }
+    // Validate that we have at least one template in the sequence
+    if (!stage1TemplateSequence || stage1TemplateSequence.length === 0) {
+      throw new Error('No Stage 1 templates found in conference template sequence. Please assign templates to the conference.');
     }
 
-    // Priority 2: Fallback - Find any active abstract_submission template
-    if (!stage1Template) {
-      stage1Template = await EmailTemplate.findOne({
-        where: {
-          stage: 'abstract_submission',
-          isActive: true
-        },
-        order: [['createdAt', 'DESC']]
-      });
-      if (stage1Template) {
-        console.log(`⚠️ Using fallback Stage 1 template: ${stage1Template.name} (ID: ${stage1Template.id})`);
-      }
+    // Get the first template from sequence as initial templateId (required field)
+    // Note: EmailJobScheduler will dynamically select the correct template based on attempt number
+    // This is just for the initial job creation - the scheduler handles template selection
+    const firstTemplateId = stage1TemplateSequence[0];
+    const initialTemplate = await EmailTemplate.findByPk(firstTemplateId);
+    
+    if (!initialTemplate) {
+      throw new Error(`Template ${firstTemplateId} from sequence not found. Please check conference template configuration.`);
     }
-
-    // Priority 3: Throw error instead of creating hardcoded template
-    if (!stage1Template) {
-      throw new Error('No abstract submission template found. Please create one in Email Templates and assign it to the conference.');
-    }
+    
+    console.log(`📋 Using first template from sequence as initial templateId: ${initialTemplate.name} (ID: ${initialTemplate.id})`);
+    console.log(`📋 EmailJobScheduler will dynamically select templates from sequence based on attempt number`);
 
     // Get the most recent sent email's messageId for threading
     const initialEmail = await Email.findOne({
@@ -1769,29 +1733,26 @@ async function scheduleFollowUpEmails(client, conference) {
     const clientCustomFields = client.customFields || {};
     const rootMessageIdFromClient =
       clientCustomFields.initialThreadMessageId &&
-      String(clientCustomFields.initialThreadMessageId).trim();
+      normalizeMessageId(String(clientCustomFields.initialThreadMessageId));
+    const initialEmailSubject =
+      clientCustomFields.initialEmailSubject &&
+      normalizeSubject(String(clientCustomFields.initialEmailSubject));
 
-    const threadRootMessageId = rootMessageIdFromClient || initialEmail?.messageId || null;
+    const threadRootMessageId = rootMessageIdFromClient || normalizeMessageId(initialEmail?.messageId) || null;
 
     const manualStage1Progress = getStage1ManualProgress(client);
     const startingAttempt = Math.min(Math.max(0, manualStage1Progress), stage1MaxAttempts);
 
     // Scheduling strategy:
-    // - If no manual Stage 1 emails were sent (startingAttempt === 0), send the
-    //   initial Stage 1 email immediately when the workflow starts, and then
-    //   use the configured interval for subsequent follow-ups.
-    // - If some Stage 1 emails were already sent manually, schedule the next
-    //   automated follow-up after the configured interval (existing behavior).
-    const now = new Date();
-    const firstFollowUpDate =
-      startingAttempt === 0
-        ? now
-        : calculateNextSendDate(stage1Interval, skipWeekends);
+    // - First follow-up is ALWAYS scheduled at "now + conference interval" (e.g., 7 days)
+    // - This applies whether startingAttempt === 0 or > 0
+    // - No immediate send - all follow-ups use the configured interval
+    const firstFollowUpDate = calculateNextSendDate(stage1Interval, skipWeekends);
 
     console.log(
       `⏳ Stage 1 first follow-up scheduled for ${client.email} on ${firstFollowUpDate.toISOString()} (${
         startingAttempt === 0
-          ? 'immediate send for initial Stage 1 email'
+          ? `${stage1Interval.value} ${stage1Interval.unit} from now (initial email sent via compose)`
           : `${stage1Interval.value} ${stage1Interval.unit} from now`
       })`
     );
@@ -1803,19 +1764,22 @@ async function scheduleFollowUpEmails(client, conference) {
     // Only create job if there are still emails to send
     if (startingAttempt < stage1MaxAttempts) {
       console.log(`📝 [Job Creation] Creating follow-up job for client ${client.email}:`, {
-        templateId: stage1Template.id,
-        templateName: stage1Template.name,
+        templateId: initialTemplate.id,
+        templateName: initialTemplate.name,
         stage: 'abstract_submission',
         startingAttempt,
         maxAttempts: stage1MaxAttempts,
-        scheduledDate: firstFollowUpDate.toISOString()
+        scheduledDate: firstFollowUpDate.toISOString(),
+        templateSequence: stage1TemplateSequence
       });
 
       // Create FollowUpJob for Stage 1 with initial email's messageId for threading
+      // Note: templateId is set to first template, but EmailJobScheduler will dynamically
+      // select the correct template from stageTemplateSequence based on attempt number
       const followUpJob = await FollowUpJob.create({
         clientId: client.id,
         conferenceId: conference.id,
-        templateId: stage1Template.id,
+        templateId: initialTemplate.id,
         stage: 'abstract_submission',
         scheduledDate: firstFollowUpDate,
         nextSendAt: firstFollowUpDate,
@@ -1830,29 +1794,20 @@ async function scheduleFollowUpEmails(client, conference) {
           workingHours,
           intervalConfig: stage1Interval, // Store original interval config (THIS is what we use!)
           // Store initial email's messageId for threading, preferring the manually
-          // provided Gmail Message-ID when available.
-          threadRootMessageId,
+          // provided Gmail Message-ID when available (from post-send Add Client flow).
+          // Priority: client.customFields.initialThreadMessageId > initialEmail.messageId
+          threadRootMessageId: threadRootMessageId || null,
+          initialEmailSubject: initialEmailSubject || null,
           stageTemplateSequence: stage1TemplateSequence
         }
       });
 
       console.log(`✅ [Job Creation] Created follow-up job ${followUpJob.id} for client ${client.email} (Stage 1, starting at attempt ${startingAttempt + 1}, scheduled for ${firstFollowUpDate.toISOString()})`);
       console.log(`⏸️  [Scheduling] First follow-up will be sent after ${stage1Interval.value} ${stage1Interval.unit} (no immediate send)`);
-
-      // NEW: If this is the very first Stage 1 email (Initial Email) and we are
-      // starting at attempt 0, send it immediately instead of waiting for the
-      // scheduler loop. This ensures that as soon as a client is assigned to
-      // a conference, they receive the Initial Email right away.
-      if (startingAttempt === 0) {
-        try {
-          console.log(`🚀 [Immediate Send] Sending Initial Email immediately for client ${client.email} (job ${followUpJob.id})`);
-          await immediateEmailScheduler.sendFollowUpEmail(followUpJob);
-          console.log(`✅ [Immediate Send] Initial Email sent for client ${client.email}`);
-        } catch (immediateError) {
-          console.error(`❌ [Immediate Send] Failed to send Initial Email immediately:`, immediateError);
-          // Do not throw here; the job remains scheduled and will be retried by the scheduler
-        }
-      }
+      
+      // NOTE: No immediate send - all follow-ups are scheduled at the conference interval
+      // This applies to both regular workflow and post-send flow clients
+      // The first follow-up will be sent by the scheduler when scheduledDate is reached
     } else {
       console.log(`⏭️  All Stage 1 emails already sent manually - no follow-up job created`);
     }
@@ -2342,6 +2297,17 @@ router.post('/bulk-upload', authenticateToken, upload.single('file'), async (req
           ? sanitizeNonNegativeInt(stage2CsvCount)
           : 0;
         
+        // Normalize threading info from CSV (optional)
+        const normalizedThreadRoot = normalizeMessageId(row['threadRootMessageId'] || row['Thread root Message-ID']);
+        const normalizedInitialSubject = normalizeSubject(row['initialEmailSubject'] || row['Initial Email Subject'] || row['Initial Thread Subject']);
+        const customFields = {};
+        if (normalizedThreadRoot) {
+          customFields.initialThreadMessageId = normalizedThreadRoot;
+        }
+        if (normalizedInitialSubject) {
+          customFields.initialEmailSubject = normalizedInitialSubject.slice(0, 255);
+        }
+
         // Create client with all optional fields
         const client = await Client.create({
           name: csvName || `${csvFirst || ''} ${csvLast || ''}`.trim(),
@@ -2355,6 +2321,7 @@ router.post('/bulk-upload', authenticateToken, upload.single('file'), async (req
           manualStage2Count,
           notes: row['Notes'] || null,
           organizationId: req.user.organizationId || null,
+          customFields: customFields,
           // Ensure visibility: set owner to uploader by default
           ownerUserId: req.user.id
         });
